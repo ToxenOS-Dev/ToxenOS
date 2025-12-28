@@ -1,21 +1,23 @@
 #include "devices/display/vga.h"
 
 static volatile uint16_t* const VGA_MEMORY = (uint16_t*)0xB8000;
-static int cursor_visible = 1;
 
-/* Low-level port output */
+/* Timer-driven blink state */
+static uint32_t timer_ticks = 0;
+static int cursor_visible = 0;
+
+/* Port I/O */
 static inline void outb(uint16_t port, uint8_t value) {
     __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
 }
 
-/* Disable the hardware VGA cursor */
+static inline uint16_t vga_entry(char c, uint8_t color) {
+    return (uint16_t)c | ((uint16_t)color << 8);
+}
+
 void vga_disable_hw_cursor(void) {
     outb(0x3D4, 0x0A);
     outb(0x3D5, 0x20);
-}
-
-static inline uint16_t vga_entry(char c, uint8_t color) {
-    return (uint16_t)c | ((uint16_t)color << 8);
 }
 
 void vga_clear(void) {
@@ -40,19 +42,26 @@ void vga_print(const char* str, int x, int y, uint8_t color) {
     }
 }
 
-void vga_blink_cursor(int x, int y) {
-    static int counter = 0;
-    counter++;
+/* Cursor helpers */
+void vga_cursor_hide(int x, int y) {
+    vga_put_char(' ', x, y, VGA_WHITE);
+}
 
-    if (counter > 500000) {
-        counter = 0;
+void vga_cursor_show(int x, int y) {
+    vga_put_char('_', x, y, VGA_WHITE);
+}
+
+/* Timer-based blink (IRQ0) */
+void vga_blink_cursor(int x, int y) {
+    timer_ticks++;
+
+    /* Blink rate: every 10 ticks */
+    if (timer_ticks % 10 == 0) {
         cursor_visible = !cursor_visible;
 
-        vga_put_char(
-            cursor_visible ? '_' : ' ',
-            x,
-            y,
-            VGA_WHITE
-        );
+        if (cursor_visible)
+            vga_cursor_show(x, y);
+        else
+            vga_cursor_hide(x, y);
     }
 }

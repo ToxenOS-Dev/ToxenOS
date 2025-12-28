@@ -1,5 +1,6 @@
 #include "devices/display/vga.h"
 #include "devices/input/keyboard.h"
+#include "runtime/shell/shell.h"
 #include "cpu/interrupts/idt.h"
 
 void kernel_main(void) {
@@ -14,12 +15,13 @@ void kernel_main(void) {
     int version_x = (VGA_WIDTH - 6) / 2;
     vga_print("v0.0.1", version_x, 1, VGA_LIGHT_GREY);
 
-    vga_print("Tox:", 0, 3, VGA_BROWN);
-
     keyboard_init();
+    shell_init();
     idt_init();
 
     while (1) {
         __asm__ volatile ("hlt");
     }
 }
+
+

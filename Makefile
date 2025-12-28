@@ -1,66 +1,104 @@
-# ===== Tools =====
+# =========================
+# Tools
+# =========================
 CC = gcc
 AS = nasm
 LD = ld
 
-# ===== Flags =====
+# =========================
+# Flags
+# =========================
 CFLAGS  = -m32 -ffreestanding -fno-pie -fno-stack-protector -nostdlib -Wall -Wextra -I.
 LDFLAGS = -m elf_i386 -T linker.ld
 
-# ===== Directories =====
+# =========================
+# Directories
+# =========================
 BUILD = build
 OBJ   = $(BUILD)/obj
 
-# ===== Kernel =====
+# =========================
+# Kernel Output
+# =========================
 KERNEL = $(BUILD)/kernel.bin
 
-# ===== Objects =====
+# =========================
+# Object Files
+# =========================
 OBJS = \
 	$(OBJ)/multiboot.o \
 	$(OBJ)/entry.o \
 	$(OBJ)/vga.o \
 	$(OBJ)/keyboard.o \
 	$(OBJ)/idt.o \
-	$(OBJ)/isr.o
+	$(OBJ)/isr.o \
+	$(OBJ)/shell.o \
+	$(OBJ)/commands.o
 
-# ===== Default =====
+# =========================
+# Default Target
+# =========================
 all: $(KERNEL)
 
-# ===== Multiboot =====
+# =========================
+# Multiboot
+# =========================
 $(OBJ)/multiboot.o: loader/multiboot.asm
 	mkdir -p $(OBJ)
 	$(AS) -f elf32 $< -o $@
 
-# ===== Kernel Entry =====
+# =========================
+# Kernel Entry
+# =========================
 $(OBJ)/entry.o: core/entry.c
 	mkdir -p $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# ===== VGA Driver =====
+# =========================
+# VGA Driver
+# =========================
 $(OBJ)/vga.o: devices/display/vga.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# ===== Keyboard =====
+# =========================
+# Keyboard Driver
+# =========================
 $(OBJ)/keyboard.o: devices/input/keyboard.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# ===== IDT =====
+# =========================
+# IDT / Interrupts
+# =========================
 $(OBJ)/idt.o: cpu/interrupts/idt.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# ===== ISR =====
 $(OBJ)/isr.o: cpu/interrupts/isr.asm
 	$(AS) -f elf32 $< -o $@
 
-# ===== Link =====
+# =========================
+# Shell
+# =========================
+$(OBJ)/shell.o: runtime/shell/shell.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ)/commands.o: runtime/shell/commands.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# =========================
+# Link Kernel
+# =========================
 $(KERNEL): $(OBJS)
 	mkdir -p $(BUILD)
 	$(LD) $(LDFLAGS) -o $@ $^
 
-# ===== Run =====
+# =========================
+# Run in QEMU
+# =========================
 run: $(KERNEL)
 	qemu-system-x86_64 -kernel $(KERNEL)
 
-# ===== Clean =====
+# =========================
+# Clean
+# =========================
 clean:
-	rm -rf build
+	rm -rf $(BUILD)

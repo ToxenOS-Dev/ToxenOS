@@ -29,6 +29,23 @@ void vga_clear(void) {
     }
 }
 
+void vga_scroll(void) {
+    /* Move each line up */
+    for (int y = 1; y < VGA_HEIGHT; y++) {
+        for (int x = 0; x < VGA_WIDTH; x++) {
+            VGA_MEMORY[(y - 1) * VGA_WIDTH + x] =
+                VGA_MEMORY[y * VGA_WIDTH + x];
+        }
+    }
+
+    /* Clear last line */
+    for (int x = 0; x < VGA_WIDTH; x++) {
+        VGA_MEMORY[(VGA_HEIGHT - 1) * VGA_WIDTH + x] =
+            vga_entry(' ', VGA_LIGHT_GREY);
+    }
+}
+
+
 void vga_put_char(char c, int x, int y, uint8_t color) {
     if (x < 0 || x >= VGA_WIDTH || y < 0 || y >= VGA_HEIGHT)
         return;

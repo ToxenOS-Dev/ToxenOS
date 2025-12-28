@@ -24,6 +24,8 @@ enum vga_color {
 void vga_clear(void);
 void vga_put_char(char c, int x, int y, uint8_t color);
 void vga_print(const char* str, int x, int y, uint8_t color);
+void vga_scroll(void);
+
 
 void vga_disable_hw_cursor(void);
 

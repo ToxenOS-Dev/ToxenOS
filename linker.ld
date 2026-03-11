@@ -6,7 +6,7 @@ SECTIONS
 
     .multiboot :
     {
-        *(.multiboot)
+        KEEP(*(.multiboot))
     }
 
     .text :
@@ -24,4 +24,7 @@ SECTIONS
         . = ALIGN(4096);
         *(.bss*)
     }
+
+    . = ALIGN(4096);
+    kernel_end = .;     /* ← marks where kernel ends */
 }

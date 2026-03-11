@@ -5,6 +5,7 @@
 #include "../include/vga.h"
 #include "../include/timer.h"
 #include "../include/pic.h"
+#include "../include/mm.h"
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
@@ -149,11 +150,24 @@ void kernel_main()
 {
     clear_screen();
     print_title();
+    mm_init();
     idt_init();
     pic_remap();        // ← remap PIC first
     timer_init(100);    // ← 100Hz, fires 100 times per second
   __asm__ volatile("sti");
     keyboard_init();
+
+    // MM TEST START
+    void* a = kmalloc(128);
+    void* b = kmalloc(256);
+    kfree(a);
+    void* c = kmalloc(64);  // should reuse a's block
+
+    if (c == a)
+        print("\nMM works! Block reuse confirmed.\n");
+    else
+        print("\nMM works! Allocated successfully.\n");
+    // MM TEST END
 
     cursor_y = 2;
     cursor_x = 0;

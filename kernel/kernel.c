@@ -6,6 +6,7 @@
 #include "../include/timer.h"
 #include "../include/pic.h"
 #include "../include/mm.h"
+#include "../include/process.h"
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
@@ -15,6 +16,7 @@ uint16_t* const VGA_MEMORY = (uint16_t*)0xB8000;
 int cursor_x = 0;
 int cursor_y = 0;
 int prompt_end_x = 0;
+
 
 /* write byte to hardware port */
 static inline void outb(uint16_t port, uint8_t value)
@@ -146,50 +148,88 @@ void erase_char()
     }
 }
 
+// PROCESS TEST START
+void test_process_a()
+{
+    __asm__ volatile("sti");  // make sure interrupts are enabled
+    print("A started\n");
+    while (1)
+    {
+        print("A");
+        for (volatile int i = 0; i < 1000000; i++);
+    }
+}
+
+void test_process_b()
+{
+    __asm__ volatile("sti");
+    print("B started\n");
+    while (1)
+    {
+        print("B");
+        for (volatile int i = 0; i < 1000000; i++);
+    }
+}
+// PROCESS TEST END
+
+
+void print_hex(uint32_t val)
+{
+    const char* hex = "0123456789ABCDEF";
+    char buf[9];
+    buf[8] = 0;
+    for (int i = 7; i >= 0; i--)
+    {
+        buf[i] = hex[val & 0xF];
+        val >>= 4;
+    }
+    print(buf);
+}
+
+
 void kernel_main()
 {
     clear_screen();
     print_title();
     mm_init();
     idt_init();
-    pic_remap();        // ← remap PIC first
-    timer_init(100);    // ← 100Hz, fires 100 times per second
-  __asm__ volatile("sti");
+    pic_remap();
+    timer_init(100);
+    __asm__ volatile("sti");
     keyboard_init();
+    process_init();
 
-    // MM TEST START
-    void* a = kmalloc(128);
-    void* b = kmalloc(256);
-    kfree(a);
-    void* c = kmalloc(64);  // should reuse a's block
-
-    if (c == a)
-        print("\nMM works! Block reuse confirmed.\n");
-    else
-        print("\nMM works! Allocated successfully.\n");
-    // MM TEST END
+    // PROCESS TEST START
+    process_create("test_a", test_process_a);
+    process_create("test_b", test_process_b);
+    print("\nProcesses created\n");
+    // PROCESS TEST END
 
     cursor_y = 2;
     cursor_x = 0;
-
     print_prompt();
 
     while (1)
     {
-        char c = keyboard_getchar();
+            if (keyboard_available())
+            {
+                char c = keyboard_getchar();
 
-        if (c == '\n')
-        {
-            put_char('\n');
-            print_prompt();
-        }
-        else if (c == 8)
-        {
-            erase_char();
-        }
-        else
-        {
-            put_char(c);
-        }
+                if (c == '\n')
+                {
+                    put_char('\n');
+                    print_prompt();
+                }
+                else if (c == 8)
+                {
+                    erase_char();
+                }
+                else
+                {
+                    put_char(c);
+                }
+            }
+
+            __asm__ volatile("hlt");
     }
 }

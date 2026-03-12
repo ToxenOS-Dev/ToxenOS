@@ -59,3 +59,8 @@ char keyboard_getchar()
     buf_head = (buf_head + 1) % BUFFER_SIZE;
     return c;
 }
+
+int keyboard_available()
+{
+    return buf_head != buf_tail;
+}

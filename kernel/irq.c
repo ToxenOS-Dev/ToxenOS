@@ -13,8 +13,8 @@ void irq_handler(int interrupt)
 {
     uint8_t irq = interrupt - 32;
 
+    pic_send_eoi(irq);      // ← send EOI first, before handler
+
     if (irq_handlers[irq])
         irq_handlers[irq]();
-
-    pic_send_eoi(irq);
 }

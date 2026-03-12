@@ -28,6 +28,15 @@ void mm_init()
     heap_start->next  = 0;
 }
 
+void* kmalloc_aligned(uint32_t size, uint32_t align)
+{
+    uint8_t* raw = (uint8_t*)kmalloc(size + align);
+    uint32_t addr = (uint32_t)raw;
+    if (addr % align != 0)
+        addr = (addr + align) & ~(align - 1);
+    return (void*)addr;
+}
+
 void* kmalloc(uint32_t size)
 {
     if (size == 0) return 0;

@@ -8,6 +8,7 @@
 #include "../include/mm.h"
 #include "../include/process.h"
 #include "../include/syscall.h"
+#include "../include/paging.h"
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
@@ -162,11 +163,28 @@ void print_hex(uint32_t val)
     print(buf);
 }
 
+// PAGING TEST START
+void test_paging()
+{
+    __asm__ volatile("sti");
+    
+    uint32_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    print("\nProcess CR3: ");
+    print_hex(cr3);
+    print("\n");
+
+    while (1)
+        __asm__ volatile("hlt");
+}
+// PAGING TEST END
+
 void kernel_main()
 {
     clear_screen();
     print_title();
     mm_init();
+    paging_init();
     idt_init();
     pic_remap();
     timer_init(100);
@@ -174,6 +192,11 @@ void kernel_main()
     keyboard_init();
     process_init();
     syscall_init(); 
+
+    // PAGING TEST START
+    process_create("paging_test", test_paging);
+    // PAGING TEST END
+    
 
     cursor_y = 2;
     cursor_x = 0;

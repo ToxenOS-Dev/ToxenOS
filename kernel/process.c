@@ -2,6 +2,7 @@
 #include "../include/process.h"
 #include "../include/mm.h"
 #include "../include/vga.h" 
+#include "../include/paging.h"
 
 static process_t  processes[MAX_PROCESSES];
 static int        current_pid = 0;
@@ -25,7 +26,7 @@ static void process_trampoline()
     void (*entry)() = (void(*)())processes[current_pid].regs.eip;
     __asm__ volatile("sti");
     entry();
-    process_exit();
+    while (1) __asm__ volatile("hlt"); 
 }
 
 void process_init()
@@ -36,8 +37,16 @@ void process_init()
     // create kernel process (pid 0 = the current running kernel)
     processes[0].pid   = 0;
     processes[0].state = PROCESS_RUNNING;
+    processes[0].page_directory = 0;
     copy_string(processes[0].name, "kernel", 32);
     processes[0].stack = 0;  // kernel uses its own stack from boot.asm
+    process_count = 1;
+
+    // save kernel ESP so we can switch back to it
+    uint32_t esp;
+    __asm__ volatile("mov %%esp, %0" : "=r"(esp));
+    processes[0].regs.esp = esp;
+
     process_count = 1;
 }
 
@@ -64,6 +73,7 @@ int process_create(const char* name, void (*entry)())
 
     // allocate stack
     p->stack = (uint8_t*)kmalloc(PROCESS_STACK_SIZE);
+    p->page_directory = paging_create_directory();
 
     // set up stack so it looks like an interrupt just happened
     // stack grows downward so start at top
@@ -84,16 +94,54 @@ int process_create(const char* name, void (*entry)())
 
     p->regs.esp = (uint32_t)stack_top;
     p->regs.eip = (uint32_t)entry;
-    
+
     process_count++;
     return slot;
 }
 
 void process_exit()
 {
+    if (current_pid == 0) return;
+
     processes[current_pid].state = PROCESS_DEAD;
     process_count--;
-    scheduler();
+
+    // find next ready process
+    int next = -1;
+    for (int i = 1; i < MAX_PROCESSES; i++)
+    {
+        if (processes[i].state == PROCESS_READY)
+        {
+            next = i;
+            break;
+        }
+    }
+
+    if (next == -1)
+    {
+        // nothing to run, idle
+        current_pid = 0;
+        processes[0].state = PROCESS_RUNNING;
+        paging_switch(kernel_directory);
+
+        __asm__ volatile(
+            "mov %0, %%esp\n"
+            "sti\n"
+            "1: hlt\n"
+            "jmp 1b\n"
+            :
+            : "r"(processes[0].regs.esp)
+        );
+    }
+
+    processes[next].state = PROCESS_RUNNING;
+    int old = current_pid;
+    current_pid = next;
+
+    if (processes[next].page_directory)
+        paging_switch(processes[next].page_directory);
+
+    context_switch(&processes[old].regs.esp, &processes[next].regs.esp);
 }
 
 process_t* process_current()
@@ -118,14 +166,22 @@ void scheduler()
     }
 
     if (next == current_pid)
-        return;
+    {
+        // if nothing ready, go back to kernel process (pid 0)
+        if (current_pid != 0 && processes[0].state != PROCESS_DEAD)
+            next = 0;
+        else
+            return;
+    }
 
-    // remove everything between here and context_switch
     processes[current_pid].state = PROCESS_READY;
     processes[next].state = PROCESS_RUNNING;
 
     int old = current_pid;
     current_pid = next;
+
+    if (processes[next].page_directory)
+        paging_switch(processes[next].page_directory);
 
     context_switch(&processes[old].regs.esp, &processes[next].regs.esp);
 }

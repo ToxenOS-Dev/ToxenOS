@@ -26,6 +26,7 @@ typedef struct
     process_state_t state;
     registers_t     regs;
     uint8_t*        stack;
+    uint32_t*       page_directory;
     char            name[32];
 } process_t;
 

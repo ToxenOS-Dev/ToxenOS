@@ -93,7 +93,7 @@ int vfs_open(const char* path, int flags)
     int mount_idx = vfs_find_mount(path);
     if (mount_idx == -1) return -1;
 
-    // find free fd
+    // find free vfs fd
     int fd = -1;
     for (int i = 0; i < VFS_MAX_FDS; i++)
     {
@@ -103,34 +103,25 @@ int vfs_open(const char* path, int flags)
             break;
         }
     }
-
     if (fd == -1) return -1;
 
-    int result = mounts[mount_idx].driver->open(path, flags);
-    if (result < 0) return -1;
+    // call driver open — it returns its own internal fd
+    int driver_fd = mounts[mount_idx].driver->open(path, flags);
+    if (driver_fd < 0) return -1;
 
     fds[fd].used      = 1;
     fds[fd].mount_idx = mount_idx;
     fds[fd].position  = 0;
+    fds[fd].driver_fd = driver_fd;  // ← store driver's fd separately
     string_copy(fds[fd].path, path, VFS_NAME_MAX);
 
     return fd;
 }
 
-int vfs_close(int fd)
-{
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fds[fd].used) return -1;
-
-    mounts[fds[fd].mount_idx].driver->close(fd);
-    fds[fd].used = 0;
-    return 0;
-}
-
 int vfs_read(int fd, uint8_t* buf, uint32_t size)
 {
     if (fd < 0 || fd >= VFS_MAX_FDS || !fds[fd].used) return -1;
-
-    int result = mounts[fds[fd].mount_idx].driver->read(fd, buf, size);
+    int result = mounts[fds[fd].mount_idx].driver->read(fds[fd].driver_fd, buf, size);
     if (result > 0) fds[fd].position += result;
     return result;
 }
@@ -138,10 +129,17 @@ int vfs_read(int fd, uint8_t* buf, uint32_t size)
 int vfs_write(int fd, const uint8_t* buf, uint32_t size)
 {
     if (fd < 0 || fd >= VFS_MAX_FDS || !fds[fd].used) return -1;
-
-    int result = mounts[fds[fd].mount_idx].driver->write(fd, buf, size);
+    int result = mounts[fds[fd].mount_idx].driver->write(fds[fd].driver_fd, buf, size);
     if (result > 0) fds[fd].position += result;
     return result;
+}
+
+int vfs_close(int fd)
+{
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fds[fd].used) return -1;
+    mounts[fds[fd].mount_idx].driver->close(fds[fd].driver_fd);
+    fds[fd].used = 0;
+    return 0;
 }
 
 int vfs_readdir(const char* path, char* out, uint32_t index)

@@ -13,6 +13,8 @@
 #include "../include/ring3.h"
 #include "../include/vfs.h"
 #include "../include/tmpfs.h"
+#include "../include/ata.h"
+#include "../include/txfs.h"
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
@@ -185,6 +187,8 @@ void kernel_main()
     syscall_init(); 
     vfs_init();
     vfs_mount("/", tmpfs_init(), 0);
+    ata_init();
+    vfs_mount("/disk", txfs_init(), 0);
     tss_init((uint32_t)&stack_top);
 
     cursor_y = 2;

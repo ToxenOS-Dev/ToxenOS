@@ -30,6 +30,7 @@ typedef struct
 {
     int    used;
     int    mount_idx;
+    int    driver_fd;
     char   path[VFS_NAME_MAX];
     uint32_t position;
 } file_descriptor_t;

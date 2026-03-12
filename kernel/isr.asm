@@ -1,5 +1,6 @@
 extern exception_handler
-extern irq_handler     
+extern irq_handler
+extern syscall_handler     
 
 global isr_stub
 
@@ -81,3 +82,27 @@ IRQ 12, 44
 IRQ 13, 45
 IRQ 14, 46
 IRQ 15, 47
+
+
+global isr128
+isr128:
+    push eax        ; save registers
+    push ebx
+    push ecx
+    push edx
+
+    push edx        ; push args for syscall_handler
+    push ecx
+    push ebx
+    push eax
+
+    call syscall_handler
+
+    add esp, 16     ; clean up args
+
+    pop edx         ; restore registers
+    pop ecx
+    pop ebx
+    pop eax
+
+    iret

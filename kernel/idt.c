@@ -69,7 +69,7 @@ struct idt_ptr idtp;
 
 extern void isr_stub();
 
-static void idt_set_gate(int n, uint32_t handler)
+void idt_set_gate(int n, uint32_t handler)
 {
     idt[n].offset_low = handler & 0xFFFF;
     idt[n].selector = 0x08;

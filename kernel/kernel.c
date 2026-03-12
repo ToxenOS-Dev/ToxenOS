@@ -7,6 +7,7 @@
 #include "../include/pic.h"
 #include "../include/mm.h"
 #include "../include/process.h"
+#include "../include/syscall.h"
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
@@ -161,7 +162,6 @@ void print_hex(uint32_t val)
     print(buf);
 }
 
-
 void kernel_main()
 {
     clear_screen();
@@ -173,6 +173,7 @@ void kernel_main()
     __asm__ volatile("sti");
     keyboard_init();
     process_init();
+    syscall_init(); 
 
     cursor_y = 2;
     cursor_x = 0;

@@ -9,6 +9,10 @@
 #include "../include/process.h"
 #include "../include/syscall.h"
 #include "../include/paging.h"
+#include "../include/tss.h"
+#include "../include/ring3.h"
+#include "../include/vfs.h"
+#include "../include/tmpfs.h"
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
@@ -18,6 +22,8 @@ uint16_t* const VGA_MEMORY = (uint16_t*)0xB8000;
 int cursor_x = 0;
 int cursor_y = 0;
 int prompt_end_x = 0;
+
+extern uint32_t stack_top;
 
 
 /* write byte to hardware port */
@@ -177,6 +183,9 @@ void kernel_main()
     keyboard_init();
     process_init();
     syscall_init(); 
+    vfs_init();
+    vfs_mount("/", tmpfs_init(), 0);
+    tss_init((uint32_t)&stack_top);
 
     cursor_y = 2;
     cursor_x = 0;

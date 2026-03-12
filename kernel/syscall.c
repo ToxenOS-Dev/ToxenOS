@@ -61,5 +61,5 @@ void syscall_init()
     // reuse idt_set_gate — need to expose it
     // for now declare it extern
     extern void idt_set_gate(int n, uint32_t handler);
-    idt_set_gate(0x80, (uint32_t)isr128);
+    idt_set_gate_user(0x80, (uint32_t)isr128);
 }

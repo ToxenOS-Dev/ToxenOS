@@ -16,9 +16,13 @@ build:
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/process.c -o build/process.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/syscall.c -o build/syscall.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/paging.c -o build/paging.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/tss.c -o build/tss.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/ring3.c -o build/ring3.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/vfs.c -o build/vfs.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/tmpfs.c -o build/tmpfs.o
 
 	ld -m elf_i386 -T linker.ld -o build/kernel.bin \
-	build/boot.o build/kernel.o build/keyboard.o build/idt.o build/isr.o build/switch.o build/pic.o build/irq.o build/timer.o build/mm.o build/process.o build/syscall.o build/paging.o
+	build/boot.o build/kernel.o build/keyboard.o build/idt.o build/isr.o build/switch.o build/pic.o build/irq.o build/timer.o build/mm.o build/process.o build/syscall.o build/paging.o build/tss.o build/ring3.o build/vfs.o build/tmpfs.o
 
 	cp build/kernel.bin iso/boot/kernel.bin
 

@@ -8,22 +8,19 @@ static uint32_t kernel_tables[256][1024] __attribute__((aligned(4096)));
 
 void paging_init()
 {
-    // clear directory
     for (int i = 0; i < 1024; i++)
         kernel_directory[i] = 0;
 
-    // identity map first 256 page tables (256 * 4MB = first 1GB)
-    // this maps virtual == physical for all kernel memory
     for (int table = 0; table < 256; table++)
     {
         for (int page = 0; page < 1024; page++)
         {
             uint32_t phys = (table * 1024 + page) * PAGE_SIZE;
-            kernel_tables[table][page] = phys | PAGE_PRESENT | PAGE_WRITABLE;
+            kernel_tables[table][page] = phys | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
         }
 
         kernel_directory[table] = (uint32_t)kernel_tables[table]
-                                 | PAGE_PRESENT | PAGE_WRITABLE;
+                                 | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
     }
 
     paging_switch(kernel_directory);

@@ -84,27 +84,7 @@ int process_create(const char* name, void (*entry)())
 
     p->regs.esp = (uint32_t)stack_top;
     p->regs.eip = (uint32_t)entry;
-    //debug
-    print("\nstack_top after setup: ");
-    print_hex((uint32_t)stack_top);
-    //debug
-
-    //debug
-    extern void print(const char*);
-    extern void print_hex(uint32_t);  // we'll add this
-    print("\nEntry: ");
-    print_hex((uint32_t)entry);
-    print("\nESP: ");
-    print_hex(p->regs.esp);
-    print("\n");
-
-    print("\nStack base: ");
-    print_hex((uint32_t)p->stack);
-    print("\nStack top: ");
-    print_hex((uint32_t)p->stack + PROCESS_STACK_SIZE);
-    print("\n");
-    //debug
-
+    
     process_count++;
     return slot;
 }
@@ -140,12 +120,7 @@ void scheduler()
     if (next == current_pid)
         return;
 
-    print("S");
-    print_hex(current_pid);
-    print("->");
-    print_hex(next);
-    print(" ");
-
+    // remove everything between here and context_switch
     processes[current_pid].state = PROCESS_READY;
     processes[next].state = PROCESS_RUNNING;
 

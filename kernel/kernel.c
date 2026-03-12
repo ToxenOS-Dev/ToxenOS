@@ -148,31 +148,6 @@ void erase_char()
     }
 }
 
-// PROCESS TEST START
-void test_process_a()
-{
-    __asm__ volatile("sti");  // make sure interrupts are enabled
-    print("A started\n");
-    while (1)
-    {
-        print("A");
-        for (volatile int i = 0; i < 1000000; i++);
-    }
-}
-
-void test_process_b()
-{
-    __asm__ volatile("sti");
-    print("B started\n");
-    while (1)
-    {
-        print("B");
-        for (volatile int i = 0; i < 1000000; i++);
-    }
-}
-// PROCESS TEST END
-
-
 void print_hex(uint32_t val)
 {
     const char* hex = "0123456789ABCDEF";
@@ -198,12 +173,6 @@ void kernel_main()
     __asm__ volatile("sti");
     keyboard_init();
     process_init();
-
-    // PROCESS TEST START
-    process_create("test_a", test_process_a);
-    process_create("test_b", test_process_b);
-    print("\nProcesses created\n");
-    // PROCESS TEST END
 
     cursor_y = 2;
     cursor_x = 0;

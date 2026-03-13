@@ -32,6 +32,27 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             erase_char();
             return 0;
 
+        case SYS_CLEAR:
+            clear_screen();
+            return 0;
+
+        case SYS_REBOOT:
+            __asm__ volatile(
+                "movb $0xFE, %%al\n"
+                "outb %%al, $0x64\n"
+                ::: "eax"
+            );
+            return 0;
+
+        case SYS_SHUTDOWN:
+            __asm__ volatile(
+                "movw $0x2000, %%ax\n"
+                "movw $0x604, %%dx\n"
+                "outw %%ax, %%dx\n"
+                ::: "eax", "edx"
+            );
+            return 0;
+
         case SYS_YIELD:
             __asm__ volatile("hlt");
             return 0;

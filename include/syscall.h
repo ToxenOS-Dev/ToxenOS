@@ -11,6 +11,9 @@
 #define SYS_YIELD   4
 #define SYS_ERASE   5
 #define SYS_SETCOLOR  6
+#define SYS_CLEAR    7
+#define SYS_REBOOT   8
+#define SYS_SHUTDOWN 9
 
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx);
 

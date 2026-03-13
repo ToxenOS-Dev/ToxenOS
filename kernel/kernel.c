@@ -15,11 +15,13 @@
 #include "../include/tmpfs.h"
 #include "../include/ata.h"
 #include "../include/txfs.h"
+#include "../include/elf.h"
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
 
 uint16_t* const VGA_MEMORY = (uint16_t*)0xB8000;
+uint8_t current_color = 0x07;  // default light grey
 
 int cursor_x = 0;
 int cursor_y = 0;
@@ -108,7 +110,7 @@ void put_char(char c)
     }
     else
     {
-        VGA_MEMORY[cursor_y * VGA_WIDTH + cursor_x] = c | (0x07 << 8);
+        VGA_MEMORY[cursor_y * VGA_WIDTH + cursor_x] = c | (current_color << 8);
         cursor_x++;
     }
 
@@ -171,6 +173,11 @@ void print_hex(uint32_t val)
     print(buf);
 }
 
+void set_color(uint8_t color)
+{
+    current_color = color;
+}
+
 
 void kernel_main()
 {
@@ -193,29 +200,29 @@ void kernel_main()
 
     cursor_y = 2;
     cursor_x = 0;
-    print_prompt();
 
-    while (1)
+    // load shell ELF from disk
+    uint8_t* elf_buf = (uint8_t*)kmalloc(16384);
+    ata_read(2048, elf_buf, 32);
+
+    elf_header_t* ehdr = (elf_header_t*)elf_buf;
+    if (ehdr->magic == 0x464C457F)
     {
-            if (keyboard_available())
-            {
-                char c = keyboard_getchar();
+        for (int i = 0; i < ehdr->phnum; i++)
+        {
+            elf_phdr_t* phdr = (elf_phdr_t*)(elf_buf + ehdr->phoff + i * ehdr->phentsize);
+            if (phdr->type != 1) continue;
+            if (phdr->memsz == 0) continue;
 
-                if (c == '\n')
-                {
-                    put_char('\n');
-                    print_prompt();
-                }
-                else if (c == 8)
-                {
-                    erase_char();
-                }
-                else
-                {
-                    put_char(c);
-                }
-            }
-
-            __asm__ volatile("hlt");
+            uint8_t* dst = (uint8_t*)phdr->vaddr;
+            uint8_t* src = elf_buf + phdr->offset;
+            for (uint32_t j = 0; j < phdr->memsz; j++)
+                dst[j] = (j < phdr->filesz) ? src[j] : 0;
+        }
+        jump_to_ring3((void*)ehdr->entry, 0x500000);
     }
+
+    // fallback if ELF load failed
+    print("Failed to load shell\n");
+    while (1) __asm__ volatile("hlt");
 }

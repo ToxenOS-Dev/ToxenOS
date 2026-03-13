@@ -8,6 +8,11 @@
 #define SYS_PRINT    1
 #define SYS_GETCHAR  2
 #define SYS_GETPID   3
+#define SYS_YIELD   4
+#define SYS_ERASE   5
+#define SYS_SETCOLOR  6
+
+uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx);
 
 void syscall_init();
 

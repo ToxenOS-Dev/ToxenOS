@@ -4,9 +4,11 @@
 #include "../include/paging.h"
 #include "../include/process.h"
 
+extern uint32_t stack_top;
+
 void jump_to_ring3(void (*entry)(), uint32_t user_stack)
 {
-    // map the user stack as user-accessible
+    // map user stack
     extern uint32_t kernel_directory[];
     for (int i = 0; i < 4; i++)
     {
@@ -16,13 +18,14 @@ void jump_to_ring3(void (*entry)(), uint32_t user_stack)
                    PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
     }
 
-    // map user program code as user-accessible
+    // map user code
     paging_map(kernel_directory,
                (uint32_t)entry & ~0xFFF,
                (uint32_t)entry & ~0xFFF,
                PAGE_PRESENT | PAGE_USER);
 
-    tss_set_kernel_stack(user_stack);
+    // set TSS to point to KERNEL stack, not user stack
+    tss_set_kernel_stack((uint32_t)&stack_top);
 
     __asm__ volatile(
         "cli\n"

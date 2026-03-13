@@ -4,31 +4,44 @@
 #include "../include/process.h"
 #include "../include/vga.h"
 #include "../include/keyboard.h"
+#include "../include/vga.h"
 
 // this gets called from assembly with all registers saved
-void syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx)
+uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx)
 {
     switch (eax)
     {
         case SYS_EXIT:
             sys_exit((int)ebx);
-            break;
+            return 0;
 
         case SYS_PRINT:
             sys_print((const char*)ebx);
-            break;
+            return 0;
 
         case SYS_GETCHAR:
-            // return value goes back in eax
-            // handled specially in assembly
-            break;
+            if (keyboard_available())
+                return keyboard_getchar();
+            return 0;
+
+        case SYS_SETCOLOR:
+            set_color((uint8_t)ebx);
+            return 0;
+
+        case SYS_ERASE:
+            erase_char();
+            return 0;
+
+        case SYS_YIELD:
+            __asm__ volatile("hlt");
+            return 0;
 
         case SYS_GETPID:
-            break;
+            return 0;
 
         default:
-            print("Unknown syscall: ");
-            break;
+            print("Unknown syscall\n");
+            return -1;
     }
 }
 

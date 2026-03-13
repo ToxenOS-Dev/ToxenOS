@@ -5,6 +5,7 @@
 #include "../include/vga.h"
 #include "../include/keyboard.h"
 #include "../include/vga.h"
+#include "../include/vfs.h"
 
 // this gets called from assembly with all registers saved
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx)
@@ -52,6 +53,34 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
                 ::: "eax", "edx"
             );
             return 0;
+
+        case SYS_READDIR:
+            // ebx = path, ecx = out buffer, edx = index
+            return vfs_readdir((const char*)ebx, (char*)ecx, edx);
+
+        case SYS_MKDIR:
+            // not yet implemented in VFS
+            return -1;
+
+        case SYS_OPEN:
+            // ebx = path, ecx = flags
+            return vfs_open((const char*)ebx, ecx);
+
+        case SYS_READ:
+            // ebx = fd, ecx = buf, edx = size
+            return vfs_read(ebx, (uint8_t*)ecx, edx);
+
+        case SYS_WRITE:
+            // ebx = fd, ecx = buf, edx = size
+            return vfs_write(ebx, (const uint8_t*)ecx, edx);
+
+        case SYS_CLOSE:
+            // ebx = fd
+            return vfs_close(ebx);
+
+        case SYS_REMOVE:
+            // not yet implemented in VFS
+            return -1;
 
         case SYS_YIELD:
             __asm__ volatile("hlt");

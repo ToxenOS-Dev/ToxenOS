@@ -53,6 +53,67 @@ void set_color(uint8_t color)
     );
 }
 
+int sys_open(const char* path, int flags)
+{
+    int ret;
+    __asm__ volatile(
+        "movl $12, %%eax\n"
+        "movl %1, %%ebx\n"
+        "movl %2, %%ecx\n"
+        "int $0x80\n"
+        "movl %%eax, %0\n"
+        : "=r"(ret)
+        : "r"(path), "r"(flags)
+        : "eax", "ebx", "ecx"
+    );
+    return ret;
+}
+
+int sys_read(int fd, uint8_t* buf, uint32_t size)
+{
+    int ret;
+    register int _fd   __asm__("ebx") = fd;
+    register void* _buf __asm__("ecx") = buf;
+    register uint32_t _size __asm__("edx") = size;
+    __asm__ volatile(
+        "movl $13, %%eax\n"
+        "int $0x80\n"
+        : "=a"(ret)
+        : "r"(_fd), "r"(_buf), "r"(_size)
+    );
+    return ret;
+}
+
+int sys_close(int fd)
+{
+    int ret;
+    __asm__ volatile(
+        "movl $15, %%eax\n"
+        "movl %1, %%ebx\n"
+        "int $0x80\n"
+        "movl %%eax, %0\n"
+        : "=r"(ret)
+        : "r"(fd)
+        : "eax", "ebx"
+    );
+    return ret;
+}
+
+int sys_readdir(const char* path, char* out, uint32_t index)
+{
+    int ret;
+    register const char* _path __asm__("ebx") = path;
+    register char* _out        __asm__("ecx") = out;
+    register uint32_t _index   __asm__("edx") = index;
+    __asm__ volatile(
+        "movl $10, %%eax\n"
+        "int $0x80\n"
+        : "=a"(ret)
+        : "r"(_path), "r"(_out), "r"(_index)
+    );
+    return ret;
+}
+
 static int str_equal(const char* a, const char* b)
 {
     int i;
@@ -98,6 +159,97 @@ static void cmd_clear()
         "int $0x80\n"
         ::: "eax"
     );
+}
+
+static char cwd[256] = "/disk";  // current working directory
+
+static void cmd_pcd()
+{
+    print(cwd);
+    print("\n");
+}
+
+static void cmd_ls()
+{
+    char entry[256];
+    uint32_t i = 0;
+    int found = 0;
+
+    while (sys_readdir(cwd, entry, i) == 0)
+    {
+        print(entry);
+        print("\n");
+        i++;
+        found = 1;
+    }
+
+    if (!found)
+        print("(empty)\n");
+}
+
+static void cmd_shw(const char* args)
+{
+    if (!args || args[0] == 0)
+    {
+        print("Usage: shw <file>\n");
+        return;
+    }
+
+    // build full path
+    char path[256];
+    str_copy(path, cwd);
+    int len = str_len(path);
+    path[len] = '/';
+    str_copy(path + len + 1, args);
+
+    int fd = sys_open(path, 1);  // VFS_O_READ = 1
+    if (fd < 0)
+    {
+        set_color(0x0C);
+        print("shw: file not found\n");
+        set_color(0x07);
+        return;
+    }
+
+    uint8_t buf[256];
+    int bytes;
+    while ((bytes = sys_read(fd, buf, 255)) > 0)
+    {
+        buf[bytes] = 0;
+        print((char*)buf);
+    }
+    sys_close(fd);
+    print("\n");
+}
+
+static void cmd_mkef(const char* args)
+{
+    if (!args || args[0] == 0)
+    {
+        print("Usage: mkef <file>\n");
+        return;
+    }
+
+    char path[256];
+    str_copy(path, cwd);
+    int len = str_len(path);
+    path[len] = '/';
+    str_copy(path + len + 1, args);
+
+    int fd = sys_open(path, 1 | 4);  // VFS_O_READ | VFS_O_CREATE
+    if (fd < 0)
+    {
+        set_color(0x0C);
+        print("mkef: failed to create file\n");
+        set_color(0x07);
+        return;
+    }
+    sys_close(fd);
+    set_color(0x0A);
+    print("created: ");
+    print(args);
+    print("\n");
+    set_color(0x07);
 }
 
 static void cmd_help()
@@ -180,12 +332,12 @@ static void run_command(char* buf)
     else if (str_equal(buf, "uname"))    cmd_uname();
     else if (str_equal(buf, "reboot"))   cmd_reboot();
     else if (str_equal(buf, "shutdown")) cmd_shutdown();
-    else if (str_equal(buf, "ls"))       print("ls: not yet implemented\n");
+    else if (str_equal(buf, "ls"))   cmd_ls();
     else if (str_equal(buf, "cd"))       print("cd: not yet implemented\n");
-    else if (str_equal(buf, "pcd"))      print("pcd: not yet implemented\n");
-    else if (str_equal(buf, "shw"))      print("shw: not yet implemented\n");
+    else if (str_equal(buf, "pcd"))  cmd_pcd();
+    else if (str_equal(buf, "shw"))  cmd_shw(args);
     else if (str_equal(buf, "mkd"))      print("mkd: not yet implemented\n");
-    else if (str_equal(buf, "mkef"))     print("mkef: not yet implemented\n");
+    else if (str_equal(buf, "mkef")) cmd_mkef(args);
     else if (str_equal(buf, "rm"))       print("rm: not yet implemented\n");
     else if (str_equal(buf, "cp"))       print("cp: not yet implemented\n");
     else if (str_equal(buf, "mv"))       print("mv: not yet implemented\n");

@@ -14,6 +14,13 @@
 #define SYS_CLEAR    7
 #define SYS_REBOOT   8
 #define SYS_SHUTDOWN 9
+#define SYS_READDIR  10
+#define SYS_MKDIR    11
+#define SYS_OPEN     12
+#define SYS_READ     13
+#define SYS_WRITE    14
+#define SYS_CLOSE    15
+#define SYS_REMOVE   16
 
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx);
 

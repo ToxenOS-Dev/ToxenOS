@@ -178,6 +178,7 @@ static fs_driver_t tmpfs_driver = {
     .stat    = tmpfs_stat,
     .mkdir  = 0,
     .remove = 0,
+    .isdir = 0,
 };
 
 fs_driver_t* tmpfs_init()

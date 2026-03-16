@@ -73,11 +73,19 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_CLOSE:
             // ebx = fd
             return vfs_close(ebx);
-            
+
         case SYS_STAT:
         {
             uint32_t size;
             return vfs_stat((const char*)ebx, &size);
+        }
+
+        case SYS_ISDIR:
+        {
+            // check if path is a directory
+            int mount_idx = -1;
+            // reuse vfs_stat but check inode type
+            return vfs_isdir((const char*)ebx);
         }
             
         case SYS_MKDIR:

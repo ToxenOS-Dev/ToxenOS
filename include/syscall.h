@@ -22,6 +22,7 @@
 #define SYS_CLOSE    15
 #define SYS_REMOVE   16
 #define SYS_STAT 17
+#define SYS_ISDIR 18
 
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx);
 

@@ -91,6 +91,13 @@ static int str_equal(const char* a, const char* b)
     return a[i] == b[i];
 }
 
+int sys_isdir(const char* path)
+{
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(18), "b"(path));
+    return ret;
+}
+
 static int str_len(const char* s)
 {
     int i = 0;
@@ -125,7 +132,29 @@ static void cmd_cd(const char* args)
     }
 
     char new_path[256];
-    if (args[0] == '/')
+
+    if (str_equal(args, "..") || str_equal(args, "back"))
+    {
+        // go up one level
+        str_copy(new_path, cwd);
+        int len = str_len(new_path);
+
+        // find last slash
+        int last = 0;
+        for (int i = 0; i < len; i++)
+            if (new_path[i] == '/') last = i;
+
+        if (last == 0)
+            str_copy(new_path, "/disk");  // can't go above /disk
+        else
+        {
+            new_path[last] = 0;
+            // don't go above /disk
+            if (str_len(new_path) < str_len("/disk"))
+                str_copy(new_path, "/disk");
+        }
+    }
+    else if (args[0] == '/')
     {
         str_copy(new_path, args);
     }
@@ -150,13 +179,6 @@ static void cmd_cd(const char* args)
 
 static void cmd_mkd(const char* args)
 {
-    print("cwd=");
-    print(cwd);
-    print("\n");
-    print("args=");
-    print(args);
-    print("\n");
-
     if (!args || args[0] == 0)
     {
         print("Usage: mkd <dir>\n");
@@ -336,14 +358,36 @@ static void cmd_ls()
 
     while (sys_readdir(cwd, entry, i) == 0)
     {
-        print(entry);
-        print("\n");
+        // build full path to check type
+        char full[256];
+        str_copy(full, cwd);
+        int len = str_len(full);
+        full[len] = '/';
+        str_copy(full + len + 1, entry);
+
+        if (sys_isdir(full) == 1)
+        {
+            set_color(0x09);  // blue for directories
+            print(entry);
+            print("/\n");
+        }
+        else
+        {
+            set_color(0x06);  // orange for files
+            print(entry);
+            print("\n");
+        }
+        set_color(0x07);
+
         i++;
         found = 1;
     }
 
     if (!found)
+    {
+        set_color(0x07);
         print("(empty)\n");
+    }
 }
 
 static void cmd_shw(const char* args)
@@ -389,6 +433,19 @@ static void cmd_mkef(const char* args)
         return;
     }
 
+    // check for extension
+    int has_ext = 0;
+    for (int i = 0; args[i]; i++)
+        if (args[i] == '.') { has_ext = 1; break; }
+
+    if (!has_ext)
+    {
+        set_color(0x0C);
+        print("mkef: filename must have an extension (e.g. file.txt)\n");
+        set_color(0x07);
+        return;
+    }
+
     char path[256];
     str_copy(path, cwd);
     int len = str_len(path);
@@ -424,6 +481,7 @@ static void cmd_help()
     print("  mkef <file> - make empty file\n");
     print("  rm <file>   - delete file\n");
     print("  cp <a> <b>  - copy file\n");
+    print("  cdb         - go back one directory\n");
     print("  mv <a> <b>  - move/rename file\n");
     print("  echo <text> - print text\n");
     print("  clear       - clear screen\n");
@@ -484,6 +542,7 @@ static void run_command(char* buf)
     else if (str_equal(buf, "shutdown")) cmd_shutdown();
     else if (str_equal(buf, "ls"))   cmd_ls();
     else if (str_equal(buf, "cd"))   cmd_cd(args);
+    else if (str_equal(buf, "cdb"))  cmd_cd("..");
     else if (str_equal(buf, "pcd"))  cmd_pcd();
     else if (str_equal(buf, "shw"))  cmd_shw(args);
     else if (str_equal(buf, "mkd"))  cmd_mkd(args);

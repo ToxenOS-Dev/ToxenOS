@@ -318,65 +318,72 @@ static int txfs_open_fn(const char* path, int flags)
     {
         if (!(flags & VFS_O_CREATE)) return -1;
 
-        // create the file
-        // find parent directory
-        // simplified: only support files in root for now
         int new_inode = txfs_alloc_inode();
-        const char* local = txfs_strip_mount(path);
-        print("mkdir local: ");
-        print(local);
-        print("\n");
         if (new_inode < 0) return -1;
 
         txfs_inode_t inode;
         uint8_t* p = (uint8_t*)&inode;
         for (uint32_t i = 0; i < sizeof(inode); i++) p[i] = 0;
-
-        inode.mode  = (TXFS_TYPE_FILE << 12) |
-                      TXFS_PERM_OWNER_R | TXFS_PERM_OWNER_W;
+        inode.mode  = (TXFS_TYPE_FILE << 12) | TXFS_PERM_OWNER_R | TXFS_PERM_OWNER_W;
         inode.links = 1;
         inode.size  = 0;
-
         txfs_write_inode(new_inode, &inode);
 
-        // add entry to root directory
-        txfs_inode_t root;
-        txfs_read_inode(0, &root);
+        // find parent path
+        char parent_path[256];
+        const char* last_slash = local;
+        const char* p2 = local;
+        while (*p2) { if (*p2 == '/') last_slash = p2; p2++; }
 
-        // find or allocate a block for root dir
-        if (!root.blocks[0])
+        // extract filename and parent
+        char filename[256];
+        if (last_slash == local || (last_slash == local + 0 && local[0] == '/'))
+        {
+            // file is in root
+            str_copy(parent_path, "/", 2);
+            const char* n = local;
+            if (*n == '/') n++;
+            str_copy(filename, n, 256);
+        }
+        else
+        {
+            int plen = last_slash - local;
+            for (int i = 0; i < plen; i++) parent_path[i] = local[i];
+            parent_path[plen] = 0;
+            str_copy(filename, last_slash + 1, 256);
+        }
+
+        // find parent inode
+        int parent_inode_num = txfs_lookup(parent_path);
+        if (parent_inode_num < 0) parent_inode_num = 0; // fallback to root
+
+        txfs_inode_t parent;
+        txfs_read_inode(parent_inode_num, &parent);
+
+        if (!parent.blocks[0])
         {
             int b = txfs_alloc_block();
             if (b < 0) return -1;
-            root.blocks[0] = b;
-
-            // clear the block
+            parent.blocks[0] = b;
             uint8_t zero[TXFS_BLOCK_SIZE];
             for (int i = 0; i < TXFS_BLOCK_SIZE; i++) zero[i] = 0;
             txfs_write_block(b, zero);
         }
 
-        // find free dirent slot in root
         uint8_t data_buf[TXFS_BLOCK_SIZE];
-        txfs_read_block(root.blocks[0], data_buf);
+        txfs_read_block(parent.blocks[0], data_buf);
 
-        uint32_t slot = root.size / sizeof(txfs_dirent_t);
-        txfs_dirent_t* de = (txfs_dirent_t*)(data_buf +
-                             slot * sizeof(txfs_dirent_t));
-
-        // get filename from path (skip leading slash)
-        const char* name = local;
-        if (*name == '/') name++;
+        uint32_t slot = parent.size / sizeof(txfs_dirent_t);
+        txfs_dirent_t* de = (txfs_dirent_t*)(data_buf + slot * sizeof(txfs_dirent_t));
 
         de->inode    = new_inode;
-        de->name_len = str_len(name);
+        de->name_len = str_len(filename);
         de->type     = TXFS_TYPE_FILE;
-        str_copy(de->name, name, 256);
+        str_copy(de->name, filename, 256);
 
-        txfs_write_block(root.blocks[0], data_buf);
-
-        root.size += sizeof(txfs_dirent_t);
-        txfs_write_inode(0, &root);
+        txfs_write_block(parent.blocks[0], data_buf);
+        parent.size += sizeof(txfs_dirent_t);
+        txfs_write_inode(parent_inode_num, &parent);
 
         inode_num = new_inode;
     }
@@ -446,14 +453,8 @@ static int txfs_read_fn(int fd, uint8_t* buf, uint32_t size)
 static int txfs_mkdir_fn(const char* path)
 {
     const char* local = txfs_strip_mount(path);
-    print("mkdir local: ");
-    print(local);
-    print("\n");
-
     int new_inode = txfs_alloc_inode();
-    print("mkdir alloc_inode: ");
-    print_hex(new_inode);
-    print("\n");
+
     if (new_inode < 0) return -1;
 
     txfs_inode_t inode;
@@ -548,6 +549,18 @@ static int txfs_remove_fn(const char* path)
     }
 
     return -1;
+}
+
+static int txfs_isdir_fn(const char* path)
+{
+    const char* local = txfs_strip_mount(path);
+    int inode_num = txfs_lookup(local);
+    if (inode_num < 0) return -1;
+
+    txfs_inode_t inode;
+    txfs_read_inode(inode_num, &inode);
+    int type = (inode.mode >> 12) & 0xF;
+    return (type == TXFS_TYPE_DIR) ? 1 : 0;
 }
 
 static int txfs_write_fn(int fd, const uint8_t* buf, uint32_t size)
@@ -666,6 +679,7 @@ static fs_driver_t txfs_driver = {
     .stat    = txfs_stat_fn,
     .mkdir   = txfs_mkdir_fn,
     .remove  = txfs_remove_fn,
+    .isdir = txfs_isdir_fn,
 };
 
 fs_driver_t* txfs_init()

@@ -202,8 +202,8 @@ void kernel_main()
     cursor_x = 0;
 
     // load shell ELF from disk
-    uint8_t* elf_buf = (uint8_t*)kmalloc(16384);
-    ata_read(2048, elf_buf, 32);
+    uint8_t* elf_buf = (uint8_t*)kmalloc(32768);
+    ata_read(2048, elf_buf, 64);
 
     elf_header_t* ehdr = (elf_header_t*)elf_buf;
     if (ehdr->magic == 0x464C457F)
@@ -219,7 +219,7 @@ void kernel_main()
             for (uint32_t j = 0; j < phdr->memsz; j++)
                 dst[j] = (j < phdr->filesz) ? src[j] : 0;
         }
-        jump_to_ring3((void*)ehdr->entry, 0x500000);
+        jump_to_ring3((void*)ehdr->entry, 0x600000);
     }
 
     // fallback if ELF load failed

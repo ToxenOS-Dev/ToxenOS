@@ -142,6 +142,38 @@ int vfs_close(int fd)
     return 0;
 }
 
+int vfs_mkdir(const char* path)
+{
+    print("vfs_mkdir path: ");
+    print(path);
+    print("\n");
+    int mount_idx = vfs_find_mount(path);
+    print("vfs_mkdir mount_idx: ");
+    print_hex(mount_idx);
+    print("\n");
+    if (mount_idx == -1) return -1;
+
+    print("vfs_mkdir driver->mkdir: ");
+    print_hex((uint32_t)mounts[mount_idx].driver->mkdir);
+    print("\n");
+
+    if (!mounts[mount_idx].driver->mkdir)
+        return -1;
+
+    return mounts[mount_idx].driver->mkdir(path);
+}
+
+int vfs_remove(const char* path)
+{
+    int mount_idx = vfs_find_mount(path);
+    if (mount_idx == -1) return -1;
+
+    if (!mounts[mount_idx].driver->remove)
+        return -1;
+
+    return mounts[mount_idx].driver->remove(path);
+}
+
 int vfs_readdir(const char* path, char* out, uint32_t index)
 {
     int mount_idx = vfs_find_mount(path);

@@ -58,10 +58,6 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             // ebx = path, ecx = out buffer, edx = index
             return vfs_readdir((const char*)ebx, (char*)ecx, edx);
 
-        case SYS_MKDIR:
-            // not yet implemented in VFS
-            return -1;
-
         case SYS_OPEN:
             // ebx = path, ecx = flags
             return vfs_open((const char*)ebx, ecx);
@@ -77,10 +73,12 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_CLOSE:
             // ebx = fd
             return vfs_close(ebx);
+            
+        case SYS_MKDIR:
+            return vfs_mkdir((const char*)ebx);
 
         case SYS_REMOVE:
-            // not yet implemented in VFS
-            return -1;
+            return vfs_remove((const char*)ebx);
 
         case SYS_YIELD:
             __asm__ volatile("hlt");

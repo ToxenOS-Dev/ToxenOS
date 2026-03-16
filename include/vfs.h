@@ -17,6 +17,8 @@ typedef struct
     int (*write)(int fd, const uint8_t* buf, uint32_t size);
     int (*readdir)(const char* path, char* out, uint32_t index);
     int (*stat)(const char* path, uint32_t* size);
+    int (*mkdir)(const char* path);      
+    int (*remove)(const char* path);    
 } fs_driver_t;
 
 typedef struct
@@ -43,6 +45,8 @@ int  vfs_read(int fd, uint8_t* buf, uint32_t size);
 int  vfs_write(int fd, const uint8_t* buf, uint32_t size);
 int  vfs_readdir(const char* path, char* out, uint32_t index);
 int  vfs_stat(const char* path, uint32_t* size);
+int  vfs_mkdir(const char* path);
+int  vfs_remove(const char* path);
 
 // flags for vfs_open
 #define VFS_O_READ   0x1

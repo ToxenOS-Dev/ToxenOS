@@ -307,30 +307,150 @@ static void cmd_cp(const char* args)
     set_color(0x07);
 }
 
-static void cmd_mv(const char* args)
+static void cmd_move(const char* args)
 {
     if (!args || args[0] == 0)
     {
-        print("Usage: mv <src> <dst>\n");
+        print("Usage: move <file> <dir>\n");
         return;
     }
 
-    // mv = cp + rm
-    cmd_cp(args);
-
-    // extract src from args to remove it
-    char src[256];
+    char src[256], dst[256];
     int i = 0;
     while (args[i] && args[i] != ' ') { src[i] = args[i]; i++; }
     src[i] = 0;
+    if (args[i] == ' ') i++;
+    int j = 0;
+    while (args[i]) { dst[j++] = args[i++]; }
+    dst[j] = 0;
 
-    char path[256];
-    str_copy(path, cwd);
-    int len = str_len(path);
-    path[len] = '/';
-    str_copy(path + len + 1, src);
+    if (src[0] == 0 || dst[0] == 0)
+    {
+        print("Usage: move <file> <dir>\n");
+        return;
+    }
 
-    sys_remove(path);
+    char src_path[256], dst_path[256];
+    str_copy(src_path, cwd);
+    int len = str_len(src_path);
+    src_path[len] = '/';
+    str_copy(src_path + len + 1, src);
+
+    // dst is always a directory — append src filename
+    str_copy(dst_path, cwd);
+    len = str_len(dst_path);
+    dst_path[len] = '/';
+    str_copy(dst_path + len + 1, dst);
+    len = str_len(dst_path);
+    dst_path[len] = '/';
+    str_copy(dst_path + len + 1, src);
+
+    int src_fd = sys_open(src_path, 1);
+    if (src_fd < 0)
+    {
+        set_color(0x0C);
+        print("move: source not found\n");
+        set_color(0x07);
+        return;
+    }
+
+    int dst_fd = sys_open(dst_path, 2 | 4);
+    if (dst_fd < 0)
+    {
+        sys_close(src_fd);
+        set_color(0x0C);
+        print("move: failed\n");
+        set_color(0x07);
+        return;
+    }
+
+    uint8_t buf[256];
+    int bytes;
+    while ((bytes = sys_read(src_fd, buf, 256)) > 0)
+        sys_write(dst_fd, buf, bytes);
+
+    sys_close(src_fd);
+    sys_close(dst_fd);
+    sys_remove(src_path);
+
+    set_color(0x0A);
+    print("moved: ");
+    print(src);
+    print(" -> ");
+    print(dst);
+    print("\n");
+    set_color(0x07);
+}
+
+static void cmd_rname(const char* args)
+{
+    if (!args || args[0] == 0)
+    {
+        print("Usage: rname <oldname> <newname>\n");
+        return;
+    }
+
+    char src[256], dst[256];
+    int i = 0;
+    while (args[i] && args[i] != ' ') { src[i] = args[i]; i++; }
+    src[i] = 0;
+    if (args[i] == ' ') i++;
+    int j = 0;
+    while (args[i]) { dst[j++] = args[i++]; }
+    dst[j] = 0;
+
+    if (src[0] == 0 || dst[0] == 0)
+    {
+        print("Usage: rname <oldname> <newname>\n");
+        return;
+    }
+
+    char src_path[256], dst_path[256];
+    str_copy(src_path, cwd);
+    int len = str_len(src_path);
+    src_path[len] = '/';
+    str_copy(src_path + len + 1, src);
+
+    str_copy(dst_path, cwd);
+    len = str_len(dst_path);
+    dst_path[len] = '/';
+    str_copy(dst_path + len + 1, dst);
+
+    int src_fd = sys_open(src_path, 1);
+    if (src_fd < 0)
+    {
+        set_color(0x0C);
+        print("rname: source not found\n");
+        set_color(0x07);
+        return;
+    }
+
+    int dst_fd = sys_open(dst_path, 2 | 4);
+    if (dst_fd < 0)
+    {
+        sys_close(src_fd);
+        set_color(0x0C);
+        print("rname: failed\n");
+        set_color(0x07);
+        return;
+    }
+
+    uint8_t buf[256];
+    int bytes;
+    while ((bytes = sys_read(src_fd, buf, 256)) > 0)
+        sys_write(dst_fd, buf, bytes);
+
+    sys_close(src_fd);
+    sys_close(dst_fd);
+    sys_remove(src_path);
+
+    set_color(0x0A);
+    print("renamed: ");
+    print(src);
+    print(" -> ");
+    print(dst);
+    print("\n");
+    set_color(0x07);
 }
 
 static void cmd_echo(const char* args)
@@ -482,7 +602,8 @@ static void cmd_help()
     print("  rm <file>   - delete file\n");
     print("  cp <a> <b>  - copy file\n");
     print("  cdb         - go back one directory\n");
-    print("  mv <a> <b>  - move/rename file\n");
+    print("  mv <f> <d> - move file to directory\n");
+    print("  rname <a> <b>- rename file\n");
     print("  echo <text> - print text\n");
     print("  clear       - clear screen\n");
     print("  uname       - OS info\n");
@@ -549,7 +670,8 @@ static void run_command(char* buf)
     else if (str_equal(buf, "mkef")) cmd_mkef(args);
     else if (str_equal(buf, "rm"))   cmd_rm(args);
     else if (str_equal(buf, "cp"))   cmd_cp(args);
-    else if (str_equal(buf, "mv"))   cmd_mv(args);
+    else if (str_equal(buf, "mv"))  cmd_move(args);
+    else if (str_equal(buf, "rname")) cmd_rname(args);
     else                                 cmd_unknown(buf);
 }
 

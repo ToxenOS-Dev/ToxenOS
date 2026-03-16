@@ -243,7 +243,6 @@ static void cmd_cp(const char* args)
         return;
     }
 
-    // split args into src and dst
     char src[256], dst[256];
     int i = 0;
     while (args[i] && args[i] != ' ') { src[i] = args[i]; i++; }
@@ -259,19 +258,38 @@ static void cmd_cp(const char* args)
         return;
     }
 
-    // build full paths
     char src_path[256], dst_path[256];
     str_copy(src_path, cwd);
     int len = str_len(src_path);
     src_path[len] = '/';
     str_copy(src_path + len + 1, src);
 
-    str_copy(dst_path, cwd);
-    len = str_len(dst_path);
-    dst_path[len] = '/';
-    str_copy(dst_path + len + 1, dst);
+    // check if dst has extension
+    int dst_has_ext = 0;
+    for (int k = 0; dst[k]; k++)
+        if (dst[k] == '.') { dst_has_ext = 1; break; }
 
-    int src_fd = sys_open(src_path, 1);  // O_READ
+    if (!dst_has_ext)
+    {
+        // dst is a directory — copy file into it keeping same name
+        str_copy(dst_path, cwd);
+        len = str_len(dst_path);
+        dst_path[len] = '/';
+        str_copy(dst_path + len + 1, dst);
+        len = str_len(dst_path);
+        dst_path[len] = '/';
+        str_copy(dst_path + len + 1, src);
+    }
+    else
+    {
+        // dst is a filename — copy with new name
+        str_copy(dst_path, cwd);
+        len = str_len(dst_path);
+        dst_path[len] = '/';
+        str_copy(dst_path + len + 1, dst);
+    }
+
+    int src_fd = sys_open(src_path, 1);
     if (src_fd < 0)
     {
         set_color(0x0C);
@@ -280,12 +298,12 @@ static void cmd_cp(const char* args)
         return;
     }
 
-    int dst_fd = sys_open(dst_path, 2 | 4);  // O_WRITE | O_CREATE
+    int dst_fd = sys_open(dst_path, 2 | 4);
     if (dst_fd < 0)
     {
         sys_close(src_fd);
         set_color(0x0C);
-        print("cp: failed to create destination\n");
+        print("cp: failed\n");
         set_color(0x07);
         return;
     }

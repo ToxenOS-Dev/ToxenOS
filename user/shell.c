@@ -55,6 +55,13 @@ int sys_close(int fd)
     return ret;
 }
 
+int sys_stat(const char* path)
+{
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(17), "b"(path));
+    return ret;
+}
+
 int sys_readdir(const char* path, char* out, uint32_t index)
 {
     int ret;
@@ -117,7 +124,6 @@ static void cmd_cd(const char* args)
         return;
     }
 
-    // build new path
     char new_path[256];
     if (args[0] == '/')
     {
@@ -131,10 +137,7 @@ static void cmd_cd(const char* args)
         str_copy(new_path + len + 1, args);
     }
 
-    // verify it exists via readdir
-    char entry[256];
-    if (sys_readdir(new_path, entry, 0) < 0 && 
-        !str_equal(new_path, "/disk"))
+    if (sys_stat(new_path) < 0)
     {
         set_color(0x0C);
         print("cd: directory not found\n");

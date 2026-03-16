@@ -235,6 +235,7 @@ static void cmd_rm(const char* args)
     set_color(0x07);
 }
 
+
 static void cmd_cp(const char* args)
 {
     if (!args || args[0] == 0)
@@ -482,6 +483,283 @@ static void cmd_clear()
     __asm__ volatile("int $0x80" :: "a"(7));
 }
 
+#define TEDIT_LINES 100
+#define TEDIT_COLS  78
+
+static char tedit_lines[TEDIT_LINES][TEDIT_COLS];
+static int  tedit_line_len[TEDIT_LINES];
+static int  tedit_num_lines = 0;
+static int  tedit_cur_line  = 0;
+static int  tedit_cur_col   = 0;
+
+static void tedit_redraw(const char* filename)
+{
+    __asm__ volatile("int $0x80" :: "a"(7));  // clear screen
+
+    // header
+    set_color(0x0B);
+    print("tedit: ");
+    print(filename);
+    print("  |  Ctrl+S = Save  Ctrl+Q = Quit\n");
+    set_color(0x08);
+    print("--------------------------------------------------------------------------------\n");
+    set_color(0x07);
+
+    // print all lines
+    for (int i = 0; i < tedit_num_lines; i++)
+    {
+        tedit_lines[i][tedit_line_len[i]] = 0;
+        print(tedit_lines[i]);
+        print("\n");
+    }
+}
+
+static void tedit_move_cursor(const char* filename)
+{
+    // redraw and reposition cursor by reprinting up to cursor pos
+    tedit_redraw(filename);
+
+    // reprint lines up to cursor line
+    // cursor is already at correct line after redraw
+    // we need to move cursor to correct column on correct line
+    // since we can't directly set cursor, we redraw and print partial
+    __asm__ volatile("int $0x80" :: "a"(7));
+
+    set_color(0x0B);
+    print("tedit: ");
+    print(filename);
+    print("  |  Ctrl+S = Save  Ctrl+Q = Quit\n");
+    set_color(0x08);
+    print("--------------------------------------------------------------------------------\n");
+    set_color(0x07);
+
+    for (int i = 0; i < tedit_cur_line; i++)
+    {
+        tedit_lines[i][tedit_line_len[i]] = 0;
+        print(tedit_lines[i]);
+        print("\n");
+    }
+
+    // print current line up to cursor col
+    for (int i = 0; i < tedit_cur_col; i++)
+    {
+        char tmp[2] = {tedit_lines[tedit_cur_line][i], 0};
+        print(tmp);
+    }
+}
+
+static void cmd_tedit(const char* args)
+{
+    if (!args || args[0] == 0)
+    {
+        print("Usage: tedit <file>\n");
+        return;
+    }
+
+    int has_ext = 0;
+    for (int k = 0; args[k]; k++)
+        if (args[k] == '.') { has_ext = 1; break; }
+
+    if (!has_ext)
+    {
+        set_color(0x0C);
+        print("tedit: filename must have an extension\n");
+        set_color(0x07);
+        return;
+    }
+
+    char path[256];
+    str_copy(path, cwd);
+    int len = str_len(path);
+    path[len] = '/';
+    str_copy(path + len + 1, args);
+
+    // init lines
+    tedit_num_lines = 1;
+    tedit_cur_line  = 0;
+    tedit_cur_col   = 0;
+    for (int i = 0; i < TEDIT_LINES; i++)
+    {
+        tedit_line_len[i] = 0;
+        tedit_lines[i][0] = 0;
+    }
+
+    // load existing file
+    int fd = sys_open(path, 1);
+    if (fd >= 0)
+    {
+        static uint8_t raw[4096];
+        int raw_len = sys_read(fd, raw, 4095);
+        sys_close(fd);
+        if (raw_len < 0) raw_len = 0;
+
+        int line = 0;
+        int col  = 0;
+        for (int i = 0; i < raw_len && line < TEDIT_LINES; i++)
+        {
+            if (raw[i] == '\n')
+            {
+                tedit_line_len[line] = col;
+                line++;
+                col = 0;
+                if (line >= TEDIT_LINES) break;
+            }
+            else if (col < TEDIT_COLS - 1)
+            {
+                tedit_lines[line][col++] = raw[i];
+            }
+        }
+        tedit_line_len[line] = col;
+        tedit_num_lines = line + 1;
+    }
+
+    tedit_move_cursor(args);
+
+    while (1)
+    {
+        char c = getchar();
+        if (c == 0) continue;
+
+        if (c == 17)  // Ctrl+Q
+        {
+            __asm__ volatile("int $0x80" :: "a"(7));
+            return;
+        }
+        else if (c == 19)  // Ctrl+S
+        {
+            int wfd = sys_open(path, 2 | 4);
+            if (wfd >= 0)
+            {
+                for (int i = 0; i < tedit_num_lines; i++)
+                {
+                    sys_write(wfd, (const uint8_t*)tedit_lines[i], tedit_line_len[i]);
+                    if (i < tedit_num_lines - 1)
+                        sys_write(wfd, (const uint8_t*)"\n", 1);
+                }
+                sys_close(wfd);
+            }
+            set_color(0x0A);
+            print("\n[saved]");
+            set_color(0x07);
+        }
+        else if (c == 0x01)  // up arrow
+        {
+            if (tedit_cur_line > 0)
+            {
+                tedit_cur_line--;
+                if (tedit_cur_col > tedit_line_len[tedit_cur_line])
+                    tedit_cur_col = tedit_line_len[tedit_cur_line];
+                tedit_move_cursor(args);
+            }
+        }
+        else if (c == 0x02)  // down arrow
+        {
+            if (tedit_cur_line < tedit_num_lines - 1)
+            {
+                tedit_cur_line++;
+                if (tedit_cur_col > tedit_line_len[tedit_cur_line])
+                    tedit_cur_col = tedit_line_len[tedit_cur_line];
+                tedit_move_cursor(args);
+            }
+        }
+        else if (c == 0x03)  // left arrow (we'll add scancode next)
+        {
+            if (tedit_cur_col > 0)
+            {
+                tedit_cur_col--;
+                tedit_move_cursor(args);
+            }
+        }
+        else if (c == 0x04)  // right arrow
+        {
+            if (tedit_cur_col < tedit_line_len[tedit_cur_line])
+            {
+                tedit_cur_col++;
+                tedit_move_cursor(args);
+            }
+        }
+        else if (c == '\n')
+        {
+            if (tedit_num_lines >= TEDIT_LINES) continue;
+
+            // split current line at cursor
+            // shift lines down
+            for (int i = tedit_num_lines; i > tedit_cur_line + 1; i--)
+            {
+                str_copy(tedit_lines[i], tedit_lines[i - 1]);
+                tedit_line_len[i] = tedit_line_len[i - 1];
+            }
+
+            // new line gets rest of current line
+            int new_line = tedit_cur_line + 1;
+            int rest_len = tedit_line_len[tedit_cur_line] - tedit_cur_col;
+            for (int i = 0; i < rest_len; i++)
+                tedit_lines[new_line][i] = tedit_lines[tedit_cur_line][tedit_cur_col + i];
+            tedit_line_len[new_line] = rest_len;
+
+            // truncate current line
+            tedit_line_len[tedit_cur_line] = tedit_cur_col;
+
+            tedit_num_lines++;
+            tedit_cur_line++;
+            tedit_cur_col = 0;
+            tedit_move_cursor(args);
+        }
+        else if (c == 8)  // backspace
+        {
+            if (tedit_cur_col > 0)
+            {
+                // remove char before cursor
+                int l = tedit_cur_line;
+                for (int i = tedit_cur_col - 1; i < tedit_line_len[l] - 1; i++)
+                    tedit_lines[l][i] = tedit_lines[l][i + 1];
+                tedit_line_len[l]--;
+                tedit_cur_col--;
+                tedit_move_cursor(args);
+            }
+            else if (tedit_cur_line > 0)
+            {
+                // merge with previous line
+                int prev = tedit_cur_line - 1;
+                int prev_len = tedit_line_len[prev];
+                int cur_len  = tedit_line_len[tedit_cur_line];
+
+                if (prev_len + cur_len < TEDIT_COLS - 1)
+                {
+                    for (int i = 0; i < cur_len; i++)
+                        tedit_lines[prev][prev_len + i] = tedit_lines[tedit_cur_line][i];
+                    tedit_line_len[prev] = prev_len + cur_len;
+
+                    // shift lines up
+                    for (int i = tedit_cur_line; i < tedit_num_lines - 1; i++)
+                    {
+                        str_copy(tedit_lines[i], tedit_lines[i + 1]);
+                        tedit_line_len[i] = tedit_line_len[i + 1];
+                    }
+                    tedit_num_lines--;
+                    tedit_cur_line--;
+                    tedit_cur_col = prev_len;
+                    tedit_move_cursor(args);
+                }
+            }
+        }
+        else if (c >= 32)
+        {
+            int l = tedit_cur_line;
+            if (tedit_line_len[l] < TEDIT_COLS - 1)
+            {
+                // insert char at cursor
+                for (int i = tedit_line_len[l]; i > tedit_cur_col; i--)
+                    tedit_lines[l][i] = tedit_lines[l][i - 1];
+                tedit_lines[l][tedit_cur_col] = c;
+                tedit_line_len[l]++;
+                tedit_cur_col++;
+                tedit_move_cursor(args);
+            }
+        }
+    }
+}
+
 static void cmd_pcd()
 {
     print(cwd);
@@ -626,6 +904,7 @@ static void cmd_help()
     print("  clear       - clear screen\n");
     print("  uname       - OS info\n");
     print("  reboot      - restart\n");
+    print("  tedit <file>- open text editor\n");
     print("  shutdown    - power off\n");
 }
 
@@ -690,6 +969,7 @@ static void run_command(char* buf)
     else if (str_equal(buf, "cp"))   cmd_cp(args);
     else if (str_equal(buf, "mv"))  cmd_move(args);
     else if (str_equal(buf, "rname")) cmd_rname(args);
+    else if (str_equal(buf, "tedit")) cmd_tedit(args);
     else                                 cmd_unknown(buf);
 }
 
@@ -702,6 +982,25 @@ static void print_prompt()
 }
 
 #define INPUT_MAX 256
+#define HISTORY_MAX 16
+static char history[HISTORY_MAX][INPUT_MAX];
+static int  history_count = 0;
+static int  history_idx   = -1;
+
+static void history_add(const char* cmd)
+{
+    if (cmd[0] == 0) return;
+    // shift history up
+    if (history_count < HISTORY_MAX)
+        history_count++;
+    else
+    {
+        for (int i = 0; i < HISTORY_MAX - 1; i++)
+            str_copy(history[i], history[i + 1]);
+    }
+    str_copy(history[history_count - 1], cmd);
+}
+
 
 void _start()
 {
@@ -713,25 +1012,62 @@ void _start()
     while (1)
     {
         char c = getchar();
-        if (c == 0) {continue; }
+        if (c == 0) continue;
 
         if (c == '\n')
         {
             print("\n");
             input[input_len] = 0;
+            history_add(input);
+            history_idx = -1;
             run_command(input);
             input_len = 0;
             print_prompt();
         }
         else if (c == 8)  // backspace
         {
-            if (input_len > 0)
+            if (input_len > 0) { input_len--; erase(); }
+        }
+        else if (c == 0x01)  // up arrow
+        {
+            if (history_count == 0) continue;
+
+            // move back in history
+            if (history_idx == -1)
+                history_idx = history_count - 1;
+            else if (history_idx > 0)
+                history_idx--;
+
+            // clear current input
+            while (input_len > 0) { input_len--; erase(); }
+
+            // print history entry
+            str_copy(input, history[history_idx]);
+            input_len = str_len(input);
+            print(input);
+        }
+        else if (c == 0x02)  // down arrow
+        {
+            if (history_idx == -1) continue;
+
+            // clear current input
+            while (input_len > 0) { input_len--; erase(); }
+
+            if (history_idx < history_count - 1)
             {
-                input_len--;
-                erase();
+                history_idx++;
+                str_copy(input, history[history_idx]);
+                input_len = str_len(input);
+                print(input);
+            }
+            else
+            {
+                history_idx = -1;
+                input[0] = 0;
+                input_len = 0;
             }
         }
-        else if (input_len < INPUT_MAX - 1)
+        else if (c >= 32 && input_len < INPUT_MAX - 1)
         {
             input[input_len++] = c;
             char buf[2] = {c, 0};

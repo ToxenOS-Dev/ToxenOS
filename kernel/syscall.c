@@ -6,6 +6,7 @@
 #include "../include/keyboard.h"
 #include "../include/vga.h"
 #include "../include/vfs.h"
+#include "../include/tty.h"
 
 // this gets called from assembly with all registers saved
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx)
@@ -95,11 +96,17 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return vfs_remove((const char*)ebx);
 
         case SYS_YIELD:
-            __asm__ volatile("hlt");
+            scheduler();
             return 0;
 
         case SYS_GETPID:
             return 0;
+
+        case SYS_GET_TTY:
+            return tty_current();
+
+        case SYS_MY_TTY:
+            return tty_for_pid[process_current()->pid];
 
         default:
             print("Unknown syscall\n");

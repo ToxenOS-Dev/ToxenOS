@@ -4,6 +4,11 @@ SECTIONS
 {
     . = 1M;
 
+    .multiboot2 :
+    {
+        KEEP(*(.multiboot2))
+    }
+
     .multiboot :
     {
         KEEP(*(.multiboot))
@@ -26,5 +31,5 @@ SECTIONS
     }
 
     . = ALIGN(4096);
-    kernel_end = .;     /* ← marks where kernel ends */
+    kernel_end = .;
 }

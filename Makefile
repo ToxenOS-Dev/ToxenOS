@@ -1,6 +1,6 @@
 .PHONY: all user install run disk clean
 
-all:
+all: user
 	mkdir -p build
 	mkdir -p iso/boot
 
@@ -25,21 +25,29 @@ all:
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/ata.c -o build/ata.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/txfs.c -o build/txfs.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/elf.c -o build/elf.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/tty.c -o build/tty.o
 
 	ld -m elf_i386 -T linker.ld -o build/kernel.bin \
-	build/boot.o build/kernel.o build/keyboard.o build/idt.o build/isr.o build/switch.o build/pic.o build/irq.o build/timer.o build/mm.o build/process.o build/syscall.o build/paging.o build/tss.o build/ring3.o build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/elf.o
+		build/boot.o build/kernel.o build/keyboard.o build/idt.o build/isr.o \
+		build/switch.o build/pic.o build/irq.o build/timer.o build/mm.o \
+		build/process.o build/syscall.o build/paging.o build/tss.o build/ring3.o \
+		build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/elf.o \
+		build/tty.o \
+		build/user/shell_blob.o
 
- 
 	cp build/kernel.bin iso/boot/kernel.bin
-
-	grub2-mkrescue -o build/ToxenOS.iso iso
+	grub2-mkrescue --modules="part_gpt part_msdos all_video" \
+    --locales="" --themes="" \
+    -o build/ToxenOS.iso iso
 
 user:
 	mkdir -p build/user
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
-	    -nostdlib -nostartfiles \
-	    -Ttext=0x400000 \
-	    user/shell.c -o build/user/shell.elf
+		-nostdlib -nostartfiles \
+		-Ttext=0x400000 \
+		user/shell.c -o build/user/shell.elf
+	objcopy -I binary -O elf32-i386 -B i386 \
+		build/user/shell.elf build/user/shell_blob.o
 
 install: user
 	dd if=build/user/shell.elf of=build/disk.img bs=512 seek=2048 conv=notrunc

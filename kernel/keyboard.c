@@ -25,14 +25,19 @@ static int buf_head = 0;
 static int buf_tail = 0;
 static int ctrl_pressed = 0;
 static int extended = 0;
+static int alt_pressed = 0;
 
 static void keyboard_handler()
 {
     uint8_t scancode = inb(0x60);
 
-    // track ctrl key
+    // track ctrl
     if (scancode == 0x1D) { ctrl_pressed = 1; return; }
     if (scancode == 0x9D) { ctrl_pressed = 0; return; }
+
+    // track alt
+    if (scancode == 0x38) { alt_pressed = 1; return; }
+    if (scancode == 0xB8) { alt_pressed = 0; return; }
 
     // extended key prefix
     if (scancode == 0xE0) { extended = 1; return; }
@@ -41,22 +46,22 @@ static void keyboard_handler()
     if (extended)
     {
         extended = 0;
-        if (scancode == 0x48)  // up arrow
+        if (scancode == 0x48)
         {
             int next = (buf_tail + 1) % BUFFER_SIZE;
             if (next != buf_head) { buffer[buf_tail] = 0x01; buf_tail = next; }
         }
-        else if (scancode == 0x50)  // down arrow
+        else if (scancode == 0x50)
         {
             int next = (buf_tail + 1) % BUFFER_SIZE;
             if (next != buf_head) { buffer[buf_tail] = 0x02; buf_tail = next; }
         }
-        else if (scancode == 0x4B)  // left arrow
+        else if (scancode == 0x4B)
         {
             int next = (buf_tail + 1) % BUFFER_SIZE;
             if (next != buf_head) { buffer[buf_tail] = 0x03; buf_tail = next; }
         }
-        else if (scancode == 0x4D)  // right arrow
+        else if (scancode == 0x4D)
         {
             int next = (buf_tail + 1) % BUFFER_SIZE;
             if (next != buf_head) { buffer[buf_tail] = 0x04; buf_tail = next; }
@@ -66,6 +71,16 @@ static void keyboard_handler()
 
     // ignore key releases
     if (scancode & 0x80) return;
+
+    // Alt+1-4 to switch TTY
+    if (alt_pressed)
+    {
+        extern void tty_switch(int);
+        if (scancode == 0x02) { tty_switch(0); return; }  // 1
+        if (scancode == 0x03) { tty_switch(1); return; }  // 2
+        if (scancode == 0x04) { tty_switch(2); return; }  // 3
+        if (scancode == 0x05) { tty_switch(3); return; }  // 4
+    }
 
     char c = scancode_table[scancode];
     if (c == 0) return;

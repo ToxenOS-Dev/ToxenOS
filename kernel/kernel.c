@@ -16,6 +16,7 @@
 #include "../include/ata.h"
 #include "../include/txfs.h"
 #include "../include/elf.h"
+#include "../include/tty.h"
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
@@ -178,6 +179,9 @@ void set_color(uint8_t color)
     current_color = color;
 }
 
+extern uint8_t _binary_build_user_shell_elf_start[];
+extern uint8_t _binary_build_user_shell_elf_end[];
+
 
 void kernel_main()
 {
@@ -197,17 +201,18 @@ void kernel_main()
     ata_init();
     vfs_mount("/disk", txfs_init(), 0);
     tss_init((uint32_t)&stack_top);
-
+    tty_init();
+    tty_draw_indicator();
+    
     cursor_y = 2;
     cursor_x = 0;
 
-    // load shell ELF from disk
-    uint8_t* elf_buf = (uint8_t*)kmalloc(32768);
-    ata_read(2048, elf_buf, 64);
-
+    uint8_t* elf_buf = _binary_build_user_shell_elf_start;
     elf_header_t* ehdr = (elf_header_t*)elf_buf;
+
     if (ehdr->magic == 0x464C457F)
     {
+        // load ELF once
         for (int i = 0; i < ehdr->phnum; i++)
         {
             elf_phdr_t* phdr = (elf_phdr_t*)(elf_buf + ehdr->phoff + i * ehdr->phentsize);
@@ -219,10 +224,20 @@ void kernel_main()
             for (uint32_t j = 0; j < phdr->memsz; j++)
                 dst[j] = (j < phdr->filesz) ? src[j] : 0;
         }
+
+        // TTY 0 runs via jump_to_ring3 (pid 0 = kernel)
+        tty_for_pid[0] = 0;
+
+        // spawn shells for TTY 1-3
+        for (int t = 1; t < 4; t++)
+        {
+            int pid = process_create("shell", (void(*)(void))ehdr->entry);
+            tty_assign_pid(pid, t);
+        }
+
         jump_to_ring3((void*)ehdr->entry, 0x600000);
     }
 
-    // fallback if ELF load failed
     print("Failed to load shell\n");
     while (1) __asm__ volatile("hlt");
 }

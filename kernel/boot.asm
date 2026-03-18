@@ -1,5 +1,17 @@
 bits 32
 
+section .multiboot2
+align 8
+mb2_start:
+    dd 0xE85250D6
+    dd 0
+    dd mb2_end - mb2_start
+    dd -(0xE85250D6 + 0 + (mb2_end - mb2_start))
+    dw 0
+    dw 0
+    dd 8
+mb2_end:
+
 section .multiboot
 align 4
 dd 0x1BADB002

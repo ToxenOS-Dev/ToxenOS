@@ -98,6 +98,20 @@ int sys_isdir(const char* path)
     return ret;
 }
 
+int sys_get_tty()
+{
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(19));
+    return ret;
+}
+
+int sys_my_tty()
+{
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(20));
+    return ret;
+}
+
 static int str_len(const char* s)
 {
     int i = 0;
@@ -1001,9 +1015,20 @@ static void history_add(const char* cmd)
     str_copy(history[history_count - 1], cmd);
 }
 
+void yield()
+{
+    __asm__ volatile("int $0x80" :: "a"(4));
+}
+
 
 void _start()
 {
+    int my_tty = sys_my_tty();
+    if (my_tty < 0) my_tty = 0;
+
+    while (sys_get_tty() != my_tty)
+        yield();
+
     char input[INPUT_MAX];
     int  input_len = 0;
 
@@ -1011,6 +1036,12 @@ void _start()
 
     while (1)
     {
+        int my_tty = sys_my_tty();
+        if (my_tty < 0) my_tty = 0;
+
+        while (sys_get_tty() != my_tty)
+            yield();
+
         char c = getchar();
         if (c == 0) continue;
 

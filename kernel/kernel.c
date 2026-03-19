@@ -17,6 +17,7 @@
 #include "../include/txfs.h"
 #include "../include/elf.h"
 #include "../include/tty.h"
+#include "../include/framebuffer.h"
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
@@ -183,8 +184,42 @@ extern uint8_t _binary_build_user_shell_elf_start[];
 extern uint8_t _binary_build_user_shell_elf_end[];
 
 
-void kernel_main()
+void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 {
+    // parse multiboot2 info to find framebuffer
+    uint32_t* mb = (uint32_t*)mb_info_addr;
+    uint32_t total_size = mb[0];
+    
+    uint8_t* tag = (uint8_t*)(mb_info_addr + 8);
+    uint8_t* end = (uint8_t*)(mb_info_addr + total_size);
+
+    uint32_t fb_addr = 0;
+    uint32_t fb_width = 0;
+    uint32_t fb_height = 0;
+    uint32_t fb_pitch = 0;
+    uint32_t fb_bpp = 0;
+
+    while (tag < end)
+    {
+        uint32_t type = *(uint32_t*)tag;
+        uint32_t size = *(uint32_t*)(tag + 4);
+
+        if (type == 8)  // framebuffer tag
+        {
+            fb_addr   = *(uint32_t*)(tag + 8);
+            fb_pitch  = *(uint32_t*)(tag + 16);
+            fb_width  = *(uint32_t*)(tag + 20);
+            fb_height = *(uint32_t*)(tag + 24);
+            fb_bpp    = *(uint8_t*) (tag + 28);
+            break;
+        }
+
+        tag += (size + 7) & ~7;  // align to 8 bytes
+    }
+
+    fb_init(fb_addr, fb_width, fb_height, fb_pitch, fb_bpp);
+    fb_draw_rect(100, 100, 200, 150, 0xFF6600);
+
     clear_screen();
     print_title();
     mm_init();

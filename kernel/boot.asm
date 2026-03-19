@@ -3,10 +3,22 @@ bits 32
 section .multiboot2
 align 8
 mb2_start:
-    dd 0xE85250D6
-    dd 0
+    dd 0xE85250D6        ; magic
+    dd 0                 ; arch i386
     dd mb2_end - mb2_start
     dd -(0xE85250D6 + 0 + (mb2_end - mb2_start))
+
+    ; framebuffer tag
+    align 8
+    dw 5                 ; type = framebuffer
+    dw 0                 ; flags
+    dd 20                ; size
+    dd 1024              ; width
+    dd 768               ; height
+    dd 32                ; depth
+
+    ; end tag
+    align 8
     dw 0
     dw 0
     dd 8
@@ -53,7 +65,15 @@ section .text
 global start
 extern kernel_main
 
+section .text
+global start
+extern kernel_main
+
 start:
+    ; save multiboot info before we touch registers
+    mov edi, eax    ; save magic
+    mov esi, ebx    ; save multiboot info pointer
+
     lgdt [gdt_ptr]
 
     mov ax, 0x10
@@ -67,5 +87,10 @@ start:
 
 flush:
     mov esp, stack_top
+
+    ; push multiboot args for kernel_main(magic, mb_info)
+    push esi    ; mb_info_addr
+    push edi    ; magic
+
     call kernel_main
     jmp $

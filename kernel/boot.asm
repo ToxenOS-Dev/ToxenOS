@@ -3,19 +3,10 @@ bits 32
 section .multiboot2
 align 8
 mb2_start:
-    dd 0xE85250D6        ; magic
-    dd 0                 ; arch i386
+    dd 0xE85250D6
+    dd 0
     dd mb2_end - mb2_start
     dd -(0xE85250D6 + 0 + (mb2_end - mb2_start))
-
-    ; framebuffer tag
-    align 8
-    dw 5                 ; type = framebuffer
-    dw 0                 ; flags
-    dd 20                ; size
-    dd 1024              ; width
-    dd 768               ; height
-    dd 32                ; depth
 
     ; end tag
     align 8

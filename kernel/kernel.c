@@ -219,10 +219,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     }
 
     fb_init(fb_addr, fb_width, fb_height, fb_pitch, fb_bpp);
-    fb_clear(0x1a1a2e);  // dark background
-    font_draw_string(100, 100, "Welcome to ToxenOS!", 0xFF6600);
-    font_draw_string(100, 120, "Framebuffer + Font working!", 0xFFFFFF);
-
+    
     clear_screen();
     print_title();
     mm_init();

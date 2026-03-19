@@ -27,6 +27,7 @@ all: user
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/elf.c -o build/elf.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/tty.c -o build/tty.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/framebuffer.c -o build/framebuffer.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/font.c -o build/font.o
 
 	ld -m elf_i386 -T linker.ld -o build/kernel.bin \
 		build/boot.o build/kernel.o build/keyboard.o build/idt.o build/isr.o \
@@ -34,7 +35,7 @@ all: user
 		build/process.o build/syscall.o build/paging.o build/tss.o build/ring3.o \
 		build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/elf.o \
 		build/tty.o \
-		build/user/shell_blob.o build/framebuffer.o
+		build/user/shell_blob.o build/framebuffer.o build/font.o
 
 	cp build/kernel.bin iso/boot/kernel.bin
 	grub2-mkrescue --modules="part_gpt part_msdos all_video" \

@@ -3,12 +3,21 @@ bits 32
 section .multiboot2
 align 8
 mb2_start:
-    dd 0xE85250D6
-    dd 0
-    dd mb2_end - mb2_start
-    dd -(0xE85250D6 + 0 + (mb2_end - mb2_start))
+    dd 0xE85250D6           ; magic
+    dd 0                    ; architecture: i386
+    dd mb2_end - mb2_start  ; header length
+    dd -(0xE85250D6 + 0 + (mb2_end - mb2_start))  ; checksum
 
-    ; end tag
+    ; ── Framebuffer request tag ──────────────────────────────────────
+    align 8
+    dw 5                    ; type = framebuffer
+    dw 0                    ; flags
+    dd 20                   ; size
+    dd 1024                 ; preferred width
+    dd 768                  ; preferred height
+    dd 32                   ; preferred bpp
+
+    ; ── End tag ─────────────────────────────────────────────────────
     align 8
     dw 0
     dw 0
@@ -36,8 +45,8 @@ gdt:
     dq 0x00CF92000000FFFF   ; 0x10 ring 0 data
     dq 0x00CFFA000000FFFF   ; 0x18 ring 3 code (DPL=3)
     dq 0x00CFF2000000FFFF   ; 0x20 ring 3 data (DPL=3)
-    dq 0x0000000000000000   ; 0x28 TSS (filled in by tss_init())
-    dq 0x0000000000000000   ; 0x30 TSS high (for 64bit, padding here)
+    dq 0x0000000000000000   ; 0x28 TSS (filled by tss_init)
+    dq 0x0000000000000000   ; 0x30 TSS high
 gdt_end:
 
 gdt_ptr:
@@ -56,13 +65,8 @@ section .text
 global start
 extern kernel_main
 
-section .text
-global start
-extern kernel_main
-
 start:
-    ; save multiboot info before we touch registers
-    mov edi, eax    ; save magic
+    mov edi, eax    ; save multiboot magic
     mov esi, ebx    ; save multiboot info pointer
 
     lgdt [gdt_ptr]
@@ -78,10 +82,7 @@ start:
 
 flush:
     mov esp, stack_top
-
-    ; push multiboot args for kernel_main(magic, mb_info)
-    push esi    ; mb_info_addr
-    push edi    ; magic
-
+    push esi        ; mb_info_addr
+    push edi        ; magic
     call kernel_main
     jmp $

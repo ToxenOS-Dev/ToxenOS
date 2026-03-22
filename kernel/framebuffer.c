@@ -17,7 +17,6 @@ void fb_init(uint32_t addr, uint32_t w, uint32_t h, uint32_t pitch, uint32_t bpp
 
     // clear to black
     fb_clear(0x000000);
-    fb_draw_rect(100, 100, 200, 150, 0xFF6600);  // orange rectangle
 }
 
 void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color)
@@ -43,3 +42,5 @@ void fb_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color
 
 uint32_t fb_get_width()  { return fb_width; }
 uint32_t fb_get_height() { return fb_height; }
+uint32_t fb_get_addr() { return (uint32_t)fb_addr; }
+uint32_t fb_get_pitch()  { return fb_pitch; }

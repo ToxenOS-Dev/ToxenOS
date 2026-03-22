@@ -198,6 +198,12 @@ static const uint8_t font_data[96][16] = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
 };
 
+const uint8_t* font_get_glyph(char c)
+{
+    if (c < 32 || c > 127) c = '?';
+    return font_data[c - 32];
+}
+
 void font_draw_char(uint32_t x, uint32_t y, char c, uint32_t color)
 {
     if (c < 32 || c > 127) c = '?';

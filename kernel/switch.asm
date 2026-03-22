@@ -1,5 +1,4 @@
 global context_switch
-global process_iret_trampoline
 
 section .text
 
@@ -21,6 +20,3 @@ context_switch:
     pop ebx
 
     ret
-
-process_iret_trampoline:
-    iret

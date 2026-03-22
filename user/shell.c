@@ -137,6 +137,217 @@ static int str_starts(const char* str, const char* prefix)
 
 static char cwd[256] = "/disk";
 
+// ── File type system ─────────────────────────────────────────────────────────
+
+typedef enum {
+    FTYPE_TEXT,     // plain readable text
+    FTYPE_SCRIPT,   // .txs ToxenOS script
+    FTYPE_IMAGE,    // raster/vector images
+    FTYPE_AUDIO,    // audio files
+    FTYPE_VIDEO,    // video files
+    FTYPE_BINARY,   // executables and object files
+    FTYPE_ARCHIVE,  // compressed archives
+    FTYPE_DATA,     // structured data (xml, json, db...)
+    FTYPE_FONT,     // font files
+    FTYPE_UNKNOWN,
+} file_type_t;
+
+// case-insensitive single char lowercase
+static char lc(char c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+
+static int str_equal_ci(const char* a, const char* b)
+{
+    int i;
+    for (i = 0; a[i] && b[i]; i++)
+        if (lc(a[i]) != lc(b[i])) return 0;
+    return a[i] == b[i];
+}
+
+static file_type_t get_file_type(const char* name)
+{
+    int last_dot = -1;
+    for (int i = 0; name[i]; i++)
+        if (name[i] == '.') last_dot = i;
+
+    if (last_dot < 0) return FTYPE_UNKNOWN;
+    const char* e = name + last_dot + 1;
+
+    // ── Text ────────────────────────────────────────────────────────
+    if (str_equal_ci(e, "txt"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "md"))    return FTYPE_TEXT;
+    if (str_equal_ci(e, "markdown")) return FTYPE_TEXT;
+    if (str_equal_ci(e, "rst"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "cfg"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "ini"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "conf"))  return FTYPE_TEXT;
+    if (str_equal_ci(e, "log"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "csv"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "tsv"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "htm"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "html"))  return FTYPE_TEXT;
+    if (str_equal_ci(e, "css"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "js"))    return FTYPE_TEXT;
+    if (str_equal_ci(e, "ts"))    return FTYPE_TEXT;
+    if (str_equal_ci(e, "py"))    return FTYPE_TEXT;
+    if (str_equal_ci(e, "c"))     return FTYPE_TEXT;
+    if (str_equal_ci(e, "h"))     return FTYPE_TEXT;
+    if (str_equal_ci(e, "cpp"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "hpp"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "asm"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "s"))     return FTYPE_TEXT;
+    if (str_equal_ci(e, "sh"))    return FTYPE_TEXT;
+    if (str_equal_ci(e, "bat"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "lua"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "rs"))    return FTYPE_TEXT;
+    if (str_equal_ci(e, "go"))    return FTYPE_TEXT;
+    if (str_equal_ci(e, "java"))  return FTYPE_TEXT;
+    if (str_equal_ci(e, "rb"))    return FTYPE_TEXT;
+    if (str_equal_ci(e, "php"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "sql"))   return FTYPE_TEXT;
+    if (str_equal_ci(e, "rtf"))   return FTYPE_TEXT;
+
+    // ── ToxenOS script ──────────────────────────────────────────────
+    if (str_equal_ci(e, "txs"))   return FTYPE_SCRIPT;
+    if (str_equal_ci(e, "tui"))   return FTYPE_SCRIPT;  // ToxUI markup
+
+    // ── Images ──────────────────────────────────────────────────────
+    if (str_equal_ci(e, "png"))   return FTYPE_IMAGE;
+    if (str_equal_ci(e, "jpg"))   return FTYPE_IMAGE;
+    if (str_equal_ci(e, "jpeg"))  return FTYPE_IMAGE;
+    if (str_equal_ci(e, "bmp"))   return FTYPE_IMAGE;
+    if (str_equal_ci(e, "gif"))   return FTYPE_IMAGE;
+    if (str_equal_ci(e, "ico"))   return FTYPE_IMAGE;
+    if (str_equal_ci(e, "svg"))   return FTYPE_IMAGE;
+    if (str_equal_ci(e, "tif"))   return FTYPE_IMAGE;
+    if (str_equal_ci(e, "tiff"))  return FTYPE_IMAGE;
+    if (str_equal_ci(e, "webp"))  return FTYPE_IMAGE;
+    if (str_equal_ci(e, "ppm"))   return FTYPE_IMAGE;
+    if (str_equal_ci(e, "pgm"))   return FTYPE_IMAGE;
+    if (str_equal_ci(e, "pbm"))   return FTYPE_IMAGE;
+    if (str_equal_ci(e, "raw"))   return FTYPE_IMAGE;
+    if (str_equal_ci(e, "psd"))   return FTYPE_IMAGE;
+    if (str_equal_ci(e, "xcf"))   return FTYPE_IMAGE;
+
+    // ── Audio ───────────────────────────────────────────────────────
+    if (str_equal_ci(e, "mp3"))   return FTYPE_AUDIO;
+    if (str_equal_ci(e, "wav"))   return FTYPE_AUDIO;
+    if (str_equal_ci(e, "ogg"))   return FTYPE_AUDIO;
+    if (str_equal_ci(e, "flac"))  return FTYPE_AUDIO;
+    if (str_equal_ci(e, "aac"))   return FTYPE_AUDIO;
+    if (str_equal_ci(e, "m4a"))   return FTYPE_AUDIO;
+    if (str_equal_ci(e, "wma"))   return FTYPE_AUDIO;
+    if (str_equal_ci(e, "aiff"))  return FTYPE_AUDIO;
+    if (str_equal_ci(e, "au"))    return FTYPE_AUDIO;
+    if (str_equal_ci(e, "mid"))   return FTYPE_AUDIO;
+    if (str_equal_ci(e, "midi"))  return FTYPE_AUDIO;
+
+    // ── Video ───────────────────────────────────────────────────────
+    if (str_equal_ci(e, "mp4"))   return FTYPE_VIDEO;
+    if (str_equal_ci(e, "mkv"))   return FTYPE_VIDEO;
+    if (str_equal_ci(e, "avi"))   return FTYPE_VIDEO;
+    if (str_equal_ci(e, "mov"))   return FTYPE_VIDEO;
+    if (str_equal_ci(e, "wmv"))   return FTYPE_VIDEO;
+    if (str_equal_ci(e, "flv"))   return FTYPE_VIDEO;
+    if (str_equal_ci(e, "webm"))  return FTYPE_VIDEO;
+    if (str_equal_ci(e, "m4v"))   return FTYPE_VIDEO;
+    if (str_equal_ci(e, "mpg"))   return FTYPE_VIDEO;
+    if (str_equal_ci(e, "mpeg"))  return FTYPE_VIDEO;
+
+    // ── Archives ────────────────────────────────────────────────────
+    if (str_equal_ci(e, "zip"))   return FTYPE_ARCHIVE;
+    if (str_equal_ci(e, "tar"))   return FTYPE_ARCHIVE;
+    if (str_equal_ci(e, "gz"))    return FTYPE_ARCHIVE;
+    if (str_equal_ci(e, "bz2"))   return FTYPE_ARCHIVE;
+    if (str_equal_ci(e, "xz"))    return FTYPE_ARCHIVE;
+    if (str_equal_ci(e, "7z"))    return FTYPE_ARCHIVE;
+    if (str_equal_ci(e, "rar"))   return FTYPE_ARCHIVE;
+    if (str_equal_ci(e, "iso"))   return FTYPE_ARCHIVE;
+    if (str_equal_ci(e, "img"))   return FTYPE_ARCHIVE;
+    if (str_equal_ci(e, "cab"))   return FTYPE_ARCHIVE;
+    if (str_equal_ci(e, "deb"))   return FTYPE_ARCHIVE;
+    if (str_equal_ci(e, "rpm"))   return FTYPE_ARCHIVE;
+
+    // ── Structured data ─────────────────────────────────────────────
+    if (str_equal_ci(e, "json"))  return FTYPE_DATA;
+    if (str_equal_ci(e, "xml"))   return FTYPE_DATA;
+    if (str_equal_ci(e, "yaml"))  return FTYPE_DATA;
+    if (str_equal_ci(e, "yml"))   return FTYPE_DATA;
+    if (str_equal_ci(e, "toml"))  return FTYPE_DATA;
+    if (str_equal_ci(e, "db"))    return FTYPE_DATA;
+    if (str_equal_ci(e, "sqlite")) return FTYPE_DATA;
+    if (str_equal_ci(e, "dat"))   return FTYPE_DATA;
+    if (str_equal_ci(e, "pdf"))   return FTYPE_DATA;
+    if (str_equal_ci(e, "doc"))   return FTYPE_DATA;
+    if (str_equal_ci(e, "docx"))  return FTYPE_DATA;
+    if (str_equal_ci(e, "xls"))   return FTYPE_DATA;
+    if (str_equal_ci(e, "xlsx"))  return FTYPE_DATA;
+    if (str_equal_ci(e, "ppt"))   return FTYPE_DATA;
+    if (str_equal_ci(e, "pptx"))  return FTYPE_DATA;
+
+    // ── Fonts ───────────────────────────────────────────────────────
+    if (str_equal_ci(e, "ttf"))   return FTYPE_FONT;
+    if (str_equal_ci(e, "otf"))   return FTYPE_FONT;
+    if (str_equal_ci(e, "woff"))  return FTYPE_FONT;
+    if (str_equal_ci(e, "woff2")) return FTYPE_FONT;
+    if (str_equal_ci(e, "fon"))   return FTYPE_FONT;
+    if (str_equal_ci(e, "psf"))   return FTYPE_FONT;
+
+    // ── Executables / binary ────────────────────────────────────────
+    if (str_equal_ci(e, "bin"))   return FTYPE_BINARY;
+    if (str_equal_ci(e, "elf"))   return FTYPE_BINARY;
+    if (str_equal_ci(e, "exe"))   return FTYPE_BINARY;
+    if (str_equal_ci(e, "dll"))   return FTYPE_BINARY;
+    if (str_equal_ci(e, "so"))    return FTYPE_BINARY;
+    if (str_equal_ci(e, "o"))     return FTYPE_BINARY;
+    if (str_equal_ci(e, "a"))     return FTYPE_BINARY;
+    if (str_equal_ci(e, "lib"))   return FTYPE_BINARY;
+    if (str_equal_ci(e, "sys"))   return FTYPE_BINARY;
+    if (str_equal_ci(e, "ko"))    return FTYPE_BINARY;  // kernel module
+
+    return FTYPE_UNKNOWN;
+}
+
+// Color for ls display
+static uint8_t file_type_color(file_type_t t)
+{
+    switch (t) {
+        case FTYPE_TEXT:    return 0x0F;  // white
+        case FTYPE_SCRIPT:  return 0x0E;  // yellow
+        case FTYPE_IMAGE:   return 0x0D;  // bright magenta
+        case FTYPE_AUDIO:   return 0x0A;  // bright green
+        case FTYPE_VIDEO:   return 0x09;  // bright blue
+        case FTYPE_ARCHIVE: return 0x0B;  // bright cyan
+        case FTYPE_DATA:    return 0x03;  // cyan
+        case FTYPE_FONT:    return 0x05;  // magenta
+        case FTYPE_BINARY:  return 0x08;  // dark grey
+        default:            return 0x07;  // grey
+    }
+}
+
+// Short label shown after filename in ls
+static const char* file_type_label(file_type_t t)
+{
+    switch (t) {
+        case FTYPE_TEXT:    return " [text]";
+        case FTYPE_SCRIPT:  return " [script]";
+        case FTYPE_IMAGE:   return " [image]";
+        case FTYPE_AUDIO:   return " [audio]";
+        case FTYPE_VIDEO:   return " [video]";
+        case FTYPE_ARCHIVE: return " [archive]";
+        case FTYPE_DATA:    return " [data]";
+        case FTYPE_FONT:    return " [font]";
+        case FTYPE_BINARY:  return " [binary]";
+        default:            return " [unknown]";
+    }
+}
+
+// Can this shell open/display the file?
+static int file_can_text_open(file_type_t t)
+{
+    return t == FTYPE_TEXT || t == FTYPE_SCRIPT;
+}
+
+
 static void cmd_cd(const char* args)
 {
     if (!args || args[0] == 0)
@@ -582,6 +793,20 @@ static void cmd_tedit(const char* args)
         return;
     }
 
+    file_type_t ft = get_file_type(args);
+    if (!file_can_text_open(ft))
+    {
+        set_color(0x0C);
+        if (ft == FTYPE_IMAGE)
+            print("tedit: cannot edit image files\n");
+        else if (ft == FTYPE_BINARY)
+            print("tedit: cannot edit binary files\n");
+        else
+            print("tedit: unsupported file type\n");
+        set_color(0x07);
+        return;
+    }
+
     char path[256];
     str_copy(path, cwd);
     int len = str_len(path);
@@ -788,7 +1013,6 @@ static void cmd_ls()
 
     while (sys_readdir(cwd, entry, i) == 0)
     {
-        // build full path to check type
         char full[256];
         str_copy(full, cwd);
         int len = str_len(full);
@@ -803,8 +1027,11 @@ static void cmd_ls()
         }
         else
         {
-            set_color(0x06);  // orange for files
+            file_type_t ft = get_file_type(entry);
+            set_color(file_type_color(ft));
             print(entry);
+            set_color(0x08);  // dark grey for the label
+            print(file_type_label(ft));
             print("\n");
         }
         set_color(0x07);
@@ -834,6 +1061,23 @@ static void cmd_shw(const char* args)
     int len = str_len(path);
     path[len] = '/';
     str_copy(path + len + 1, args);
+
+    // check file type before opening
+    file_type_t ft = get_file_type(args);
+    if (!file_can_text_open(ft))
+    {
+        set_color(0x0C);
+        if (ft == FTYPE_IMAGE)   print("shw: cannot display image files\n");
+        else if (ft == FTYPE_AUDIO)   print("shw: cannot display audio files\n");
+        else if (ft == FTYPE_VIDEO)   print("shw: cannot display video files\n");
+        else if (ft == FTYPE_BINARY)  print("shw: cannot display binary files\n");
+        else if (ft == FTYPE_ARCHIVE) print("shw: cannot display archive files\n");
+        else if (ft == FTYPE_DATA)    print("shw: cannot display this data format\n");
+        else if (ft == FTYPE_FONT)    print("shw: cannot display font files\n");
+        else print("shw: unknown file type\n");
+        set_color(0x07);
+        return;
+    }
 
     int fd = sys_open(path, 1);  // VFS_O_READ = 1
     if (fd < 0)
@@ -898,27 +1142,92 @@ static void cmd_mkef(const char* args)
     set_color(0x07);
 }
 
+static void cmd_file(const char* args)
+{
+    if (!args || args[0] == 0)
+    {
+        print("Usage: file <filename>\n");
+        return;
+    }
+
+    char path[256];
+    str_copy(path, cwd);
+    int len = str_len(path);
+    path[len] = '/';
+    str_copy(path + len + 1, args);
+
+    // check it exists
+    if (sys_stat(path) < 0)
+    {
+        set_color(0x0C);
+        print("file: not found\n");
+        set_color(0x07);
+        return;
+    }
+
+    file_type_t ft = get_file_type(args);
+    set_color(file_type_color(ft));
+    print(args);
+    set_color(0x07);
+    print(": ");
+
+    switch (ft) {
+        case FTYPE_TEXT:
+            print("text file - use tedit or shw");
+            break;
+        case FTYPE_SCRIPT:
+            print("ToxenOS script - use tedit to edit");
+            break;
+        case FTYPE_IMAGE:
+            print("image file - no viewer yet");
+            break;
+        case FTYPE_AUDIO:
+            print("audio file - no player yet");
+            break;
+        case FTYPE_VIDEO:
+            print("video file - no player yet");
+            break;
+        case FTYPE_ARCHIVE:
+            print("archive file - cannot open");
+            break;
+        case FTYPE_DATA:
+            print("data file - cannot open");
+            break;
+        case FTYPE_FONT:
+            print("font file - cannot open");
+            break;
+        case FTYPE_BINARY:
+            print("binary/executable - cannot open");
+            break;
+        default:
+            print("unknown type");
+            break;
+    }
+    print("\n");
+}
+
 static void cmd_help()
 {
     set_color(0x0B);  // cyan
     print("ToxenOS Commands:\n");
     set_color(0x07);
-    print("  ls          - list files\n");
+    print("  ls          - list files (color coded by type)\n");
     print("  cd <dir>    - change directory\n");
+    print("  cdb         - go up one directory\n");
     print("  pcd         - print current directory\n");
-    print("  shw <file>  - show file contents\n");
+    print("  file <f>    - show file type info\n");
+    print("  shw <file>  - show text file contents\n");
+    print("  tedit <f>   - edit text file\n");
     print("  mkd <dir>   - make directory\n");
     print("  mkef <file> - make empty file\n");
     print("  rm <file>   - delete file\n");
     print("  cp <a> <b>  - copy file\n");
-    print("  cdb         - go back one directory\n");
-    print("  mv <f> <d> - move file to directory\n");
-    print("  rname <a> <b>- rename file\n");
+    print("  mv <f> <d>  - move file to directory\n");
+    print("  rname <a> <b> - rename file\n");
     print("  echo <text> - print text\n");
     print("  clear       - clear screen\n");
     print("  uname       - OS info\n");
     print("  reboot      - restart\n");
-    print("  tedit <file>- open text editor\n");
     print("  shutdown    - power off\n");
 }
 
@@ -984,6 +1293,7 @@ static void run_command(char* buf)
     else if (str_equal(buf, "mv"))  cmd_move(args);
     else if (str_equal(buf, "rname")) cmd_rname(args);
     else if (str_equal(buf, "tedit")) cmd_tedit(args);
+    else if (str_equal(buf, "file"))  cmd_file(args);
     else                                 cmd_unknown(buf);
 }
 

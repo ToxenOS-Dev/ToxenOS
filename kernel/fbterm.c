@@ -4,6 +4,7 @@
 #include "../include/framebuffer.h"
 #include "../include/font.h"
 #include "../include/process.h"
+#include "../include/timer.h"
 
 static const uint32_t vga_palette[16] = {
     0x000000,0x0000AA,0x00AA00,0x00AAAA,
@@ -18,15 +19,19 @@ static int term_cols, term_rows;
 
 #define MAX_COLS 256
 #define MAX_ROWS 100
+#define CURSOR_BLINK_TICKS 25   // at 100Hz → blinks at 2Hz
 
 typedef struct { char c; uint8_t fg; uint8_t bg; } cell_t;
 static cell_t  cells[FBTERM_TTY_COUNT][MAX_ROWS][MAX_COLS];
 static int     cx[FBTERM_TTY_COUNT], cy[FBTERM_TTY_COUNT];
 static uint8_t cfg[FBTERM_TTY_COUNT], cbg[FBTERM_TTY_COUNT];
 static int active_tty = 0;
+static int cursor_visible = 1;  // current blink state
 
 int fbterm_pid_tty[MAX_PROCESSES];
 static const uint8_t indicator_fg[FBTERM_TTY_COUNT] = {6,11,10,14};
+
+// ── Pixel primitives ──────────────────────────────────────────────────────────
 
 static inline void put_px(uint32_t x, uint32_t y, uint32_t color)
 {
@@ -35,6 +40,7 @@ static inline void put_px(uint32_t x, uint32_t y, uint32_t color)
     row[x] = color;
 }
 
+// Draw a full character cell (glyph + background).
 static void draw_cell(int col, int row, char c, uint8_t fg, uint8_t bg)
 {
     uint32_t fgc = vga_palette[fg & 0xF];
@@ -49,6 +55,31 @@ static void draw_cell(int col, int row, char c, uint8_t fg, uint8_t bg)
             put_px(px0+x, py0+y, (bits & (0x80>>x)) ? fgc : bgc);
     }
 }
+
+// Draw the cursor — a solid block in the fg color overlaid on the current cell.
+static void draw_cursor_at(int col, int row, uint8_t fg, int show)
+{
+    if (col < 0 || col >= term_cols) return;
+    if (row < 0 || row >= term_rows) return;
+
+    uint32_t px0 = (uint32_t)col * FBTERM_CHAR_W;
+    uint32_t py0 = (uint32_t)row * FBTERM_CHAR_H;
+
+    if (show) {
+        // Solid block cursor — invert the cell colors
+        uint32_t fgc = vga_palette[fg & 0xF];
+        // Draw a 2-pixel-tall underline bar at the bottom of the cell
+        for (int y = FBTERM_CHAR_H-3; y < FBTERM_CHAR_H-1; y++)
+            for (int x = 0; x < FBTERM_CHAR_W; x++)
+                put_px(px0+x, py0+y, fgc);
+    } else {
+        // Hide cursor — redraw the cell underneath it
+        cell_t* cel = &cells[active_tty][row][col];
+        draw_cell(col, row, cel->c, cel->fg, cel->bg);
+    }
+}
+
+// ── Cell buffer helpers ───────────────────────────────────────────────────────
 
 static void redraw_all(void) {
     for (int r=0; r<term_rows; r++)
@@ -73,6 +104,8 @@ static void scroll_cells(int t) {
         { cells[t][term_rows-1][c].c=' '; cells[t][term_rows-1][c].fg=7; cells[t][term_rows-1][c].bg=0; }
 }
 
+// ── Public API ────────────────────────────────────────────────────────────────
+
 void fbterm_init(void)
 {
     fb_w           = fb_get_width();
@@ -92,18 +125,33 @@ void fbterm_init(void)
     for (int i=0; i<MAX_PROCESSES; i++) fbterm_pid_tty[i]=-1;
     fbterm_pid_tty[0]=0;
     active_tty=0;
+    cursor_visible=1;
 
-    // clear screen to black
+    // clear to black
     for (uint32_t y=0; y<fb_h; y++) {
         uint32_t* row = (uint32_t*)((uint8_t*)fb_base + y * fb_pitch_bytes);
-        for (uint32_t x=0; x<fb_w; x++)
-            row[x] = 0x000000;
+        for (uint32_t x=0; x<fb_w; x++) row[x] = 0;
     }
+}
+
+// Called from the timer IRQ (via timer.c) to blink the cursor.
+void fbterm_tick(void)
+{
+    uint32_t t = timer_getticks();
+    int should_show = ((t / CURSOR_BLINK_TICKS) & 1) == 0;
+    if (should_show == cursor_visible) return;  // no change
+
+    cursor_visible = should_show;
+    draw_cursor_at(cx[active_tty], cy[active_tty], cfg[active_tty], cursor_visible);
 }
 
 void fbterm_putchar(char c)
 {
     int t = active_tty;
+
+    // erase cursor before moving it
+    draw_cursor_at(cx[t], cy[t], cfg[t], 0);
+
     if (c=='\n') { cx[t]=0; cy[t]++; }
     else if (c=='\r') { cx[t]=0; }
     else {
@@ -113,20 +161,31 @@ void fbterm_putchar(char c)
         draw_cell(cx[t], cy[t], c, cfg[t], cbg[t]);
         cx[t]++;
     }
+
     if (cx[t] >= term_cols) { cx[t]=0; cy[t]++; }
     if (cy[t] >= term_rows) {
         scroll_cells(t);
-        cy[t] = term_rows-1; cx[t]=0;
-        if (t == active_tty) redraw_all();
+        cy[t]=term_rows-1; cx[t]=0;
+        if (t==active_tty) redraw_all();
     }
+
+    // draw cursor at new position
+    cursor_visible = 1;
+    draw_cursor_at(cx[t], cy[t], cfg[t], 1);
 }
 
 void fbterm_erase(void) {
     int t = active_tty;
     if (cx[t]==0 && cy[t]==0) return;
+
+    draw_cursor_at(cx[t], cy[t], cfg[t], 0);
+
     if (cx[t]>0) cx[t]--; else { cy[t]--; cx[t]=term_cols-1; }
     cells[t][cy[t]][cx[t]].c = ' ';
     draw_cell(cx[t], cy[t], ' ', cfg[t], cbg[t]);
+
+    cursor_visible = 1;
+    draw_cursor_at(cx[t], cy[t], cfg[t], 1);
 }
 
 void fbterm_clear(void) {
@@ -134,9 +193,10 @@ void fbterm_clear(void) {
     clear_cells(t); cx[t]=0; cy[t]=0;
     for (uint32_t y=0; y<fb_h; y++) {
         uint32_t* row = (uint32_t*)((uint8_t*)fb_base + y * fb_pitch_bytes);
-        for (uint32_t x=0; x<fb_w; x++)
-            row[x] = vga_palette[cbg[t]];
+        for (uint32_t x=0; x<fb_w; x++) row[x] = vga_palette[cbg[t]];
     }
+    cursor_visible = 1;
+    draw_cursor_at(0, 0, cfg[t], 1);
 }
 
 void fbterm_set_color(uint8_t a) {
@@ -146,9 +206,12 @@ void fbterm_set_color(uint8_t a) {
 
 void fbterm_switch_tty(int tty) {
     if (tty==active_tty || tty<0 || tty>=FBTERM_TTY_COUNT) return;
+    draw_cursor_at(cx[active_tty], cy[active_tty], cfg[active_tty], 0);
     active_tty = tty;
     redraw_all();
     fbterm_draw_indicator();
+    cursor_visible = 1;
+    draw_cursor_at(cx[active_tty], cy[active_tty], cfg[active_tty], 1);
 }
 
 int  fbterm_current_tty(void) { return active_tty; }

@@ -48,6 +48,7 @@ user:
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
 		-nostdlib -nostartfiles \
 		-Ttext=0x400000 \
+		-no-pie -static \
 		user/shell.c -o build/user/shell.elf
 	objcopy -I binary -O elf32-i386 -B i386 \
 		build/user/shell.elf build/user/shell_blob.o

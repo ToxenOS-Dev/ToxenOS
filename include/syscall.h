@@ -27,6 +27,8 @@
 #define SYS_EXEC      21   // exec(path) — replace current process with ELF
 #define SYS_SPAWN     22   // spawn(path) — launch ELF as new process, return pid
 #define SYS_WAIT      23   // wait(pid)   — block until process exits
+#define SYS_SPAWN_TTY      24   // spawn_tty(path, tty) — spawn on specific TTY
+#define SYS_SPAWN_EMBEDDED 25  // spawn embedded shell on given TTY
 
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx,
                                                   uint32_t ecx, uint32_t edx);

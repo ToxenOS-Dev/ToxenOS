@@ -41,3 +41,4 @@ int  sys_exec(const char* path);
 int  sys_spawn(const char* path);
 void sys_wait(int pid);
 int  process_is_alive(int pid);
+int  sys_spawn_tty(const char* path, int tty);

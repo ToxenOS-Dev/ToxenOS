@@ -8,6 +8,10 @@
 #include "../include/vfs.h"
 #include "../include/tty.h"
 #include "../include/process.h"
+#include "../include/fbterm.h"
+
+extern uint8_t _binary_build_user_shell_elf_start[];
+extern uint8_t _binary_build_user_shell_elf_end[];
 
 // this gets called from assembly with all registers saved
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx)
@@ -118,6 +122,23 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_WAIT:
             sys_wait((int)ebx);
             return 0;
+
+        case SYS_SPAWN_TTY:
+            return sys_spawn_tty((const char*)ebx, (int)ecx);
+
+        case SYS_SPAWN_EMBEDDED:
+        {
+            // spawn the embedded shell ELF on the given TTY
+            uint8_t* buf  = _binary_build_user_shell_elf_start;
+            uint32_t size = (uint32_t)(_binary_build_user_shell_elf_end
+                                      - _binary_build_user_shell_elf_start);
+            int tty = (int)ebx;
+            int pid = process_create_elf("shell", buf, size);
+            if (pid < 0) return -1;
+            tty_assign_pid(pid, tty);
+            fbterm_pid_tty[pid] = tty;
+            return pid;
+        }
 
         default:
             print("Unknown syscall\n");

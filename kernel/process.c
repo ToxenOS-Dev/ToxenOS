@@ -431,3 +431,44 @@ void sys_wait(int pid)
     while (process_is_alive(pid))
         scheduler();
 }
+
+// spawn on a specific TTY
+int sys_spawn_tty(const char* path, int tty)
+{
+    extern int vfs_open(const char*, int);
+    extern int vfs_read(int, uint8_t*, uint32_t);
+    extern int vfs_close(int);
+    extern int vfs_stat(const char*, uint32_t*);
+
+    uint32_t file_size = 0;
+    if (vfs_stat(path, &file_size) < 0) return -1;
+    if (file_size == 0 || file_size > 4*1024*1024) return -1;
+
+    uint8_t* buf = (uint8_t*)kmalloc(file_size);
+    if (!buf) return -1;
+
+    int fd = vfs_open(path, 1);
+    if (fd < 0) { kfree(buf); return -1; }
+
+    uint32_t total = 0;
+    int bytes;
+    while (total < file_size) {
+        bytes = vfs_read(fd, buf + total, file_size - total);
+        if (bytes <= 0) break;
+        total += bytes;
+    }
+    vfs_close(fd);
+
+    if (total < 52 || *(uint32_t*)buf != 0x464C457F) { kfree(buf); return -1; }
+
+    int pid = process_create_elf("shell", buf, total);
+    kfree(buf);
+    if (pid < 0) return -1;
+
+    extern int tty_for_pid[];
+    extern int fbterm_pid_tty[];
+    tty_for_pid[pid]    = tty;
+    fbterm_pid_tty[pid] = tty;
+
+    return pid;
+}

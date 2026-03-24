@@ -74,6 +74,8 @@ static void map_phys_range(uint32_t phys_start, uint32_t size)
 
 extern uint8_t _binary_build_user_shell_elf_start[];
 extern uint8_t _binary_build_user_shell_elf_end[];
+extern uint8_t _binary_build_user_init_elf_start[];
+extern uint8_t _binary_build_user_init_elf_end[];
 
 void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 {

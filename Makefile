@@ -36,7 +36,7 @@ all: user
 		build/process.o build/syscall.o build/paging.o build/tss.o build/ring3.o \
 		build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/elf.o \
 		build/tty.o \
-		build/user/shell_blob.o build/framebuffer.o build/font.o build/fbterm.o
+		build/user/shell_blob.o build/user/init_blob.o build/framebuffer.o build/font.o build/fbterm.o
 
 	cp build/kernel.bin iso/boot/kernel.bin
 	grub2-mkrescue --modules="part_gpt part_msdos all_video" \
@@ -52,11 +52,18 @@ user:
 		user/shell.c -o build/user/shell.elf
 	objcopy -I binary -O elf32-i386 -B i386 \
 		build/user/shell.elf build/user/shell_blob.o
+	objcopy -I binary -O elf32-i386 -B i386 \
+		build/user/init.elf build/user/init_blob.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
 		-nostdlib -nostartfiles \
 		-Ttext=0x400000 \
 		-no-pie -static \
 		user/hello.c -o build/user/hello.elf
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
+		-nostdlib -nostartfiles \
+		-Ttext=0x400000 \
+		-no-pie -static \
+		user/init.c -o build/user/init.elf
 
 install: user
 	dd if=build/user/shell.elf of=build/disk.img bs=512 seek=2048 conv=notrunc
@@ -73,7 +80,9 @@ tools/txfs_write: tools/txfs_write.c
 
 populate: tools/txfs_write
 	tools/txfs_write build/disk.img \
-		build/user/hello.elf /hello.elf
+		build/user/hello.elf /hello.elf \
+		build/user/shell.elf /disk/shell.elf \
+		build/user/init.elf  /init.elf
 
 clean:
 	rm -rf build/*.o build/*.bin build/*.iso

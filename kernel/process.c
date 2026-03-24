@@ -296,3 +296,138 @@ void scheduler()
     paging_switch(processes[next].page_directory);
     context_switch(&processes[old].regs.esp, &processes[next].regs.esp);
 }
+
+// ── exec: replace current process with a new ELF from disk ───────────────────
+// Loads the ELF at `path` into the current process's address space.
+// Clears all existing user mappings, loads new segments, resets stack.
+// Does not return on success — jumps directly to the new entry point.
+// Returns -1 on failure (file not found, bad ELF, etc.)
+int sys_exec(const char* path)
+{
+    // Read the ELF file from VFS
+    extern int   vfs_open(const char*, int);
+    extern int   vfs_read(int, uint8_t*, uint32_t);
+    extern int   vfs_close(int);
+    extern int   vfs_stat(const char*, uint32_t*);
+
+    uint32_t file_size = 0;
+    if (vfs_stat(path, &file_size) < 0) return -1;
+    if (file_size == 0 || file_size > 4*1024*1024) return -1;  // max 4MB
+
+    // Allocate buffer for ELF (in kernel heap)
+    uint8_t* buf = (uint8_t*)kmalloc(file_size);
+    if (!buf) return -1;
+
+    int fd = vfs_open(path, 1);  // VFS_O_READ
+    if (fd < 0) { kfree(buf); return -1; }
+
+    uint32_t total = 0;
+    int bytes;
+    while (total < file_size) {
+        bytes = vfs_read(fd, buf + total, file_size - total);
+        if (bytes <= 0) break;
+        total += bytes;
+    }
+    vfs_close(fd);
+
+    if (total < 52) { kfree(buf); return -1; }
+
+    // Validate ELF
+    if (*(uint32_t*)buf != 0x464C457F) { kfree(buf); return -1; }
+
+    process_t* p = process_current();
+
+    // Create a fresh page directory for the new image
+    uint32_t* new_dir = paging_create_directory();
+    if (!new_dir) { kfree(buf); return -1; }
+
+    // Load ELF into new directory
+    uint32_t entry = load_elf_into_dir(new_dir, buf, total);
+    kfree(buf);
+    if (!entry) return -1;
+
+    // Map user stack in new directory
+    for (int i = 0; i < USER_STACK_PAGES; i++) {
+        uint32_t va   = USER_STACK_TOP - (i+1) * PAGE_SIZE;
+        uint32_t phys = paging_alloc_page();
+        if (!phys) return -1;
+        paging_map(new_dir, va, phys, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    }
+
+    // Switch to new address space
+    p->page_directory = new_dir;
+    p->user_stack     = USER_STACK_TOP - 4;
+    paging_switch(new_dir);
+
+    // Update TSS kernel stack
+    extern void tss_set_kernel_stack(uint32_t);
+    tss_set_kernel_stack((uint32_t)(p->kernel_stack + KERNEL_STACK_SIZE));
+
+    // Jump to new entry point at ring 3
+    extern void jump_to_ring3(void (*entry)(), uint32_t user_stack);
+    jump_to_ring3((void*)entry, USER_STACK_TOP - 4);
+
+    // Never reached
+    return 0;
+}
+
+// ── spawn: launch a new process from an ELF on disk ──────────────────────────
+// Creates a new process slot, loads the ELF, and marks it ready.
+// The new process inherits the current TTY.
+// Returns the new PID, or -1 on failure.
+int sys_spawn(const char* path)
+{
+    extern int   vfs_open(const char*, int);
+    extern int   vfs_read(int, uint8_t*, uint32_t);
+    extern int   vfs_close(int);
+    extern int   vfs_stat(const char*, uint32_t*);
+
+    uint32_t file_size = 0;
+    if (vfs_stat(path, &file_size) < 0) return -1;
+    if (file_size == 0 || file_size > 4*1024*1024) return -1;
+
+    uint8_t* buf = (uint8_t*)kmalloc(file_size);
+    if (!buf) return -1;
+
+    int fd = vfs_open(path, 1);
+    if (fd < 0) { kfree(buf); return -1; }
+
+    uint32_t total = 0;
+    int bytes;
+    while (total < file_size) {
+        bytes = vfs_read(fd, buf + total, file_size - total);
+        if (bytes <= 0) break;
+        total += bytes;
+    }
+    vfs_close(fd);
+
+    if (total < 52) { kfree(buf); return -1; }
+    if (*(uint32_t*)buf != 0x464C457F) { kfree(buf); return -1; }
+
+    int pid = process_create_elf("program", buf, total);
+    kfree(buf);
+    if (pid < 0) return -1;
+
+    // Inherit TTY from parent
+    extern int tty_for_pid[];
+    extern int fbterm_pid_tty[];
+    int parent_tty = tty_for_pid[process_current()->pid];
+    tty_for_pid[pid]    = parent_tty;
+    fbterm_pid_tty[pid] = parent_tty;
+
+    return pid;
+}
+
+// ── wait: block until a process exits ────────────────────────────────────────
+int process_is_alive(int pid)
+{
+    if (pid < 0 || pid >= MAX_PROCESSES) return 0;
+    return processes[pid].state != PROCESS_DEAD;
+}
+
+void sys_wait(int pid)
+{
+    if (pid < 0 || pid >= MAX_PROCESSES) return;
+    while (process_is_alive(pid))
+        scheduler();
+}

@@ -52,16 +52,28 @@ user:
 		user/shell.c -o build/user/shell.elf
 	objcopy -I binary -O elf32-i386 -B i386 \
 		build/user/shell.elf build/user/shell_blob.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
+		-nostdlib -nostartfiles \
+		-Ttext=0x400000 \
+		-no-pie -static \
+		user/hello.c -o build/user/hello.elf
 
 install: user
 	dd if=build/user/shell.elf of=build/disk.img bs=512 seek=2048 conv=notrunc
 
-run: all
+run: all populate
 	qemu-system-i386 -cdrom build/ToxenOS.iso -drive file=build/disk.img,format=raw,index=0,media=disk
 
 disk:
 	mkdir -p build
 	dd if=/dev/zero of=build/disk.img bs=512 count=204800
+
+tools/txfs_write: tools/txfs_write.c
+	gcc -O2 -o tools/txfs_write tools/txfs_write.c
+
+populate: tools/txfs_write
+	tools/txfs_write build/disk.img \
+		build/user/hello.elf /hello.elf
 
 clean:
 	rm -rf build/*.o build/*.bin build/*.iso

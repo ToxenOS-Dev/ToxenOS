@@ -7,6 +7,7 @@
 #include "../include/vga.h"
 #include "../include/vfs.h"
 #include "../include/tty.h"
+#include "../include/process.h"
 
 // this gets called from assembly with all registers saved
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx)
@@ -100,13 +101,23 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return 0;
 
         case SYS_GETPID:
-            return 0;
+            return process_current()->pid;
 
         case SYS_GET_TTY:
             return tty_current();
 
         case SYS_MY_TTY:
             return tty_for_pid[process_current()->pid];
+
+        case SYS_EXEC:
+            return sys_exec((const char*)ebx);
+
+        case SYS_SPAWN:
+            return sys_spawn((const char*)ebx);
+
+        case SYS_WAIT:
+            sys_wait((int)ebx);
+            return 0;
 
         default:
             print("Unknown syscall\n");

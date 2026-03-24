@@ -112,6 +112,33 @@ int sys_my_tty()
     return ret;
 }
 
+
+int sys_exec(const char* path)
+{
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(21), "b"(path));
+    return ret;
+}
+
+int sys_spawn(const char* path)
+{
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(22), "b"(path));
+    return ret;
+}
+
+void sys_wait(int pid)
+{
+    __asm__ volatile("int $0x80" :: "a"(23), "b"(pid));
+}
+
+int sys_getpid()
+{
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(3));
+    return ret;
+}
+
 static int str_len(const char* s)
 {
     int i = 0;
@@ -1206,6 +1233,95 @@ static void cmd_file(const char* args)
     print("\n");
 }
 
+static void cmd_run(const char* args)
+{
+    if (!args || args[0] == 0)
+    {
+        print("Usage: run <file.elf>\n");
+        return;
+    }
+
+    char path[256];
+    str_copy(path, cwd);
+    int len = str_len(path);
+    path[len] = '/';
+    str_copy(path + len + 1, args);
+
+    if (sys_stat(path) < 0)
+    {
+        set_color(0x0C);
+        print("run: file not found\n");
+        set_color(0x07);
+        return;
+    }
+
+    file_type_t ft = get_file_type(args);
+    if (ft != FTYPE_BINARY)
+    {
+        set_color(0x0C);
+        print("run: not an executable\n");
+        set_color(0x07);
+        return;
+    }
+
+    // exec replaces current process — shell will restart after program exits
+    // (actually exec never returns, so this TTY becomes the program)
+    sys_exec(path);
+
+    // Only reached if exec failed
+    set_color(0x0C);
+    print("run: failed to execute\n");
+    set_color(0x07);
+}
+
+static void cmd_spawn(const char* args)
+{
+    if (!args || args[0] == 0)
+    {
+        print("Usage: spawn <file.elf>\n");
+        return;
+    }
+
+    char path[256];
+    str_copy(path, cwd);
+    int len = str_len(path);
+    path[len] = '/';
+    str_copy(path + len + 1, args);
+
+    if (sys_stat(path) < 0)
+    {
+        set_color(0x0C);
+        print("spawn: file not found\n");
+        set_color(0x07);
+        return;
+    }
+
+    int pid = sys_spawn(path);
+    if (pid < 0)
+    {
+        set_color(0x0C);
+        print("spawn: failed\n");
+        set_color(0x07);
+        return;
+    }
+
+    set_color(0x0A);
+    print("spawned pid ");
+    // print pid as decimal
+    char buf[16];
+    int n = pid, i = 0;
+    if (n == 0) { buf[i++] = '0'; }
+    else { while (n > 0) { buf[i++] = '0' + (n % 10); n /= 10; } }
+    // reverse
+    for (int a = 0, b = i-1; a < b; a++, b--) {
+        char tmp = buf[a]; buf[a] = buf[b]; buf[b] = tmp;
+    }
+    buf[i] = 0;
+    print(buf);
+    print("\n");
+    set_color(0x07);
+}
+
 static void cmd_help()
 {
     set_color(0x0B);  // cyan
@@ -1218,6 +1334,8 @@ static void cmd_help()
     print("  file <f>    - show file type info\n");
     print("  shw <file>  - show text file contents\n");
     print("  tedit <f>   - edit text file\n");
+    print("  run <f>     - run executable (replaces shell)\n");
+    print("  spawn <f>   - run executable as new process\n");
     print("  mkd <dir>   - make directory\n");
     print("  mkef <file> - make empty file\n");
     print("  rm <file>   - delete file\n");
@@ -1294,6 +1412,8 @@ static void run_command(char* buf)
     else if (str_equal(buf, "rname")) cmd_rname(args);
     else if (str_equal(buf, "tedit")) cmd_tedit(args);
     else if (str_equal(buf, "file"))  cmd_file(args);
+    else if (str_equal(buf, "run"))   cmd_run(args);
+    else if (str_equal(buf, "spawn")) cmd_spawn(args);
     else                                 cmd_unknown(buf);
 }
 

@@ -36,3 +36,8 @@ void       scheduler();
 process_t* process_current();
 
 #endif
+
+int  sys_exec(const char* path);
+int  sys_spawn(const char* path);
+void sys_wait(int pid);
+int  process_is_alive(int pid);

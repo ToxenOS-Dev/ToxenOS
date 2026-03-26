@@ -29,6 +29,9 @@
 #define SYS_WAIT      23   // wait(pid)   — block until process exits
 #define SYS_SPAWN_TTY      24   // spawn_tty(path, tty) — spawn on specific TTY
 #define SYS_SPAWN_EMBEDDED 25  // spawn embedded shell on given TTY
+#define SYS_GET_ARGS       26  // get args string for current process
+#define SYS_SPAWN_ARGS     27  // spawn_tty with args string
+#define SYS_EXEC_CMD       28  // spawn external cmd, respawn shell when done
 
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx,
                                                   uint32_t ecx, uint32_t edx);

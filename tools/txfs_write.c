@@ -47,12 +47,22 @@ static void wrsb(){wr(TXFS_BLOCK_SUPER,&sb);}
 
 static int btest(uint8_t* m,int i){return(m[i/8]>>(i%8))&1;}
 static void bset(uint8_t* m,int i){m[i/8]|=(1<<(i%8));}
-static int balloc(uint8_t* m,int max){for(int i=0;i<max;i++)if(!btest(m,i)){bset(m,i);return i;}return -1;}
+static int balloc(uint8_t* m,int max){
+    if(max<=0||max>65536)return -1;
+    for(int i=0;i<max;i++)if(!btest(m,i)){bset(m,i);return i;}
+    return -1;
+}
 
 static void rdinode(uint32_t n,inode_t* v){uint8_t buf[TXFS_BLOCK_SIZE];rd(TXFS_BLOCK_INODES+(n/16),buf);memcpy(v,buf+(n%16)*sizeof(inode_t),sizeof(inode_t));}
 static void wrinode(uint32_t n,const inode_t* v){uint8_t buf[TXFS_BLOCK_SIZE];rd(TXFS_BLOCK_INODES+(n/16),buf);memcpy(buf+(n%16)*sizeof(inode_t),v,sizeof(inode_t));wr(TXFS_BLOCK_INODES+(n/16),buf);}
 
-static int ablock(){rd(TXFS_BLOCK_BBITMAP,bmap);int b=balloc(bmap,sb.total_blocks);if(b<0)return -1;wr(TXFS_BLOCK_BBITMAP,bmap);sb.free_blocks--;wrsb();return b+TXFS_BLOCK_DATA;}
+static int ablock(){
+    rd(TXFS_BLOCK_BBITMAP,bmap);
+    if(sb.total_blocks==0||sb.total_blocks>100000){fprintf(stderr,"bad total_blocks: %u\n",sb.total_blocks);return -1;}
+    int b=balloc(bmap,sb.total_blocks);
+    if(b<0){fprintf(stderr,"out of blocks\n");return -1;}
+    wr(TXFS_BLOCK_BBITMAP,bmap);sb.free_blocks--;wrsb();return b+TXFS_BLOCK_DATA;
+}
 static int ainode(){rd(TXFS_BLOCK_IBITMAP,imap);int i=balloc(imap,sb.total_inodes);if(i<0)return -1;wr(TXFS_BLOCK_IBITMAP,imap);sb.free_inodes--;wrsb();return i;}
 
 static void format(uint32_t total){
@@ -99,9 +109,14 @@ static int write_file(const char* txpath, const char* lpath){
                 }
             }
             if(found<0){
-                // create subdir
+                // create subdir — allocate its own data block immediately
                 int ni=ainode();
-                inode_t nd={0};nd.mode=(TXFS_TYPE_DIR<<12)|0x1C0;nd.links=1;wrinode(ni,&nd);
+                inode_t nd={0};nd.mode=(TXFS_TYPE_DIR<<12)|0x1C0;nd.links=1;
+                int nd_blk=ablock();
+                nd.blocks[0]=nd_blk;
+                uint8_t zz[TXFS_BLOCK_SIZE]={0};wr(nd_blk,zz);
+                wrinode(ni,&nd);
+                // add entry to parent directory
                 if(!dir.blocks[0]){int blk=ablock();dir.blocks[0]=blk;uint8_t z[TXFS_BLOCK_SIZE]={0};wr(blk,z);}
                 rd(dir.blocks[0],buf);
                 uint32_t sl2=dir.size/sizeof(dirent_t);
@@ -170,7 +185,13 @@ int main(int argc,char** argv){
         fseek(disk,0,SEEK_END);long dsz=ftell(disk);
         format(dsz/TXFS_BLOCK_SIZE);rdsb();
     }
-    for(int i=2;i+1<argc;i+=2)
-        write_file(argv[i+1],argv[i]);
+    if (argc == 4) {
+        write_file(argv[3], argv[2]);
+    } else {
+        for(int i=2;i+1<argc;i+=2) {
+            if (argv[i] && argv[i+1])
+                write_file(argv[i+1],argv[i]);
+        }
+    }
     fclose(disk);return 0;
 }

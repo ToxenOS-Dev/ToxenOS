@@ -5,7 +5,7 @@
 
 #define FBTERM_CHAR_W    8
 #define FBTERM_CHAR_H   16
-#define FBTERM_TTY_COUNT 4
+#define FBTERM_TTY_COUNT 1
 
 void fbterm_init(void);
 void fbterm_putchar(char c);

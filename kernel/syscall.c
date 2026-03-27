@@ -126,24 +126,6 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_SPAWN_TTY:
             return sys_spawn_tty((const char*)ebx, (int)ecx);
 
-        case SYS_GET_ARGS:
-        {
-            // copy current process args into user buffer (ebx)
-            char* buf = (char*)ebx;
-            const char* src = process_current()->args;
-            int i = 0;
-            while (src[i] && i < 255) { buf[i] = src[i]; i++; }
-            buf[i] = 0;
-            return i;
-        }
-
-        case SYS_SPAWN_ARGS:
-            // ebx=path, ecx=tty, edx=args
-            return sys_spawn_tty_args((const char*)ebx, (int)ecx, (const char*)edx);
-
-        case SYS_EXEC_CMD:
-            return sys_exec_cmd((const char*)ebx, (int)ecx, (const char*)edx);
-
         case SYS_SPAWN_EMBEDDED:
         {
             // spawn the embedded shell ELF on the given TTY

@@ -139,21 +139,6 @@ int sys_getpid()
     return ret;
 }
 
-
-static int spawn_args(const char* path, int tty, const char* args)
-{
-    int ret;
-    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(27), "b"(path), "c"(tty), "d"(args));
-    return ret;
-}
-
-static int exec_cmd(const char* path, int tty, const char* args)
-{
-    int ret;
-    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(28), "b"(path), "c"(tty), "d"(args));
-    return ret;
-}
-
 static int str_len(const char* s)
 {
     int i = 0;
@@ -1407,79 +1392,29 @@ static void run_command(char* buf)
         args++;     // args points to rest
     }
 
-    // ── Builtins (must stay in shell) ────────────────────────────────────────
-    if      (str_equal(buf, "cd"))       cmd_cd(args);
-    else if (str_equal(buf, "cdb"))      cmd_cd("..");
+    // dispatch
+    if      (str_equal(buf, "echo"))     cmd_echo(args);
     else if (str_equal(buf, "clear"))    cmd_clear();
+    else if (str_equal(buf, "help"))     cmd_help();
+    else if (str_equal(buf, "uname"))    cmd_uname();
     else if (str_equal(buf, "reboot"))   cmd_reboot();
     else if (str_equal(buf, "shutdown")) cmd_shutdown();
-    else if (str_equal(buf, "run"))      cmd_run(args);
-    else if (str_equal(buf, "spawn"))    cmd_spawn(args);
-    else if (str_equal(buf, "help"))     cmd_help();
-    else
-    {
-        // ── External commands in /disk/bin/ ──────────────────────────────────
-        // Build path: /disk/bin/<cmd>
-        char prog_path[64];
-        str_copy(prog_path, "/disk/bin/");
-        int plen = str_len(prog_path);
-        str_copy(prog_path + plen, buf);
-        // append .elf
-        int flen = str_len(prog_path);
-        prog_path[flen]   = '.';
-        prog_path[flen+1] = 'e';
-        prog_path[flen+2] = 'l';
-        prog_path[flen+3] = 'f';
-        prog_path[flen+4] = 0;
-
-        if (sys_stat(prog_path) >= 0)
-        {
-            // Build args: for path-sensitive commands, pass cwd+"/"+args
-            // For simple commands, just pass args
-            char full_args[256];
-            if (args && args[0])
-            {
-                // Check if args looks like a relative path (no leading /)
-                if (args[0] != '/')
-                {
-                    str_copy(full_args, cwd);
-                    int clen = str_len(full_args);
-                    full_args[clen] = '/';
-                    str_copy(full_args + clen + 1, args);
-                }
-                else
-                {
-                    str_copy(full_args, args);
-                }
-            }
-            else
-            {
-                // No args — pass cwd so programs like ls and pcd know where they are
-                str_copy(full_args, cwd);
-            }
-
-            int my_tty = sys_my_tty();
-            if (my_tty < 0) my_tty = 0;
-            // Use exec_cmd so shell is respawned after program exits
-            int pid = exec_cmd(prog_path, my_tty, full_args);
-            if (pid >= 0) {
-                sys_wait(pid);
-                // Shell will be respawned by kernel, so exit this instance
-                __asm__ volatile("int $0x80" :: "a"(0));
-            }
-            else {
-                set_color(0x0C);
-                print("failed to run: ");
-                print(buf);
-                print("\n");
-                set_color(0x07);
-            }
-        }
-        else
-        {
-            cmd_unknown(buf);
-        }
-    }
+    else if (str_equal(buf, "ls"))   cmd_ls();
+    else if (str_equal(buf, "cd"))   cmd_cd(args);
+    else if (str_equal(buf, "cdb"))  cmd_cd("..");
+    else if (str_equal(buf, "pcd"))  cmd_pcd();
+    else if (str_equal(buf, "shw"))  cmd_shw(args);
+    else if (str_equal(buf, "mkd"))  cmd_mkd(args);
+    else if (str_equal(buf, "mkef")) cmd_mkef(args);
+    else if (str_equal(buf, "rm"))   cmd_rm(args);
+    else if (str_equal(buf, "cp"))   cmd_cp(args);
+    else if (str_equal(buf, "mv"))  cmd_move(args);
+    else if (str_equal(buf, "rname")) cmd_rname(args);
+    else if (str_equal(buf, "tedit")) cmd_tedit(args);
+    else if (str_equal(buf, "file"))  cmd_file(args);
+    else if (str_equal(buf, "run"))   cmd_run(args);
+    else if (str_equal(buf, "spawn")) cmd_spawn(args);
+    else                                 cmd_unknown(buf);
 }
 
 static void print_prompt()

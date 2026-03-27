@@ -29,7 +29,7 @@ static int active_tty = 0;
 static int cursor_visible = 1;  // current blink state
 
 int fbterm_pid_tty[MAX_PROCESSES];
-static const uint8_t indicator_fg[FBTERM_TTY_COUNT] = {6,11,10,14};
+static const uint8_t indicator_fg[FBTERM_TTY_COUNT] = {6};
 
 // ── Pixel primitives ──────────────────────────────────────────────────────────
 
@@ -219,7 +219,7 @@ int  fbterm_cols(void)        { return term_cols; }
 int  fbterm_rows(void)        { return term_rows; }
 
 void fbterm_draw_indicator(void) {
-    const char* labels[FBTERM_TTY_COUNT] = {"TTY1","TTY2","TTY3","TTY4"};
+    const char* labels[FBTERM_TTY_COUNT] = {"TTY1"};
     const char* label = labels[active_tty];
     uint8_t fg = indicator_fg[active_tty];
     int col = term_cols-4; if (col<0) col=0;

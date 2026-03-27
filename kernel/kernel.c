@@ -137,17 +137,6 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         while(1) __asm__ volatile("hlt");
     }
 
-    // Spawn shells for TTY 1-3 as isolated processes
-    for (int t = 1; t < 4; t++) {
-        int pid = process_create_elf("shell", elf_buf, elf_size);
-        if (pid < 0) {
-            print("Failed to spawn shell\n");
-            continue;
-        }
-        tty_assign_pid(pid, t);
-        fbterm_pid_tty[pid] = t;
-    }
-
     // TTY 0: current context drops to ring 3
     tty_for_pid[0]    = 0;
     fbterm_pid_tty[0] = 0;

@@ -264,28 +264,6 @@ process_t* process_current()
 
 void scheduler()
 {
-    // Check for dead processes that need shell respawn
-    extern int tty_for_pid[];
-    extern int fbterm_pid_tty[];
-    extern void tty_assign_pid(int pid, int tty);
-    extern uint8_t _binary_build_user_shell_elf_start[];
-    extern uint8_t _binary_build_user_shell_elf_end[];
-
-    for (int i = 1; i < MAX_PROCESSES; i++) {
-        if (processes[i].state == PROCESS_DEAD && processes[i].respawn_shell) {
-            processes[i].respawn_shell = 0;  // clear flag first
-            uint8_t* buf  = _binary_build_user_shell_elf_start;
-            uint32_t size = (uint32_t)(_binary_build_user_shell_elf_end
-                                      - _binary_build_user_shell_elf_start);
-            int tty = tty_for_pid[i];
-            int new_pid = process_create_elf("shell", buf, size);
-            if (new_pid >= 0) {
-                tty_assign_pid(new_pid, tty);
-                fbterm_pid_tty[new_pid] = tty;
-            }
-        }
-    }
-
     int next = current_pid;
 
     for (int i = 1; i <= MAX_PROCESSES; i++)
@@ -433,7 +411,6 @@ int sys_spawn(const char* path)
     // Inherit TTY from parent
     extern int tty_for_pid[];
     extern int fbterm_pid_tty[];
-    extern void tty_assign_pid(int pid, int tty);
     int parent_tty = tty_for_pid[process_current()->pid];
     tty_for_pid[pid]    = parent_tty;
     fbterm_pid_tty[pid] = parent_tty;
@@ -490,38 +467,8 @@ int sys_spawn_tty(const char* path, int tty)
 
     extern int tty_for_pid[];
     extern int fbterm_pid_tty[];
-    extern void tty_assign_pid(int pid, int tty);
     tty_for_pid[pid]    = tty;
     fbterm_pid_tty[pid] = tty;
 
-    return pid;
-}
-
-// spawn on a specific TTY with argument string
-int sys_spawn_tty_args(const char* path, int tty, const char* args)
-{
-    int pid = sys_spawn_tty(path, tty);
-    if (pid < 0) return -1;
-
-    // store args in the process slot
-    if (args) {
-        int i = 0;
-        while (args[i] && i < 255) {
-            processes[pid].args[i] = args[i];
-            i++;
-        }
-        processes[pid].args[i] = 0;
-    } else {
-        processes[pid].args[0] = 0;
-    }
-    return pid;
-}
-
-// exec_cmd: spawn external command on same TTY, mark it to respawn shell on exit
-int sys_exec_cmd(const char* path, int tty, const char* args)
-{
-    int pid = sys_spawn_tty_args(path, tty, args);
-    if (pid < 0) return -1;
-    processes[pid].respawn_shell = 1;
     return pid;
 }

@@ -48,11 +48,18 @@ static char cwd[256] = "/disk";
 
 static void print_prompt()
 {
-    set_color(0x0A); print("[T] \\"); 
-    // print cwd without /disk prefix
-    const char* display = cwd + 5; // skip "/disk"
-    if (*display == 0) print("\\");
-    else print(display);
+    set_color(0x0A); print("[T] \\\\root");
+    // print path after /disk, converting / to backslash
+    const char* p = cwd + 5; // skip "/disk"
+    while (*p) {
+        if (*p == '/') print("\\");
+        else {
+            char buf[2] = {*p, 0};
+            print(buf);
+        }
+        p++;
+    }
+    set_color(0x0A); print("\\");
     set_color(0x07); print("> ");
 }
 

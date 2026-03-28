@@ -125,8 +125,16 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
     if (slot == -1) return -1;
 
     process_t* p = &processes[slot];
-    p->pid   = slot;
-    p->state = PROCESS_READY;
+
+    // Free old kernel stack if reusing a dead slot
+    if (p->kernel_stack) {
+        kfree(p->kernel_stack);
+        p->kernel_stack = 0;
+    }
+
+    p->pid          = slot;
+    p->state        = PROCESS_READY;
+    p->args[0]      = 0;
     copy_str(p->name, name, 32);
 
     // Create an isolated page directory for this process
@@ -193,8 +201,16 @@ int process_create(const char* name, void (*entry)())
     if (slot == -1) return -1;
 
     process_t* p = &processes[slot];
+
+    // Free old kernel stack if reusing a dead slot
+    if (p->kernel_stack) {
+        kfree(p->kernel_stack);
+        p->kernel_stack = 0;
+    }
+
     p->pid   = slot;
     p->state = PROCESS_READY;
+    p->args[0] = 0;
     copy_str(p->name, name, 32);
 
     p->page_directory = paging_create_directory();
@@ -228,33 +244,9 @@ void process_exit()
     processes[current_pid].state = PROCESS_DEAD;
     process_count--;
 
-    // Find next ready process
-    int next = -1;
-    for (int i = 1; i < MAX_PROCESSES; i++)
-        if (processes[i].state == PROCESS_READY) { next = i; break; }
-
-    if (next == -1)
-    {
-        // Back to kernel idle
-        current_pid = 0;
-        processes[0].state = PROCESS_RUNNING;
-        paging_switch(kernel_directory);
-        __asm__ volatile(
-            "mov %0, %%esp\n"
-            "sti\n"
-            "1: hlt\n"
-            "jmp 1b\n"
-            :: "r"(processes[0].regs.esp)
-        );
-    }
-
-    processes[next].state = PROCESS_RUNNING;
-    int old = current_pid;
-    current_pid = next;
-
-    tss_set_kernel_stack((uint32_t)(processes[next].kernel_stack + KERNEL_STACK_SIZE));
-    paging_switch(processes[next].page_directory);
-    context_switch(&processes[old].regs.esp, &processes[next].regs.esp);
+    // Just call the scheduler to pick the next process
+    // This lets the shell's polling loop detect the dead process naturally
+    scheduler();
 }
 
 process_t* process_current()
@@ -264,6 +256,7 @@ process_t* process_current()
 
 void scheduler()
 {
+
     int next = current_pid;
 
     for (int i = 1; i <= MAX_PROCESSES; i++)
@@ -285,8 +278,10 @@ void scheduler()
             return;
     }
 
-    processes[current_pid].state = PROCESS_READY;
-    processes[next].state        = PROCESS_RUNNING;
+    // Only mark as READY if still alive (not dead from process_exit)
+    if (processes[current_pid].state != PROCESS_DEAD)
+        processes[current_pid].state = PROCESS_READY;
+    processes[next].state = PROCESS_RUNNING;
 
     int old = current_pid;
     current_pid = next;
@@ -411,6 +406,7 @@ int sys_spawn(const char* path)
     // Inherit TTY from parent
     extern int tty_for_pid[];
     extern int fbterm_pid_tty[];
+    extern void tty_assign_pid(int pid, int tty);
     int parent_tty = tty_for_pid[process_current()->pid];
     tty_for_pid[pid]    = parent_tty;
     fbterm_pid_tty[pid] = parent_tty;
@@ -467,8 +463,37 @@ int sys_spawn_tty(const char* path, int tty)
 
     extern int tty_for_pid[];
     extern int fbterm_pid_tty[];
+    extern void tty_assign_pid(int pid, int tty);
     tty_for_pid[pid]    = tty;
     fbterm_pid_tty[pid] = tty;
 
+    return pid;
+}
+
+// spawn on a specific TTY with argument string
+int sys_spawn_tty_args(const char* path, int tty, const char* args)
+{
+    int pid = sys_spawn_tty(path, tty);
+    if (pid < 0) return -1;
+
+    // store args in the process slot
+    if (args) {
+        int i = 0;
+        while (args[i] && i < 255) {
+            processes[pid].args[i] = args[i];
+            i++;
+        }
+        processes[pid].args[i] = 0;
+    } else {
+        processes[pid].args[0] = 0;
+    }
+    return pid;
+}
+
+// exec_cmd: spawn external command on same TTY, mark it to respawn shell on exit
+int sys_exec_cmd(const char* path, int tty, const char* args)
+{
+    int pid = sys_spawn_tty_args(path, tty, args);
+    if (pid < 0) return -1;
     return pid;
 }

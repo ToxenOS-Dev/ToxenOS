@@ -4,16 +4,13 @@
 #include "../include/process.h"
 #include "../include/vga.h"
 #include "../include/keyboard.h"
-#include "../include/vga.h"
 #include "../include/vfs.h"
 #include "../include/tty.h"
-#include "../include/process.h"
 #include "../include/fbterm.h"
 
 extern uint8_t _binary_build_user_shell_elf_start[];
 extern uint8_t _binary_build_user_shell_elf_end[];
 
-// this gets called from assembly with all registers saved
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx)
 {
     switch (eax)
@@ -44,40 +41,26 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return 0;
 
         case SYS_REBOOT:
-            __asm__ volatile(
-                "movb $0xFE, %%al\n"
-                "outb %%al, $0x64\n"
-                ::: "eax"
-            );
+            __asm__ volatile("movb $0xFE,%%al; outb %%al,$0x64":::"eax");
             return 0;
 
         case SYS_SHUTDOWN:
-            __asm__ volatile(
-                "movw $0x2000, %%ax\n"
-                "movw $0x604, %%dx\n"
-                "outw %%ax, %%dx\n"
-                ::: "eax", "edx"
-            );
+            __asm__ volatile("movw $0x2000,%%ax; movw $0x604,%%dx; outw %%ax,%%dx":::"eax","edx");
             return 0;
 
         case SYS_READDIR:
-            // ebx = path, ecx = out buffer, edx = index
             return vfs_readdir((const char*)ebx, (char*)ecx, edx);
 
         case SYS_OPEN:
-            // ebx = path, ecx = flags
             return vfs_open((const char*)ebx, ecx);
 
         case SYS_READ:
-            // ebx = fd, ecx = buf, edx = size
             return vfs_read(ebx, (uint8_t*)ecx, edx);
 
         case SYS_WRITE:
-            // ebx = fd, ecx = buf, edx = size
             return vfs_write(ebx, (const uint8_t*)ecx, edx);
 
         case SYS_CLOSE:
-            // ebx = fd
             return vfs_close(ebx);
 
         case SYS_STAT:
@@ -87,13 +70,8 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         }
 
         case SYS_ISDIR:
-        {
-            // check if path is a directory
-            int mount_idx = -1;
-            // reuse vfs_stat but check inode type
             return vfs_isdir((const char*)ebx);
-        }
-            
+
         case SYS_MKDIR:
             return vfs_mkdir((const char*)ebx);
 
@@ -126,9 +104,27 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_SPAWN_TTY:
             return sys_spawn_tty((const char*)ebx, (int)ecx);
 
+        case 26:  // SYS_GET_ARGS
+        {
+            char* buf = (char*)ebx;
+            const char* src = process_current()->args;
+            int i = 0;
+            while (src[i] && i < 255) { buf[i] = src[i]; i++; }
+            buf[i] = 0;
+            return i;
+        }
+
+        case 27:  // SYS_SPAWN_ARGS
+            return sys_spawn_tty_args((const char*)ebx, (int)ecx, (const char*)edx);
+
+        case 28:  // SYS_IS_ALIVE
+            return process_is_alive((int)ebx);
+
+        case 29:  // SYS_KEYAVAIL
+            return keyboard_available();
+
         case SYS_SPAWN_EMBEDDED:
         {
-            // spawn the embedded shell ELF on the given TTY
             uint8_t* buf  = _binary_build_user_shell_elf_start;
             uint32_t size = (uint32_t)(_binary_build_user_shell_elf_end
                                       - _binary_build_user_shell_elf_start);
@@ -146,34 +142,14 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
     }
 }
 
-void sys_exit(int code)
-{
-    process_exit();
-}
-
-void sys_print(const char* str)
-{
-    print(str);
-}
-
-char sys_getchar()
-{
-    return keyboard_getchar();
-}
-
-int sys_getpid()
-{
-    return process_current()->pid;
-}
+void sys_exit(int code)   { process_exit(); }
+void sys_print(const char* str) { print(str); }
+char sys_getchar()        { return keyboard_getchar(); }
+int  sys_getpid()         { return process_current()->pid; }
 
 void syscall_init()
 {
-    // register int 0x80 in IDT
-    // we'll wire this up in isr.asm
     extern void isr128();
-    
-    // reuse idt_set_gate — need to expose it
-    // for now declare it extern
     extern void idt_set_gate(int n, uint32_t handler);
     idt_set_gate_user(0x80, (uint32_t)isr128);
 }

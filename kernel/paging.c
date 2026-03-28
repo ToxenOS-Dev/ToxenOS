@@ -33,8 +33,7 @@ uint32_t* paging_create_directory()
     uint32_t* dir = (uint32_t*)kmalloc_aligned(PAGE_SIZE, PAGE_SIZE);
     if (!dir) return 0;
 
-    // Copy entire kernel directory — user gets same mappings as kernel
-    // Individual PTEs control what user can actually access
+    // Copy all kernel entries so kernel code/data is accessible
     for (int i = 0; i < 1024; i++)
         dir[i] = kernel_directory[i];
 
@@ -57,10 +56,25 @@ void paging_map(uint32_t* directory, uint32_t virt, uint32_t phys, uint32_t flag
 
     if (!(directory[dir_idx] & PAGE_PRESENT))
     {
+        // No table yet — create a fresh one
         uint32_t* table = (uint32_t*)kmalloc_aligned(PAGE_SIZE, PAGE_SIZE);
         if (!table) return;
         for (int i = 0; i < 1024; i++) table[i] = 0;
         directory[dir_idx] = (uint32_t)table | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
+    }
+    else if (directory == kernel_directory)
+    {
+        // Mapping into kernel directory directly — use as-is
+    }
+    else if ((directory[dir_idx] & ~0xFFF) == (kernel_directory[dir_idx] & ~0xFFF))
+    {
+        // Shared kernel page table — clone it so we can add user mappings
+        // without corrupting the kernel's own entries
+        uint32_t* old_table = (uint32_t*)(directory[dir_idx] & ~0xFFF);
+        uint32_t* new_table = (uint32_t*)kmalloc_aligned(PAGE_SIZE, PAGE_SIZE);
+        if (!new_table) return;
+        for (int i = 0; i < 1024; i++) new_table[i] = old_table[i];
+        directory[dir_idx] = (uint32_t)new_table | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
     }
 
     uint32_t* table = (uint32_t*)(directory[dir_idx] & ~0xFFF);

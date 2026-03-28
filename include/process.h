@@ -26,6 +26,7 @@ typedef struct {
     uint32_t        user_stack;      // user-mode stack virtual address
     uint32_t*       page_directory;  // this process's page directory
     char            name[32];
+    char            args[256];
 } process_t;
 
 void       process_init();
@@ -42,3 +43,4 @@ int  sys_spawn(const char* path);
 void sys_wait(int pid);
 int  process_is_alive(int pid);
 int  sys_spawn_tty(const char* path, int tty);
+int sys_spawn_tty_args(const char* path, int tty, const char* args);

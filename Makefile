@@ -44,36 +44,31 @@ all: user
     -o build/ToxenOS.iso iso
 
 user:
-	mkdir -p build/user
+	mkdir -p build/user build/user/bin
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
 		-nostdlib -nostartfiles \
-		-Ttext=0x400000 \
+		-Ttext=0x10000000 \
 		-no-pie -static \
 		user/shell.c -o build/user/shell.elf
 	objcopy -I binary -O elf32-i386 -B i386 \
 		build/user/shell.elf build/user/shell_blob.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
 		-nostdlib -nostartfiles \
-		-Ttext=0x400000 \
+		-Ttext=0x10000000 \
 		-no-pie -static \
 		user/init.c -o build/user/init.elf
 	objcopy -I binary -O elf32-i386 -B i386 \
 		build/user/init.elf build/user/init_blob.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
 		-nostdlib -nostartfiles \
-		-Ttext=0x400000 \
+		-Ttext=0x10000000 \
 		-no-pie -static \
 		user/hello.c -o build/user/hello.elf
-	mkdir -p build/user/bin
-	# External command programs
-	for cmd in ls shw mkef mkd rm echo pcd uname file; do \
+	for cmd in ls shw mkef mkd rm echo pcd uname file help; do \
 		gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
-			-nostdlib -nostartfiles -Ttext=0x400000 -no-pie -static \
+			-nostdlib -nostartfiles -Ttext=0x10000000 -no-pie -static \
 			user/bin/$$cmd.c -o build/user/bin/$$cmd.elf || exit 1; \
 	done
-
-install: user
-	dd if=build/user/shell.elf of=build/disk.img bs=512 seek=2048 conv=notrunc
 
 run: all populate
 	qemu-system-i386 -cdrom build/ToxenOS.iso -drive file=build/disk.img,format=raw,index=0,media=disk
@@ -85,29 +80,21 @@ disk:
 tools/txfs_write: tools/txfs_write.c
 	gcc -O2 -o tools/txfs_write tools/txfs_write.c
 
-populate: tools/txfs_write user
+populate: tools/txfs_write
 	dd if=/dev/zero of=build/disk.img bs=4096 count=25600
-	@for pair in \
-		"build/user/hello.elf /hello.elf" \
-		"build/user/shell.elf /shell.elf" \
-		"build/user/init.elf /init.elf" \
-		"build/user/bin/ls.elf /bin/ls.elf" \
-		"build/user/bin/shw.elf /bin/shw.elf" \
-		"build/user/bin/mkef.elf /bin/mkef.elf" \
-		"build/user/bin/mkd.elf /bin/mkd.elf" \
-		"build/user/bin/rm.elf /bin/rm.elf" \
-		"build/user/bin/echo.elf /bin/echo.elf" \
-		"build/user/bin/pcd.elf /bin/pcd.elf" \
-		"build/user/bin/uname.elf /bin/uname.elf" \
-		"build/user/bin/file.elf /bin/file.elf"; do \
-		src=$$(echo $$pair | cut -d' ' -f1); \
-		dst=$$(echo $$pair | cut -d' ' -f2); \
-		if [ -f "$$src" ]; then \
-			tools/txfs_write build/disk.img $$src $$dst; \
-		else \
-			echo "WARNING: $$src not found, skipping"; \
-		fi; \
-	done
+	tools/txfs_write build/disk.img build/user/bin/ls.elf /bin/ls.elf
+	tools/txfs_write build/disk.img build/user/bin/shw.elf /bin/shw.elf
+	tools/txfs_write build/disk.img build/user/bin/mkef.elf /bin/mkef.elf
+	tools/txfs_write build/disk.img build/user/bin/mkd.elf /bin/mkd.elf
+	tools/txfs_write build/disk.img build/user/bin/rm.elf /bin/rm.elf
+	tools/txfs_write build/disk.img build/user/bin/echo.elf /bin/echo.elf
+	tools/txfs_write build/disk.img build/user/bin/pcd.elf /bin/pcd.elf
+	tools/txfs_write build/disk.img build/user/bin/uname.elf /bin/uname.elf
+	tools/txfs_write build/disk.img build/user/bin/file.elf /bin/file.elf
+	tools/txfs_write build/disk.img build/user/bin/help.elf /bin/help.elf
+	tools/txfs_write build/disk.img build/user/hello.elf /hello.elf
+	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
+	tools/txfs_write build/disk.img build/user/init.elf /init.elf
 
 clean:
 	rm -rf build/*.o build/*.bin build/*.iso

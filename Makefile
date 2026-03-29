@@ -29,12 +29,13 @@ all: user
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/framebuffer.c -o build/framebuffer.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/font.c -o build/font.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/fbterm.c -o build/fbterm.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/fat.c -o build/fat.o
 
 	ld -m elf_i386 -T linker.ld -o build/kernel.bin \
 		build/boot.o build/kernel.o build/keyboard.o build/idt.o build/isr.o \
 		build/switch.o build/pic.o build/irq.o build/timer.o build/mm.o \
 		build/process.o build/syscall.o build/paging.o build/tss.o build/ring3.o \
-		build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/elf.o \
+		build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/fat.o build/elf.o \
 		build/tty.o \
 		build/user/shell_blob.o build/user/init_blob.o build/framebuffer.o build/font.o build/fbterm.o
 
@@ -69,10 +70,11 @@ user:
 			-nostdlib -nostartfiles -Ttext=0x10000000 -no-pie -static \
 			user/bin/$$cmd.c -o build/user/bin/$$cmd.elf || exit 1; \
 	done
-
+	
 run: all populate
-	qemu-system-i386 -cdrom build/ToxenOS.iso -drive file=build/disk.img,format=raw,index=0,media=disk
-
+	qemu-system-i386 -cdrom build/ToxenOS.iso \
+		-drive file=build/disk.img,format=raw,if=ide,index=0 \
+		-drive file=build/fat_disk.img,format=raw,if=virtio
 disk:
 	mkdir -p build
 	dd if=/dev/zero of=build/disk.img bs=512 count=204800

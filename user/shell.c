@@ -22,14 +22,18 @@ static int sys_my_tty()
     { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(20)); return r; }
 static int sys_spawn_tty_args(const char* path, int tty, const char* args)
     { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(27),"b"(path),"c"(tty),"d"(args)); return r; }
-static void sys_wait(int pid)
-    { __asm__ volatile("int $0x80"::"a"(23),"b"(pid)); }
 static int is_alive(int pid)
     { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(28),"b"(pid)); return r; }
 static int key_available()
     { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(29)); return r; }
 static char getchar()
     { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(2)); return (char)r; }
+
+// Arrow key codes from keyboard.c
+#define KEY_UP    0x01
+#define KEY_DOWN  0x02
+#define KEY_LEFT  0x03
+#define KEY_RIGHT 0x04
 
 // ── String helpers ────────────────────────────────────────────────────────────
 
@@ -39,9 +43,39 @@ static int str_equal(const char* a, const char* b) {
     int i; for(i=0;a[i]&&b[i];i++) if(a[i]!=b[i]) return 0; return a[i]==b[i];
 }
 
+// ── History ───────────────────────────────────────────────────────────────────
+
+#define INPUT_MAX   256
+#define HISTORY_MAX 16
+
+static char history[HISTORY_MAX][INPUT_MAX];
+static int  history_count = 0;
+static int  history_pos   = -1;  // -1 = not browsing
+
+static void history_push(const char* cmd)
+{
+    if (!cmd[0]) return;
+    // don't store duplicate of last entry
+    if (history_count > 0) {
+        int last = (history_count - 1) % HISTORY_MAX;
+        if (str_equal(history[last], cmd)) return;
+    }
+    int slot = history_count % HISTORY_MAX;
+    str_copy(history[slot], cmd);
+    history_count++;
+}
+
+// offset 0 = newest, 1 = one older, etc.
+static const char* history_get(int offset)
+{
+    if (offset < 0 || offset >= history_count || offset >= HISTORY_MAX)
+        return 0;
+    int idx = ((history_count - 1 - offset) % HISTORY_MAX + HISTORY_MAX) % HISTORY_MAX;
+    return history[idx];
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
-#define INPUT_MAX 256
 static char cwd[256] = "/disk";
 
 // ── Prompt ───────────────────────────────────────────────────────────────────
@@ -49,18 +83,19 @@ static char cwd[256] = "/disk";
 static void print_prompt()
 {
     set_color(0x0A); print("[T] \\\\root");
-    // print path after /disk, converting / to backslash
-    const char* p = cwd + 5; // skip "/disk"
+    const char* p = cwd + 5;
     while (*p) {
         if (*p == '/') print("\\");
-        else {
-            char buf[2] = {*p, 0};
-            print(buf);
-        }
+        else { char buf[2] = {*p, 0}; print(buf); }
         p++;
     }
     set_color(0x0A); print("\\");
     set_color(0x07); print("> ");
+}
+
+static void erase_n(int n)
+{
+    for (int i = 0; i < n; i++) erase();
 }
 
 // ── Builtins ─────────────────────────────────────────────────────────────────
@@ -90,7 +125,6 @@ static void cmd_cd(const char* args)
 
 static void run_external(const char* cmd, const char* args)
 {
-    // Build path: /disk/bin/<cmd>
     char path[64];
     str_copy(path, "/disk/bin/");
     int plen = str_len(path);
@@ -107,7 +141,6 @@ static void run_external(const char* cmd, const char* args)
         set_color(0x07); return;
     }
 
-    // Build args: for path commands, prepend cwd
     char full_args[256];
     if (args && args[0]) {
         if (args[0] != '/') {
@@ -119,7 +152,6 @@ static void run_external(const char* cmd, const char* args)
             str_copy(full_args, args);
         }
     } else {
-        // No args — pass cwd so programs like ls and pcd know where they are
         str_copy(full_args, cwd);
     }
 
@@ -129,12 +161,10 @@ static void run_external(const char* cmd, const char* args)
     if (pid < 0) {
         set_color(0x0C); print("spawn failed\n"); set_color(0x07);
     } else {
-        // Poll from userspace until process dies
         int loops = 0;
         while (is_alive(pid)) {
             yield();
-            loops++;
-            if (loops > 100000) {
+            if (++loops > 100000) {
                 set_color(0x0E); print("timeout\n"); set_color(0x07);
                 break;
             }
@@ -146,17 +176,14 @@ static void run_external(const char* cmd, const char* args)
 
 static void run_command(char* input)
 {
-    // Skip leading spaces
     while (*input == ' ') input++;
     if (!*input) return;
 
-    // Split into cmd and args
     char* args = input;
     while (*args && *args != ' ') args++;
     if (*args == ' ') { *args = 0; args++; }
     else args = "";
 
-    // Builtins
     if      (str_equal(input, "cd"))       cmd_cd(args);
     else if (str_equal(input, "cdb"))      cmd_cd("..");
     else if (str_equal(input, "clear"))    tox_clear();
@@ -183,10 +210,42 @@ void _start()
         char c = getchar();
         if (c == 0) continue;
 
+        // ── arrow keys (sent as 0x01–0x04 by keyboard.c) ─────────────────────
+        if (c == KEY_UP || c == KEY_DOWN)
+        {
+            int next_pos = history_pos + (c == KEY_UP ? 1 : -1);
+
+            if (next_pos < -1) next_pos = -1;
+            if (next_pos >= history_count) next_pos = history_count - 1;
+            if (next_pos >= HISTORY_MAX)   next_pos = HISTORY_MAX - 1;
+
+            // erase what's currently on the line
+            erase_n(len);
+            len = 0;
+
+            if (next_pos == -1) {
+                history_pos = -1;  // empty line
+            } else {
+                const char* entry = history_get(next_pos);
+                if (entry) {
+                    history_pos = next_pos;
+                    str_copy(input, entry);
+                    len = str_len(input);
+                    print(input);
+                }
+            }
+            continue;
+        }
+
+        if (c == KEY_LEFT || c == KEY_RIGHT) continue;  // ignore for now
+
+        // ── normal input ─────────────────────────────────────────────────────
         if (c == '\n')
         {
             print("\n");
             input[len] = 0;
+            history_push(input);
+            history_pos = -1;
             run_command(input);
             len = 0;
             print_prompt();
@@ -195,7 +254,7 @@ void _start()
         {
             if (len > 0) { len--; erase(); }
         }
-        else if (c == '\t') // tab — ignore for now
+        else if (c == '\t')
         {
             continue;
         }

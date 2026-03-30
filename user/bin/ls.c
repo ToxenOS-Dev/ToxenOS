@@ -1,7 +1,7 @@
 #include "../tox.h"
 void _start() {
     char args[256]; get_args(args);
-    const char* path = args[0] ? args : "/disk";
+    const char* path = args[0] ? args : "/TxFS-1";
     char entry[256]; uint32_t i=0; int found=0;
     while(tox_readdir(path,entry,i)==0) {
         char full[256]; tox_strcpy(full,path);

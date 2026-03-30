@@ -117,7 +117,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     vfs_init();
     vfs_mount("/", tmpfs_init(), 0);
     ata_init();
-    vfs_mount("/disk", txfs_init(), 0);
+    vfs_mount("/TxFS-1", txfs_init(), 0);
     tss_init((uint32_t)&stack_top);
     tty_init();
 

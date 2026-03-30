@@ -20,6 +20,7 @@
 #include "../include/framebuffer.h"
 #include "../include/font.h"
 #include "../include/fbterm.h"
+#include "../include/ext2.h"
 
 uint16_t* const VGA_MEMORY = (uint16_t*)0xB8000;
 int     cursor_x      = 0;
@@ -118,6 +119,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     vfs_mount("/", tmpfs_init(), 0);
     ata_init();
     vfs_mount("/TxFS-1", txfs_init(), 0);
+    vfs_mount("/ext2-1", ext2_init(), 0);
     tss_init((uint32_t)&stack_top);
     tty_init();
 

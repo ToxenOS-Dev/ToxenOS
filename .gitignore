@@ -1,0 +1,15 @@
+# Build outputs
+build/
+ 
+# Temporary files
+/tmp/fat_raw.img
+ 
+# Editor files
+.vscode/
+*.swp
+*.swo
+*~
+ 
+# OS files
+.DS_Store
+Thumbs.db

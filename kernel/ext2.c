@@ -623,7 +623,7 @@ static int ext2_mount_fn(const char* device)
     (void)device;
 
     // Superblock is always at byte offset 1024
-    e2_strcpy(ext2_fs.mountpoint, "/ext2-1", 64);
+    e2_strcpy(ext2_fs.mountpoint, "/E:", 64);
 
     uint8_t buf[1024];
     if (ata_read_drive(ATA_DRIVE_SLAVE, 2, buf, 2) < 0) return -1;

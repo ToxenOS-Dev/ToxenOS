@@ -99,12 +99,15 @@ populate: tools/txfs_write
 	tools/txfs_write build/disk.img build/user/hello.elf /hello.elf
 	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
 	tools/txfs_write build/disk.img build/user/init.elf /init.elf
-	rm -f /tmp/fat_raw.img
-	mkfs.fat -F 32 -C /tmp/fat_raw.img 65024
-	python3 -c "open('build/fat_disk.img','wb').write(b'\x00'*512+open('/tmp/fat_raw.img','rb').read())"
-	dd if=/dev/zero of=build/ext2_disk.img bs=1M count=64
-	mkfs.ext2 build/ext2_disk.img
-
+	@if [ ! -f build/fat_disk.img ]; then \
+			rm -f /tmp/fat_raw.img; \
+			mkfs.fat -F 32 -C /tmp/fat_raw.img 65024; \
+			python3 -c "open('build/fat_disk.img','wb').write(b'\x00'*512+open('/tmp/fat_raw.img','rb').read())"; \
+		fi
+		@if [ ! -f build/ext2_disk.img ]; then \
+			dd if=/dev/zero of=build/ext2_disk.img bs=1M count=64; \
+			mkfs.ext2 build/ext2_disk.img; \
+		fi
 clean:
 	rm -rf build/*.o build/*.bin build/*.iso
 	mkdir -p build

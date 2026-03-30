@@ -16,7 +16,7 @@
 #include "../include/mm.h"
 #include "../include/vga.h"
 
-static char txfs_mountpoint[64] = "/TxFS-1";
+static char txfs_mountpoint[64] = "/C:";
 
 static const char* txfs_strip_mount(const char* path)
 {

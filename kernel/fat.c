@@ -598,7 +598,7 @@ static int fat_mount_fn(const char* device)
     (void)device;
 
     fat_memset(&fat_fs, 0, sizeof(fat_fs));
-    fat_strcpy(fat_fs.mountpoint, "/FAT-1", 64);
+    fat_strcpy(fat_fs.mountpoint, "/D:", 64);
 
     static uint8_t boot[512];
     // BPB is at LBA 1 (LBA 0 is a blank sector to work around QEMU slave bug)

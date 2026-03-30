@@ -1,5 +1,5 @@
 // ToxenOS/user/shell.c
-// Thin shell — builtins only, everything else runs from /TxFS-1/bin/
+// Thin shell — builtins only, everything else runs from /C:/bin/
 #include <stdint.h>
 
 // ── Syscall wrappers ──────────────────────────────────────────────────────────
@@ -76,14 +76,20 @@ static const char* history_get(int offset)
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
-static char cwd[256] = "/TxFS-1";
+static char cwd[256] = "/C:";
 
 // ── Prompt ───────────────────────────────────────────────────────────────────
 
 static void print_prompt()
 {
-    set_color(0x0A); print("[T] \\\\root");
-    const char* p = cwd + 7; // skip "/TxFS-1"
+    // Find drive letter: cwd starts with /X: so drive is cwd[1]
+    // Display as [T] \\X:\path\to\dir\>
+    set_color(0x0A); print("[T] \\\\");
+    // Print drive letter and colon
+    char drive[3] = {cwd[1], cwd[2], 0};  // e.g. "C:"
+    print(drive);
+    // Print rest of path after /X: converting / to backslash
+    const char* p = cwd + 3;  // skip "/C:"
     while (*p) {
         if (*p == '/') print("\\");
         else { char buf[2] = {*p, 0}; print(buf); }
@@ -126,7 +132,7 @@ static void cmd_cd(const char* args)
 static void run_external(const char* cmd, const char* args)
 {
     char path[64];
-    str_copy(path, "/TxFS-1/bin/");
+    str_copy(path, "/C:/bin/");
     int plen = str_len(path);
     str_copy(path + plen, cmd);
     int flen = str_len(path);

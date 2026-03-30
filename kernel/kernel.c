@@ -20,8 +20,8 @@
 #include "../include/framebuffer.h"
 #include "../include/font.h"
 #include "../include/fbterm.h"
-#include "../include/ext2.h"
 #include "../include/fat.h"
+#include "../include/ext2.h"
 
 uint16_t* const VGA_MEMORY = (uint16_t*)0xB8000;
 int     cursor_x      = 0;
@@ -118,6 +118,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     syscall_init();
     vfs_init();
     vfs_mount("/", tmpfs_init(), 0);
+    ata_init();
+    vfs_mount("/C:", txfs_init(), 0);
+    vfs_mount("/D:", fat_init(), 0);
+    vfs_mount("/E:", ext2_init(), 0);
     tss_init((uint32_t)&stack_top);
     tty_init();
 
@@ -125,11 +129,6 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     fbterm_init();
     print_title();
     fbterm_draw_indicator();
-
-    ata_init();
-    vfs_mount("/TxFS-1", txfs_init(), 0);
-    vfs_mount("/FAT-1",  fat_init(),  0);
-    vfs_mount("/ext2-1", ext2_init(), 0);
 
     // Shell ELF is embedded in the kernel binary
     uint8_t*  elf_buf  = _binary_build_user_shell_elf_start;

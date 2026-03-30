@@ -623,6 +623,8 @@ static int ext2_mount_fn(const char* device)
     (void)device;
 
     // Superblock is always at byte offset 1024
+    e2_strcpy(ext2_fs.mountpoint, "/ext2-1", 64);
+
     uint8_t buf[1024];
     if (ata_read_drive(ATA_DRIVE_SLAVE, 2, buf, 2) < 0) return -1;
 
@@ -648,6 +650,7 @@ static int ext2_mount_fn(const char* device)
 
 static int ext2_open_fn(const char* path, int flags)
 {
+    if (!ext2_fs.mounted) return -1;
     const char* local = ext2_strip_mount(path);
     uint32_t ino = ext2_lookup(local);
 
@@ -690,6 +693,7 @@ static int ext2_open_fn(const char* path, int flags)
 
 static int ext2_close_fn(int fd)
 {
+    if (!ext2_fs.mounted) return -1;
     if (fd<0||fd>=EXT2_MAX_FDS||!ext2_fds[fd].used) return -1;
     ext2_fds[fd].used = 0;
     return 0;
@@ -699,6 +703,7 @@ static int ext2_close_fn(int fd)
 
 static int ext2_read_fn(int fd, uint8_t* buf, uint32_t size)
 {
+    if (!ext2_fs.mounted) return -1;
     if (fd<0||fd>=EXT2_MAX_FDS||!ext2_fds[fd].used) return -1;
     ext2_fd_t* f = &ext2_fds[fd];
 
@@ -731,6 +736,7 @@ static int ext2_read_fn(int fd, uint8_t* buf, uint32_t size)
 
 static int ext2_write_fn(int fd, const uint8_t* buf, uint32_t size)
 {
+    if (!ext2_fs.mounted) return -1;
     if (fd<0||fd>=EXT2_MAX_FDS||!ext2_fds[fd].used) return -1;
     ext2_fd_t* f = &ext2_fds[fd];
 
@@ -762,6 +768,7 @@ static int ext2_write_fn(int fd, const uint8_t* buf, uint32_t size)
 
 static int ext2_readdir_fn(const char* path, char* out, uint32_t index)
 {
+    if (!ext2_fs.mounted) return -1;
     const char* local = ext2_strip_mount(path);
     uint32_t ino = ext2_lookup(local);
     if (!ino) return -1;
@@ -805,6 +812,7 @@ static int ext2_readdir_fn(const char* path, char* out, uint32_t index)
 
 static int ext2_stat_fn(const char* path, uint32_t* size)
 {
+    if (!ext2_fs.mounted) return -1;
     const char* local = ext2_strip_mount(path);
     uint32_t ino = ext2_lookup(local);
     if (!ino) return -1;
@@ -819,6 +827,7 @@ static int ext2_stat_fn(const char* path, uint32_t* size)
 
 static int ext2_isdir_fn(const char* path)
 {
+    if (!ext2_fs.mounted) return -1;
     const char* local = ext2_strip_mount(path);
     if (!e2_strcmp(local, "/")) return 1;
     uint32_t ino = ext2_lookup(local);
@@ -833,6 +842,7 @@ static int ext2_isdir_fn(const char* path)
 
 static int ext2_mkdir_fn(const char* path)
 {
+    if (!ext2_fs.mounted) return -1;
     const char* local = ext2_strip_mount(path);
     if (ext2_lookup(local)) return -1;  // already exists
 
@@ -866,6 +876,7 @@ static int ext2_mkdir_fn(const char* path)
 
 static int ext2_remove_fn(const char* path)
 {
+    if (!ext2_fs.mounted) return -1;
     const char* local = ext2_strip_mount(path);
     uint32_t ino = ext2_lookup(local);
     if (!ino) return -1;

@@ -56,13 +56,16 @@ int vfs_mount(const char* mountpoint, fs_driver_t* driver, const char* device)
 
     if (slot == -1) return -1;
 
+    if (driver->mount) {
+        // Call mount_fn first — only register if it succeeds
+        int result = driver->mount(device);
+        if (result < 0) return -1;
+    }
+
     string_copy(mounts[slot].mountpoint, mountpoint, 64);
     mounts[slot].driver  = driver;
     mounts[slot].mounted = 1;
     mount_count++;
-
-    if (driver->mount)
-        return driver->mount(device);
 
     return 0;
 }

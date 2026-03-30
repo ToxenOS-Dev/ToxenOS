@@ -2,6 +2,13 @@
 void _start() {
     char args[256]; get_args(args);
     const char* path = args[0] ? args : "/TxFS-1";
+
+    // Check the path actually exists before listing
+    if (tox_isdir(path) < 0) {
+        set_color(0x0C); print("ls: no such directory: "); print(path); print("\n");
+        set_color(0x07); tox_exit();
+    }
+
     char entry[256]; uint32_t i=0; int found=0;
     while(tox_readdir(path,entry,i)==0) {
         char full[256]; tox_strcpy(full,path);

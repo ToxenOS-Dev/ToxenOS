@@ -160,14 +160,16 @@ static fat_fs_t fat_fs;
 
 static uint8_t sector_buf[512];
 
+#define FAT_LBA_OFFSET 1
+
 static int fat_read_sector(uint32_t lba, uint8_t* buf)
 {
-    return ata_read_drive(ATA_DRIVE_SLAVE, lba, buf, 1);
+    return ata_read_drive(ATA_DRIVE_SLAVE, lba + FAT_LBA_OFFSET, buf, 1);
 }
 
 static int fat_write_sector(uint32_t lba, const uint8_t* buf)
 {
-    return ata_write_drive(ATA_DRIVE_SLAVE, lba, buf, 1);
+    return ata_write_drive(ATA_DRIVE_SLAVE, lba + FAT_LBA_OFFSET, buf, 1);
 }
 
 // Read a full cluster into buf (buf must be bytes_per_cluster bytes)
@@ -176,7 +178,7 @@ static int fat_read_cluster(uint32_t cluster, uint8_t* buf)
     uint32_t lba = fat_fs.data_start +
                    (cluster - 2) * fat_fs.sectors_per_cluster;
     for (uint32_t i = 0; i < fat_fs.sectors_per_cluster; i++) {
-        if (ata_read_drive(ATA_DRIVE_SLAVE, lba + i, buf + i * fat_fs.bytes_per_sector, 1) < 0)
+        if (ata_read_drive(ATA_DRIVE_SLAVE, lba + i + FAT_LBA_OFFSET, buf + i * fat_fs.bytes_per_sector, 1) < 0)
             return -1;
     }
     return 0;
@@ -187,7 +189,7 @@ static int fat_write_cluster(uint32_t cluster, const uint8_t* buf)
     uint32_t lba = fat_fs.data_start +
                    (cluster - 2) * fat_fs.sectors_per_cluster;
     for (uint32_t i = 0; i < fat_fs.sectors_per_cluster; i++) {
-        if (ata_write_drive(ATA_DRIVE_SLAVE, lba + i, buf + i * fat_fs.bytes_per_sector, 1) < 0)
+        if (ata_write_drive(ATA_DRIVE_SLAVE, lba + i + FAT_LBA_OFFSET, buf + i * fat_fs.bytes_per_sector, 1) < 0)
             return -1;
     }
     return 0;
@@ -596,9 +598,11 @@ static int fat_mount_fn(const char* device)
     (void)device;
 
     fat_memset(&fat_fs, 0, sizeof(fat_fs));
+    fat_strcpy(fat_fs.mountpoint, "/FAT-1", 64);
 
-    uint8_t boot[512];
-    if (ata_read_drive(ATA_DRIVE_SLAVE, 0, boot, 1) < 0) return -1;
+    static uint8_t boot[512];
+    // BPB is at LBA 1 (LBA 0 is a blank sector to work around QEMU slave bug)
+    if (ata_read_drive(ATA_DRIVE_SLAVE, 1, boot, 1) < 0) return -1;
 
     fat_bpb_t* bpb = (fat_bpb_t*)boot;
     if (bpb->bytes_per_sector == 0 || bpb->sectors_per_cluster == 0) return -1;
@@ -825,14 +829,21 @@ static int readdir_cb(fat_dirent_t* de, const char* lfn, void* ctx)
 {
     readdir_ctx_t* rc = (readdir_ctx_t*)ctx;
 
-    // skip . and ..
-    if (de->name[0] == '.' ) return 0;
+    // skip . and .. entries
+    if (de->name[0] == '.') return 0;
+    // skip entries with no usable name
+    if (!lfn && de->name[0] == ' ') return 0;
+
+    char short_name[13];
+    fat_parse_83(de, short_name);
+    // skip if short name is empty
+    if (!short_name[0]) return 0;
 
     if (rc->count == rc->target) {
-        if (lfn)
+        if (lfn && lfn[0])
             fat_strcpy(rc->out, lfn, 256);
         else
-            fat_parse_83(de, rc->out);
+            fat_strcpy(rc->out, short_name, 256);
         rc->found = 1;
         return 1;
     }

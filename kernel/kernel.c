@@ -15,13 +15,13 @@
 #include "../include/tmpfs.h"
 #include "../include/ata.h"
 #include "../include/txfs.h"
+#include "../include/fat.h"
+#include "../include/ext2.h"
 #include "../include/elf.h"
 #include "../include/tty.h"
 #include "../include/framebuffer.h"
 #include "../include/font.h"
 #include "../include/fbterm.h"
-#include "../include/fat.h"
-#include "../include/ext2.h"
 
 uint16_t* const VGA_MEMORY = (uint16_t*)0xB8000;
 int     cursor_x      = 0;
@@ -120,8 +120,50 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     vfs_mount("/", tmpfs_init(), 0);
     ata_init();
     vfs_mount("/C:", txfs_init(), 0);
-    vfs_mount("/D:", fat_init(), 0);
-    vfs_mount("/E:", ext2_init(), 0);
+
+    // Auto-detect filesystems on slave drives and assign drive letters D: E: F: etc.
+    {
+        static uint8_t probe_buf[512];
+        char drive_letter[4] = "/D:";  // start at D:
+
+        // Probe up to 4 additional drives (slave + secondary channel if supported)
+        for (uint8_t drv = ATA_DRIVE_SLAVE; drv <= ATA_DRIVE_SLAVE; drv++) {
+            fs_driver_t* detected = 0;
+
+            // Check for FAT: read LBA 1 (we offset by 1 for QEMU slave quirk)
+            // and check bytes_per_sector and sectors_per_cluster
+            if (ata_read_drive(drv, 1, probe_buf, 1) == 1) {
+                uint16_t bps = (uint16_t)(probe_buf[11] | ((uint16_t)probe_buf[12] << 8));
+                uint8_t  spc = probe_buf[13];
+                if (bps == 512 && spc != 0) {
+                    detected = fat_init();
+                }
+            }
+
+            // Check for ext2: read LBA 2, check magic 0xEF53 at offset 56
+            if (!detected && ata_read_drive(drv, 2, probe_buf, 1) == 1) {
+                uint16_t magic = (uint16_t)(probe_buf[56] | ((uint16_t)probe_buf[57] << 8));
+                if (magic == 0xEF53) {
+                    detected = ext2_init();
+                }
+            }
+
+            // Check for TxFS: read LBA 1 (block 1 = superblock), check magic
+            if (!detected && ata_read_drive(drv, 8, probe_buf, 1) == 1) {
+                uint32_t magic = (uint32_t)(probe_buf[0] | ((uint32_t)probe_buf[1]<<8) |
+                                 ((uint32_t)probe_buf[2]<<16) | ((uint32_t)probe_buf[3]<<24));
+                if (magic == 0x54584653) {  // "TXFS"
+                    detected = txfs_init();
+                }
+            }
+
+            if (detected) {
+                vfs_mount(drive_letter, detected, 0);
+                // Advance to next letter
+                drive_letter[1]++;
+            }
+        }
+    }
     tss_init((uint32_t)&stack_top);
     tty_init();
 

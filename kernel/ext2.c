@@ -137,6 +137,7 @@ typedef struct {
     uint32_t           groups_count;
     char               mountpoint[64];
     int                mounted;
+    uint8_t            drive;
 } ext2_fs_t;
 
 static ext2_fs_t ext2_fs;
@@ -146,13 +147,13 @@ static ext2_fs_t ext2_fs;
 static int ext2_read_block(uint32_t block, uint8_t* buf)
 {
     uint32_t sectors = ext2_fs.block_size / 512;
-    return ata_read_drive(ATA_DRIVE_SLAVE, block * sectors, buf, sectors);
+    return ata_read_drive(ext2_fs.drive, block * sectors, buf, sectors);
 }
 
 static int ext2_write_block(uint32_t block, const uint8_t* buf)
 {
     uint32_t sectors = ext2_fs.block_size / 512;
-    return ata_write_drive(ATA_DRIVE_SLAVE, block * sectors, buf, sectors);
+    return ata_write_drive(ext2_fs.drive, block * sectors, buf, sectors);
 }
 
 // ── group descriptor ──────────────────────────────────────────────────────────
@@ -620,14 +621,17 @@ static ext2_fd_t ext2_fds[EXT2_MAX_FDS];
 
 static int ext2_mount_fn(const char* device)
 {
-    (void)device;
+    // device format: "N:/X:" where N=drive number, /X:=mountpoint
+    ext2_fs.drive = (device && device[0] >= '0' && device[0] <= '9')
+                    ? (uint8_t)(device[0] - '0') : ATA_DRIVE_SLAVE;
+    if (device && device[1] == ':')
+        e2_strcpy(ext2_fs.mountpoint, device + 2, 64);
+    else
+        e2_strcpy(ext2_fs.mountpoint, "/E:", 64);
 
-    // Superblock is always at byte offset 1024
-    e2_strcpy(ext2_fs.mountpoint, "/E:", 64);
-
-    uint8_t buf[1024];
-    if (ata_read_drive(ATA_DRIVE_SLAVE, 2, buf, 2) < 0) return -1;
-
+    // Superblock is always at byte offset 1024 (LBA 2 on 512-byte sectors)
+    static uint8_t buf[1024];
+    if (ata_read_drive(ext2_fs.drive, 2, buf, 2) < 0) return -1;
     ext2_superblock_t* sb = (ext2_superblock_t*)buf;
     if (sb->magic != EXT2_MAGIC) return -1;
 
@@ -827,8 +831,11 @@ static int ext2_stat_fn(const char* path, uint32_t* size)
 
 static int ext2_isdir_fn(const char* path)
 {
+    print("[EXT2] isdir mounted="); print_hex(ext2_fs.mounted);
+    print(" path="); print(path); print("\n");
     if (!ext2_fs.mounted) return -1;
     const char* local = ext2_strip_mount(path);
+    print("[EXT2] local="); print(local); print("\n");
     if (!e2_strcmp(local, "/")) return 1;
     uint32_t ino = ext2_lookup(local);
     if (!ino) return -1;

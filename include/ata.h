@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+// ── Primary channel ports ─────────────────────────────────────────────────────
 #define ATA_PRIMARY_DATA         0x1F0
 #define ATA_PRIMARY_ERROR        0x1F1
 #define ATA_PRIMARY_SECTOR_COUNT 0x1F2
@@ -12,22 +13,47 @@
 #define ATA_PRIMARY_DRIVE        0x1F6
 #define ATA_PRIMARY_STATUS       0x1F7
 #define ATA_PRIMARY_COMMAND      0x1F7
+#define ATA_PRIMARY_ALT_STATUS   0x3F6
 
+// ── Secondary channel ports ───────────────────────────────────────────────────
+#define ATA_SECONDARY_DATA         0x170
+#define ATA_SECONDARY_ERROR        0x171
+#define ATA_SECONDARY_SECTOR_COUNT 0x172
+#define ATA_SECONDARY_LBA_LOW      0x173
+#define ATA_SECONDARY_LBA_MID      0x174
+#define ATA_SECONDARY_LBA_HIGH     0x175
+#define ATA_SECONDARY_DRIVE        0x176
+#define ATA_SECONDARY_STATUS       0x177
+#define ATA_SECONDARY_COMMAND      0x177
+#define ATA_SECONDARY_ALT_STATUS   0x376
+
+// ── Status bits ───────────────────────────────────────────────────────────────
 #define ATA_STATUS_BSY  0x80
 #define ATA_STATUS_DRQ  0x08
 #define ATA_STATUS_ERR  0x01
 
+// ── Commands ──────────────────────────────────────────────────────────────────
 #define ATA_CMD_READ    0x20
 #define ATA_CMD_WRITE   0x30
 
-#define ATA_DRIVE_MASTER  0  // first drive  (0xE0)
-#define ATA_DRIVE_SLAVE   1  // second drive (0xF0)
+// ── Drive numbers ─────────────────────────────────────────────────────────────
+// Encoded as: bits[1:0] = position on channel, bit[2] = channel
+#define ATA_DRIVE_PRIMARY_MASTER    0  // primary master
+#define ATA_DRIVE_PRIMARY_SLAVE     1  // primary slave
+#define ATA_DRIVE_SECONDARY_MASTER  2  // secondary master
+#define ATA_DRIVE_SECONDARY_SLAVE   3  // secondary slave
+
+// Legacy aliases
+#define ATA_DRIVE_MASTER  ATA_DRIVE_PRIMARY_MASTER
+#define ATA_DRIVE_SLAVE   ATA_DRIVE_PRIMARY_SLAVE
 
 int  ata_init();
+
+// Legacy functions — always use primary master
 int  ata_read(uint32_t lba, uint8_t* buf, uint32_t sectors);
 int  ata_write(uint32_t lba, const uint8_t* buf, uint32_t sectors);
 
-// Drive-selectable versions for FAT and future drivers
+// Drive-selectable functions — use ATA_DRIVE_* constants
 int  ata_read_drive(uint8_t drive, uint32_t lba, uint8_t* buf, uint32_t sectors);
 int  ata_write_drive(uint8_t drive, uint32_t lba, const uint8_t* buf, uint32_t sectors);
 

@@ -118,52 +118,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     syscall_init();
     vfs_init();
     vfs_mount("/", tmpfs_init(), 0);
-    ata_init();
-    vfs_mount("/C:", txfs_init(), 0);
 
-    // Auto-detect filesystems on slave drives and assign drive letters D: E: F: etc.
-    {
-        static uint8_t probe_buf[512];
-        char drive_letter[4] = "/D:";  // start at D:
-
-        // Probe up to 4 additional drives (slave + secondary channel if supported)
-        for (uint8_t drv = ATA_DRIVE_SLAVE; drv <= ATA_DRIVE_SLAVE; drv++) {
-            fs_driver_t* detected = 0;
-
-            // Check for FAT: read LBA 1 (we offset by 1 for QEMU slave quirk)
-            // and check bytes_per_sector and sectors_per_cluster
-            if (ata_read_drive(drv, 1, probe_buf, 1) == 1) {
-                uint16_t bps = (uint16_t)(probe_buf[11] | ((uint16_t)probe_buf[12] << 8));
-                uint8_t  spc = probe_buf[13];
-                if (bps == 512 && spc != 0) {
-                    detected = fat_init();
-                }
-            }
-
-            // Check for ext2: read LBA 2, check magic 0xEF53 at offset 56
-            if (!detected && ata_read_drive(drv, 2, probe_buf, 1) == 1) {
-                uint16_t magic = (uint16_t)(probe_buf[56] | ((uint16_t)probe_buf[57] << 8));
-                if (magic == 0xEF53) {
-                    detected = ext2_init();
-                }
-            }
-
-            // Check for TxFS: read LBA 1 (block 1 = superblock), check magic
-            if (!detected && ata_read_drive(drv, 8, probe_buf, 1) == 1) {
-                uint32_t magic = (uint32_t)(probe_buf[0] | ((uint32_t)probe_buf[1]<<8) |
-                                 ((uint32_t)probe_buf[2]<<16) | ((uint32_t)probe_buf[3]<<24));
-                if (magic == 0x54584653) {  // "TXFS"
-                    detected = txfs_init();
-                }
-            }
-
-            if (detected) {
-                vfs_mount(drive_letter, detected, 0);
-                // Advance to next letter
-                drive_letter[1]++;
-            }
-        }
-    }
     tss_init((uint32_t)&stack_top);
     tty_init();
 
@@ -171,6 +126,81 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     fbterm_init();
     print_title();
     fbterm_draw_indicator();
+
+    ata_init();
+    vfs_mount("/C:", txfs_init(), 0);
+
+    // Auto-detect filesystems on all drives and assign drive letters D: E: F: G:
+    {
+        static uint8_t probe_buf[512];
+        char drive_letter[4] = "/D:";  // start at D:
+
+        // Probe drives 1-3 (primary slave, secondary master, secondary slave)
+        // Drive 0 = primary master = always C: (TxFS, already mounted above)
+        for (uint8_t drv = 1; drv <= 3; drv++) {
+            fs_driver_t* detected = 0;
+
+            // Check for FAT32/16/12: read LBA 1 (offset by 1 for QEMU quirk)
+            // Valid FAT BPB has bytes_per_sector=512 and sectors_per_cluster != 0
+            int fat_read_ok = ata_read_drive(drv, 1, probe_buf, 1);
+            print("[PROBE] drv="); print_hex(drv);
+            print(" fat_read="); print_hex((uint32_t)fat_read_ok);
+            print(" bps="); print_hex(probe_buf[11]|(probe_buf[12]<<8));
+            print(" spc="); print_hex(probe_buf[13]);
+            print(" nfat="); print_hex(probe_buf[16]);
+            print("\n");
+            if (fat_read_ok == 1) {
+                uint16_t bps = (uint16_t)(probe_buf[11] | ((uint16_t)probe_buf[12] << 8));
+                uint8_t  spc = probe_buf[13];
+                uint8_t  nfat = probe_buf[16];
+                if (bps == 512 && spc != 0 && (nfat == 1 || nfat == 2)) {
+                    detected = fat_init();
+                }
+            }
+
+            // Check for ext2: superblock at byte offset 1024 (LBA 2 on 512-byte sectors)
+            // Magic number 0xEF53 is at offset 56 within the superblock
+            // Only check if drive responded to the FAT probe (fat_read_ok != -1)
+            // This prevents false positives from CD-ROMs and empty slots
+            if (!detected && fat_read_ok != -1) {
+                int ext2_read_ok = ata_read_drive(drv, 2, probe_buf, 1);
+                print("[PROBE] ext2 read="); print_hex((uint32_t)ext2_read_ok);
+                print(" magic="); print_hex(probe_buf[56]|(probe_buf[57]<<8));
+                print("\n");
+                if (ext2_read_ok == 1) {
+                    uint16_t magic = (uint16_t)(probe_buf[56] | ((uint16_t)probe_buf[57] << 8));
+                    if (magic == 0xEF53) {
+                        detected = ext2_init();
+                    }
+                }
+            }
+
+            // Check for TxFS: superblock at block 1 (LBA 8 for 4096-byte blocks)
+            // Magic 0x54584653 ("TXFS") at offset 0 of superblock
+            if (!detected && ata_read_drive(drv, 8, probe_buf, 1) == 1) {
+                uint32_t magic = (uint32_t)(probe_buf[0] | ((uint32_t)probe_buf[1]<<8) |
+                                 ((uint32_t)probe_buf[2]<<16) | ((uint32_t)probe_buf[3]<<24));
+                if (magic == 0x54584653) {
+                    detected = txfs_init();
+                }
+            }
+
+            if (detected) {
+                // Pass drive number as device string so driver knows which drive to use
+                // Also set the driver mountpoint to match the assigned letter
+                // Pass "N:mountpoint" so driver knows both drive number and mountpoint
+                char drv_str[8];
+                drv_str[0] = (char)('0' + drv);
+                drv_str[1] = ':';
+                drv_str[2] = drive_letter[0];
+                drv_str[3] = drive_letter[1];
+                drv_str[4] = drive_letter[2];
+                drv_str[5] = 0;
+                vfs_mount(drive_letter, detected, drv_str);
+                drive_letter[1]++;  // advance: D -> E -> F -> G
+            }
+        }
+    }
 
     // Shell ELF is embedded in the kernel binary
     uint8_t*  elf_buf  = _binary_build_user_shell_elf_start;

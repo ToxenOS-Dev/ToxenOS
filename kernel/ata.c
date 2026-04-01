@@ -1,18 +1,15 @@
 // ToxenOS/kernel/ata.c
-// ATA PIO driver — supports master and slave on primary IDE channel
+// ATA PIO driver — supports all 4 drives across primary and secondary channels
 //
-// Key points:
-//   - Drive select byte: 0xE0 = master LBA, 0xF0 = slave LBA
-//   - After selecting a drive, wait 400ns (4 alt-status reads) before using it
-//   - Never check ERR bit right after drive select — it reflects previous state
-//   - Software reset resets BOTH drives — only use it during init
-//   - Always restore master selection after slave operations
+// Drive numbers:
+//   0 = primary master   (ports 0x1F0, select 0xE0)
+//   1 = primary slave    (ports 0x1F0, select 0xF0)
+//   2 = secondary master (ports 0x170, select 0xE0)
+//   3 = secondary slave  (ports 0x170, select 0xF0)
 
 #include <stdint.h>
 #include "../include/ata.h"
 #include "../include/vga.h"
-
-// ── port I/O ──────────────────────────────────────────────────────────────────
 
 static inline void outb(uint16_t port, uint8_t val)
     { __asm__ volatile("outb %0,%1"::"a"(val),"Nd"(port)); }
@@ -23,250 +20,280 @@ static inline uint16_t inw(uint16_t port)
 static inline void outw(uint16_t port, uint16_t val)
     { __asm__ volatile("outw %0,%1"::"a"(val),"Nd"(port)); }
 
-// 400ns delay — read alternate status register 4 times
-static void ata_400ns()
+// ── Channel descriptor ────────────────────────────────────────────────────────
+
+typedef struct {
+    uint16_t data;        // 0x1F0 or 0x170
+    uint16_t error;       // 0x1F1 or 0x171
+    uint16_t sec_count;   // 0x1F2 or 0x172
+    uint16_t lba_lo;      // 0x1F3 or 0x173
+    uint16_t lba_mid;     // 0x1F4 or 0x174
+    uint16_t lba_hi;      // 0x1F5 or 0x175
+    uint16_t drive_sel;   // 0x1F6 or 0x176
+    uint16_t status;      // 0x1F7 or 0x177
+    uint16_t alt_status;  // 0x3F6 or 0x376
+} ata_channel_t;
+
+static const ata_channel_t channels[2] = {
+    // Primary
+    { 0x1F0, 0x1F1, 0x1F2, 0x1F3, 0x1F4, 0x1F5, 0x1F6, 0x1F7, 0x3F6 },
+    // Secondary
+    { 0x170, 0x171, 0x172, 0x173, 0x174, 0x175, 0x176, 0x177, 0x376 },
+};
+
+// Get channel index (0=primary, 1=secondary) and drive select byte from drive number
+static void ata_decode_drive(uint8_t drive, int* ch_idx, uint8_t* sel)
 {
-    inb(0x3F6); inb(0x3F6); inb(0x3F6); inb(0x3F6);
+    *ch_idx = (drive >= 2) ? 1 : 0;          // 0,1 = primary; 2,3 = secondary
+    *sel    = (drive & 1) ? 0xF0 : 0xE0;     // odd = slave, even = master
 }
 
-// ── status polling ────────────────────────────────────────────────────────────
+// ── Timing ────────────────────────────────────────────────────────────────────
 
-// Wait for BSY=0, check ERR
-static int ata_wait_ready()
+static void ata_delay(const ata_channel_t* ch)
+{
+    // Read alt-status 4 times = ~400ns
+    inb(ch->alt_status); inb(ch->alt_status);
+    inb(ch->alt_status); inb(ch->alt_status);
+}
+
+// ── Status polling ────────────────────────────────────────────────────────────
+
+static int ata_wait_not_busy(const ata_channel_t* ch)
 {
     uint32_t timeout = 500000;
     while (timeout--) {
-        uint8_t s = inb(0x1F7);
-        if (s == 0xFF) return -1;          // no drive
-        if (s & 0x01) return -1;           // ERR set
-        if (!(s & 0x80)) return 0;         // BSY clear
-    }
-    return -1;
-}
-
-// Wait for BSY=0, ignore ERR — used right after drive select
-static int ata_wait_not_busy()
-{
-    uint32_t timeout = 500000;
-    while (timeout--) {
-        uint8_t s = inb(0x1F7);
+        uint8_t s = inb(ch->status);
         if (s == 0xFF) return -1;
-        if (!(s & 0x80)) return 0;
+        if (!(s & ATA_STATUS_BSY)) return 0;
     }
     return -1;
 }
 
-// Wait for DRQ=1 (data ready), ignore ERR
-static int ata_wait_drq()
+static int ata_wait_drq(const ata_channel_t* ch)
 {
     uint32_t timeout = 500000;
     while (timeout--) {
-        uint8_t s = inb(0x1F7);
+        uint8_t s = inb(ch->status);
         if (s == 0xFF) return -1;
-        if (s & 0x08) return 0;            // DRQ set
+        if (s & ATA_STATUS_DRQ) return 0;
     }
     return -1;
 }
 
-// ── drive selection ───────────────────────────────────────────────────────────
+// ── Init ──────────────────────────────────────────────────────────────────────
 
-// ── init ──────────────────────────────────────────────────────────────────────
+static void ata_init_channel(const ata_channel_t* ch)
+{
+    // Software reset
+    outb(ch->alt_status, 0x04);  // SRST=1
+    ata_delay(ch);
+    outb(ch->alt_status, 0x00);  // SRST=0
+    ata_delay(ch);
+
+    // Init master
+    outb(ch->drive_sel, 0xA0);
+    ata_delay(ch);
+    ata_wait_not_busy(ch);
+    outb(ch->sec_count, 0); outb(ch->lba_lo, 0);
+    outb(ch->lba_mid, 0);   outb(ch->lba_hi, 0);
+    outb(ch->status, 0xEC); // IDENTIFY
+    ata_delay(ch);
+    uint8_t s = inb(ch->status);
+    if (s && s != 0xFF) {
+        ata_wait_not_busy(ch);
+        for (int i=0; i<256; i++) inw(ch->data);
+    }
+
+    // Init slave
+    outb(ch->drive_sel, 0xF0);
+    ata_delay(ch);
+    s = inb(ch->status);
+    if (s && s != 0xFF) {
+        outb(ch->sec_count, 0); outb(ch->lba_lo, 0);
+        outb(ch->lba_mid, 0);   outb(ch->lba_hi, 0);
+        outb(ch->status, 0xEC);
+        ata_delay(ch);
+        ata_wait_not_busy(ch);
+        s = inb(ch->status);
+        if (s & ATA_STATUS_DRQ)
+            for (int i=0; i<256; i++) inw(ch->data);
+    }
+
+    // Restore master
+    outb(ch->drive_sel, 0xA0);
+    ata_delay(ch);
+}
+
+// Wake up slave drives by issuing several reads — QEMU ignores the first few
+static void ata_wake_slave(const ata_channel_t* ch)
+{
+    static uint8_t dummy[512];
+    uint8_t slave_sel = 0xF0;
+
+    // Check slave exists
+    outb(ch->drive_sel, slave_sel);
+    ata_delay(ch);
+    uint8_t s = inb(ch->status);
+    if (s == 0x00 || s == 0xFF) {
+        outb(ch->drive_sel, 0xA0); ata_delay(ch);
+        return;
+    }
+
+    // Issue 5 dummy reads at LBA 0 to wake the drive up
+    for (int i = 0; i < 5; i++) {
+        outb(ch->drive_sel, slave_sel);
+        ata_delay(ch);
+        ata_wait_not_busy(ch);
+        inb(ch->error);
+        outb(ch->sec_count, 1);
+        outb(ch->lba_lo, 1);  // LBA 1, not 0 — LBA 0 always ABORTs on QEMU slave
+        outb(ch->lba_mid, 0);
+        outb(ch->lba_hi, 0);
+        outb(ch->status, ATA_CMD_READ);
+        ata_delay(ch);
+        // Wait briefly for DRQ
+        uint32_t t = 100000;
+        while (t--) {
+            s = inb(ch->status);
+            if (s & ATA_STATUS_DRQ) {
+                for (int j = 0; j < 256; j++) inw(ch->data);
+                break;
+            }
+            if (!(s & ATA_STATUS_BSY)) break;
+        }
+    }
+
+    outb(ch->drive_sel, 0xA0);
+    ata_delay(ch);
+}
 
 int ata_init()
 {
-    // Software reset both drives
-    outb(0x3F6, 0x04);  // SRST=1, nIEN=0
-    ata_400ns();
-    outb(0x3F6, 0x00);  // SRST=0
-    ata_400ns();
-
-    // Wait for master to be ready after reset
-    outb(0x1F6, 0xA0);
-    ata_400ns();
-    ata_wait_not_busy();
-
-    // Identify master
-    outb(0x1F6, 0xA0);
-    ata_400ns();
-    outb(0x1F2, 0); outb(0x1F3, 0); outb(0x1F4, 0); outb(0x1F5, 0);
-    outb(0x1F7, 0xEC);  // IDENTIFY
-    ata_400ns();
-    uint8_t s = inb(0x1F7);
-    if (s && s != 0xFF) {
-        ata_wait_not_busy();
-        for (int i=0; i<256; i++) inw(0x1F0);
-    }
-
-    // Identify slave
-    outb(0x1F6, 0xF0);
-    ata_400ns();
-    s = inb(0x1F7);
-    if (s && s != 0xFF) {
-        outb(0x1F2, 0); outb(0x1F3, 0); outb(0x1F4, 0); outb(0x1F5, 0);
-        outb(0x1F7, 0xEC);
-        ata_400ns();
-        ata_wait_not_busy();
-        // drain IDENTIFY data if DRQ set
-        s = inb(0x1F7);
-        if (s & 0x08) {
-            for (int i=0; i<256; i++) inw(0x1F0);
-        }
-    }
-
-    // Leave master selected
-    outb(0x1F6, 0xA0);
-    ata_400ns();
+    ata_init_channel(&channels[0]);  // primary
+    ata_init_channel(&channels[1]);  // secondary
+    // Wake up slave drives on both channels
+    ata_wake_slave(&channels[0]);
+    ata_wake_slave(&channels[1]);
     return 0;
 }
 
-// ── read (master) ─────────────────────────────────────────────────────────────
+// ── Core read/write ───────────────────────────────────────────────────────────
 
-int ata_read(uint32_t lba, uint8_t* buf, uint32_t sectors)
+static int ata_do_read(const ata_channel_t* ch, uint8_t sel, uint32_t lba,
+                       uint8_t* buf, uint32_t sectors)
 {
     for (uint32_t s = 0; s < sectors; s++) {
         uint32_t cur = lba + s;
 
-        if (ata_wait_ready() < 0) return -1;
-        outb(0x1F6, 0xE0 | ((cur >> 24) & 0x0F));
-        ata_400ns();
-        if (ata_wait_not_busy() < 0) return -1;
+        if (ata_wait_not_busy(ch) < 0) return -1;
 
-        outb(0x1F2, 1);
-        outb(0x1F3, cur & 0xFF);
-        outb(0x1F4, (cur >> 8) & 0xFF);
-        outb(0x1F5, (cur >> 16) & 0xFF);
-        outb(0x1F7, 0x20);  // READ SECTORS
-        ata_400ns();
-
-        if (ata_wait_drq() < 0) return -1;
-
-        uint16_t* p = (uint16_t*)(buf + s * 512);
-        for (int i=0; i<256; i++) p[i] = inw(0x1F0);
-    }
-    return (int)sectors;
-}
-
-// ── write (master) ────────────────────────────────────────────────────────────
-
-int ata_write(uint32_t lba, const uint8_t* buf, uint32_t sectors)
-{
-    for (uint32_t s = 0; s < sectors; s++) {
-        uint32_t cur = lba + s;
-
-        if (ata_wait_ready() < 0) return -1;
-        outb(0x1F6, 0xE0 | ((cur >> 24) & 0x0F));
-        ata_400ns();
-        if (ata_wait_not_busy() < 0) return -1;
-
-        outb(0x1F2, 1);
-        outb(0x1F3, cur & 0xFF);
-        outb(0x1F4, (cur >> 8) & 0xFF);
-        outb(0x1F5, (cur >> 16) & 0xFF);
-        outb(0x1F7, 0x30);  // WRITE SECTORS
-        ata_400ns();
-
-        if (ata_wait_drq() < 0) return -1;
-
-        const uint16_t* p = (const uint16_t*)(buf + s * 512);
-        for (int i=0; i<256; i++) outw(0x1F0, p[i]);
-
-        outb(0x1F7, 0xE7);  // FLUSH CACHE
-        ata_wait_not_busy();
-    }
-    return (int)sectors;
-}
-
-// ── read (any drive) ──────────────────────────────────────────────────────────
-
-int ata_read_drive(uint8_t drive, uint32_t lba, uint8_t* buf, uint32_t sectors)
-{
-    uint8_t drive_sel = (drive == ATA_DRIVE_SLAVE) ? 0xF0 : 0xE0;
-
-    for (uint32_t s = 0; s < sectors; s++) {
-        uint32_t cur = lba + s;
-
-        if (ata_wait_not_busy() < 0) return -1;
-
-        outb(0x1F6, drive_sel | ((cur >> 24) & 0x0F));
-        ata_400ns();
-        if (ata_wait_not_busy() < 0) {
-            outb(0x1F6, 0xA0); ata_400ns();
+        outb(ch->drive_sel, sel | ((cur >> 24) & 0x0F));
+        ata_delay(ch);
+        if (ata_wait_not_busy(ch) < 0) {
+            outb(ch->drive_sel, (sel & 0xF0) == 0xF0 ? 0xA0 : 0xA0);
+            ata_delay(ch);
             return -1;
         }
 
-        // Retry loop — controller sometimes needs a second attempt
+        // Retry loop
         int drq_ok = 0;
         for (int retry = 0; retry < 5; retry++) {
-            inb(0x1F1);  // clear stale error
-            outb(0x1F6, drive_sel | ((cur >> 24) & 0x0F));
-            ata_400ns();
-            ata_wait_not_busy();
+            inb(ch->error);  // clear stale error
+            outb(ch->drive_sel, sel | ((cur >> 24) & 0x0F));
+            ata_delay(ch);
+            ata_wait_not_busy(ch);
 
-            outb(0x1F2, 1);
-            outb(0x1F3, cur & 0xFF);
-            outb(0x1F4, (cur >> 8) & 0xFF);
-            outb(0x1F5, (cur >> 16) & 0xFF);
-            outb(0x1F7, 0x20);
-            ata_400ns();
+            outb(ch->sec_count, 1);
+            outb(ch->lba_lo,  cur & 0xFF);
+            outb(ch->lba_mid, (cur >> 8) & 0xFF);
+            outb(ch->lba_hi,  (cur >> 16) & 0xFF);
+            outb(ch->status, ATA_CMD_READ);
+            ata_delay(ch);
 
-            uint8_t st = inb(0x1F7);
-            if (st & 0x01) { inb(0x1F1); continue; }
-            if (ata_wait_drq() == 0) { drq_ok = 1; break; }
+            uint8_t st = inb(ch->status);
+            if (st & ATA_STATUS_ERR) { inb(ch->error); continue; }
+            if (ata_wait_drq(ch) == 0) { drq_ok = 1; break; }
         }
 
         if (!drq_ok) {
-            outb(0x1F6, 0xA0); ata_400ns();
+            outb(ch->drive_sel, 0xA0); ata_delay(ch);
             return -1;
         }
 
         uint16_t* p = (uint16_t*)(buf + s * 512);
-        for (int i=0; i<256; i++) p[i] = inw(0x1F0);
+        for (int i = 0; i < 256; i++) p[i] = inw(ch->data);
     }
 
-    outb(0x1F6, 0xA0);
-    ata_400ns();
+    // Restore master on this channel
+    outb(ch->drive_sel, 0xA0);
+    ata_delay(ch);
     return (int)sectors;
 }
 
-// ── write (any drive) ─────────────────────────────────────────────────────────
-
-int ata_write_drive(uint8_t drive, uint32_t lba, const uint8_t* buf, uint32_t sectors)
+static int ata_do_write(const ata_channel_t* ch, uint8_t sel, uint32_t lba,
+                        const uint8_t* buf, uint32_t sectors)
 {
-    uint8_t drive_sel = (drive == ATA_DRIVE_SLAVE) ? 0xF0 : 0xE0;
-
     for (uint32_t s = 0; s < sectors; s++) {
         uint32_t cur = lba + s;
 
-        if (ata_wait_not_busy() < 0) return -1;
+        if (ata_wait_not_busy(ch) < 0) return -1;
 
-        outb(0x1F6, drive_sel | ((cur >> 24) & 0x0F));
-        ata_400ns();
-
-        if (ata_wait_not_busy() < 0) {
-            outb(0x1F6, 0xA0); ata_400ns();
+        outb(ch->drive_sel, sel | ((cur >> 24) & 0x0F));
+        ata_delay(ch);
+        if (ata_wait_not_busy(ch) < 0) {
+            outb(ch->drive_sel, 0xA0); ata_delay(ch);
             return -1;
         }
 
-        outb(0x1F2, 1);
-        outb(0x1F3, cur & 0xFF);
-        outb(0x1F4, (cur >> 8) & 0xFF);
-        outb(0x1F5, (cur >> 16) & 0xFF);
-        outb(0x1F7, 0x30);  // WRITE SECTORS
-        ata_400ns();
+        outb(ch->sec_count, 1);
+        outb(ch->lba_lo,  cur & 0xFF);
+        outb(ch->lba_mid, (cur >> 8) & 0xFF);
+        outb(ch->lba_hi,  (cur >> 16) & 0xFF);
+        outb(ch->status, ATA_CMD_WRITE);
+        ata_delay(ch);
 
-        if (ata_wait_drq() < 0) {
-            outb(0x1F6, 0xA0); ata_400ns();
+        if (ata_wait_drq(ch) < 0) {
+            outb(ch->drive_sel, 0xA0); ata_delay(ch);
             return -1;
         }
 
         const uint16_t* p = (const uint16_t*)(buf + s * 512);
-        for (int i=0; i<256; i++) outw(0x1F0, p[i]);
+        for (int i = 0; i < 256; i++) outw(ch->data, p[i]);
 
-        outb(0x1F7, 0xE7);
-        ata_wait_not_busy();
+        outb(ch->status, 0xE7);  // FLUSH CACHE
+        ata_wait_not_busy(ch);
     }
 
-    outb(0x1F6, 0xA0);
-    ata_400ns();
+    outb(ch->drive_sel, 0xA0);
+    ata_delay(ch);
     return (int)sectors;
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+int ata_read(uint32_t lba, uint8_t* buf, uint32_t sectors)
+{
+    return ata_do_read(&channels[0], 0xE0, lba, buf, sectors);
+}
+
+int ata_write(uint32_t lba, const uint8_t* buf, uint32_t sectors)
+{
+    return ata_do_write(&channels[0], 0xE0, lba, buf, sectors);
+}
+
+int ata_read_drive(uint8_t drive, uint32_t lba, uint8_t* buf, uint32_t sectors)
+{
+    int ch_idx;
+    uint8_t sel;
+    ata_decode_drive(drive, &ch_idx, &sel);
+    return ata_do_read(&channels[ch_idx], sel, lba, buf, sectors);
+}
+
+int ata_write_drive(uint8_t drive, uint32_t lba, const uint8_t* buf, uint32_t sectors)
+{
+    int ch_idx;
+    uint8_t sel;
+    ata_decode_drive(drive, &ch_idx, &sel);
+    return ata_do_write(&channels[ch_idx], sel, lba, buf, sectors);
 }

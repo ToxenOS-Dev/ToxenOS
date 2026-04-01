@@ -75,8 +75,8 @@ user:
 run: all populate
 	qemu-system-i386 -cdrom build/ToxenOS.iso \
 		-drive file=build/disk.img,format=raw,if=ide,index=0 \
-		-drive file=build/fat_disk.img,format=raw,if=ide,index=1 \
-		-drive file=build/ext2_disk.img,format=raw,if=ide,index=3
+		-drive file=build/ext2_disk.img,format=raw,if=ide,index=1 \
+		-drive file=build/fat_disk.img,format=raw,if=ide,index=3
 disk:
 	mkdir -p build
 	dd if=/dev/zero of=build/disk.img bs=512 count=204800

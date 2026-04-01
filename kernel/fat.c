@@ -152,6 +152,7 @@ typedef struct {
     uint32_t   total_clusters;
     char       mountpoint[64];
     int        mounted;
+    uint8_t    drive;        // ATA drive number
 } fat_fs_t;
 
 static fat_fs_t fat_fs;
@@ -164,12 +165,12 @@ static uint8_t sector_buf[512];
 
 static int fat_read_sector(uint32_t lba, uint8_t* buf)
 {
-    return ata_read_drive(ATA_DRIVE_SLAVE, lba + FAT_LBA_OFFSET, buf, 1);
+    return ata_read_drive(fat_fs.drive, lba + FAT_LBA_OFFSET, buf, 1);
 }
 
 static int fat_write_sector(uint32_t lba, const uint8_t* buf)
 {
-    return ata_write_drive(ATA_DRIVE_SLAVE, lba + FAT_LBA_OFFSET, buf, 1);
+    return ata_write_drive(fat_fs.drive, lba + FAT_LBA_OFFSET, buf, 1);
 }
 
 // Read a full cluster into buf (buf must be bytes_per_cluster bytes)
@@ -178,7 +179,7 @@ static int fat_read_cluster(uint32_t cluster, uint8_t* buf)
     uint32_t lba = fat_fs.data_start +
                    (cluster - 2) * fat_fs.sectors_per_cluster;
     for (uint32_t i = 0; i < fat_fs.sectors_per_cluster; i++) {
-        if (ata_read_drive(ATA_DRIVE_SLAVE, lba + i + FAT_LBA_OFFSET, buf + i * fat_fs.bytes_per_sector, 1) < 0)
+        if (ata_read_drive(fat_fs.drive, lba + i + FAT_LBA_OFFSET, buf + i * fat_fs.bytes_per_sector, 1) < 0)
             return -1;
     }
     return 0;
@@ -189,7 +190,7 @@ static int fat_write_cluster(uint32_t cluster, const uint8_t* buf)
     uint32_t lba = fat_fs.data_start +
                    (cluster - 2) * fat_fs.sectors_per_cluster;
     for (uint32_t i = 0; i < fat_fs.sectors_per_cluster; i++) {
-        if (ata_write_drive(ATA_DRIVE_SLAVE, lba + i + FAT_LBA_OFFSET, buf + i * fat_fs.bytes_per_sector, 1) < 0)
+        if (ata_write_drive(fat_fs.drive, lba + i + FAT_LBA_OFFSET, buf + i * fat_fs.bytes_per_sector, 1) < 0)
             return -1;
     }
     return 0;
@@ -595,14 +596,15 @@ static fat_fd_t fat_fds[FAT_MAX_FDS];
 
 static int fat_mount_fn(const char* device)
 {
-    (void)device;
-
     fat_memset(&fat_fs, 0, sizeof(fat_fs));
-    fat_strcpy(fat_fs.mountpoint, "/D:", 64);
+    // device format: "N:/X:" where N=drive number, /X:=mountpoint
+    fat_fs.drive = (device && device[0] >= '0' && device[0] <= '9') ? (uint8_t)(device[0] - '0') : ATA_DRIVE_SLAVE;
+    if (device && device[1] == ':') fat_strcpy(fat_fs.mountpoint, device + 2, 64);
+    else fat_strcpy(fat_fs.mountpoint, "/D:", 64);
 
     static uint8_t boot[512];
     // BPB is at LBA 1 (LBA 0 is a blank sector to work around QEMU slave bug)
-    if (ata_read_drive(ATA_DRIVE_SLAVE, 1, boot, 1) < 0) return -1;
+    if (ata_read_drive(fat_fs.drive, 1, boot, 1) < 0) return -1;
 
     fat_bpb_t* bpb = (fat_bpb_t*)boot;
     if (bpb->bytes_per_sector == 0 || bpb->sectors_per_cluster == 0) return -1;

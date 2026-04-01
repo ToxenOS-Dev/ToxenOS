@@ -29,8 +29,6 @@ all: user
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/framebuffer.c -o build/framebuffer.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/font.c -o build/font.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/fbterm.c -o build/fbterm.o
-	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/fat.c -o build/fat.o
-	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/ext2.c -o build/ext2.o
 
 	ld -m elf_i386 -T linker.ld -o build/kernel.bin \
 		build/boot.o build/kernel.o build/keyboard.o build/idt.o build/isr.o \
@@ -66,17 +64,15 @@ user:
 		-Ttext=0x10000000 \
 		-no-pie -static \
 		user/hello.c -o build/user/hello.elf
-	for cmd in ls shw mkef mkd rm echo pcd uname file help; do \
+	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex; do \
 		gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
 			-nostdlib -nostartfiles -Ttext=0x10000000 -no-pie -static \
 			user/bin/$$cmd.c -o build/user/bin/$$cmd.elf || exit 1; \
 	done
-	
+
 run: all populate
-	qemu-system-i386 -cdrom build/ToxenOS.iso \
-		-drive file=build/disk.img,format=raw,if=ide,index=0 \
-		-drive file=build/ext2_disk.img,format=raw,if=ide,index=1 \
-		-drive file=build/fat_disk.img,format=raw,if=ide,index=3
+	qemu-system-i386 -cdrom build/ToxenOS.iso -drive file=build/disk.img,format=raw,index=0,media=disk
+
 disk:
 	mkdir -p build
 	dd if=/dev/zero of=build/disk.img bs=512 count=204800
@@ -96,18 +92,13 @@ populate: tools/txfs_write
 	tools/txfs_write build/disk.img build/user/bin/uname.elf /bin/uname.elf
 	tools/txfs_write build/disk.img build/user/bin/file.elf /bin/file.elf
 	tools/txfs_write build/disk.img build/user/bin/help.elf /bin/help.elf
+	tools/txfs_write build/disk.img build/user/bin/cp.elf /bin/cp.elf
+	tools/txfs_write build/disk.img build/user/bin/tree.elf /bin/tree.elf
+	tools/txfs_write build/disk.img build/user/bin/hex.elf /bin/hex.elf
 	tools/txfs_write build/disk.img build/user/hello.elf /hello.elf
 	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
 	tools/txfs_write build/disk.img build/user/init.elf /init.elf
-	@if [ ! -f build/fat_disk.img ]; then \
-			rm -f /tmp/fat_raw.img; \
-			mkfs.fat -F 32 -C /tmp/fat_raw.img 65024; \
-			python3 -c "open('build/fat_disk.img','wb').write(b'\x00'*512+open('/tmp/fat_raw.img','rb').read())"; \
-		fi
-		@if [ ! -f build/ext2_disk.img ]; then \
-			dd if=/dev/zero of=build/ext2_disk.img bs=1M count=64; \
-			mkfs.ext2 build/ext2_disk.img; \
-		fi
+
 clean:
 	rm -rf build/*.o build/*.bin build/*.iso
 	mkdir -p build

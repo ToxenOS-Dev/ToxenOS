@@ -136,3 +136,84 @@ static inline const char* type_label(file_type_t t) {
     }
 }
 #endif
+
+// ── Memory allocator ─────────────────────────────────────────────────────────
+// Simple bump allocator with free list
+// Heap sits in BSS at a fixed address — no syscall needed
+
+#define TOX_HEAP_SIZE (256 * 1024)  // 256 KB heap per process
+
+typedef struct tox_block {
+    uint32_t          size;   // payload size in bytes
+    uint8_t           used;   // 1 = allocated, 0 = free
+    struct tox_block* next;   // next block in list
+} tox_block_t;
+
+static uint8_t  _tox_heap[TOX_HEAP_SIZE];
+static uint8_t  _tox_heap_init = 0;
+static tox_block_t* _tox_heap_head = 0;
+
+static inline void _tox_heap_setup() {
+    _tox_heap_head = (tox_block_t*)_tox_heap;
+    _tox_heap_head->size = TOX_HEAP_SIZE - sizeof(tox_block_t);
+    _tox_heap_head->used = 0;
+    _tox_heap_head->next = 0;
+    _tox_heap_init = 1;
+}
+
+static inline void* malloc(uint32_t size) {
+    if (!size) return 0;
+    if (!_tox_heap_init) _tox_heap_setup();
+
+    // Align to 4 bytes
+    size = (size + 3) & ~3;
+
+    tox_block_t* b = _tox_heap_head;
+    while (b) {
+        if (!b->used && b->size >= size) {
+            // Split block if there's enough room left
+            if (b->size >= size + sizeof(tox_block_t) + 4) {
+                tox_block_t* next = (tox_block_t*)((uint8_t*)b + sizeof(tox_block_t) + size);
+                next->size = b->size - size - sizeof(tox_block_t);
+                next->used = 0;
+                next->next = b->next;
+                b->next    = next;
+                b->size    = size;
+            }
+            b->used = 1;
+            return (uint8_t*)b + sizeof(tox_block_t);
+        }
+        b = b->next;
+    }
+    return 0;  // out of memory
+}
+
+static inline void free(void* ptr) {
+    if (!ptr) return;
+    tox_block_t* b = (tox_block_t*)((uint8_t*)ptr - sizeof(tox_block_t));
+    b->used = 0;
+
+    // Coalesce with next block if also free
+    while (b->next && !b->next->used) {
+        b->size += sizeof(tox_block_t) + b->next->size;
+        b->next  = b->next->next;
+    }
+}
+
+static inline void* realloc(void* ptr, uint32_t new_size) {
+    if (!ptr) return malloc(new_size);
+    if (!new_size) { free(ptr); return 0; }
+
+    tox_block_t* b = (tox_block_t*)((uint8_t*)ptr - sizeof(tox_block_t));
+    if (b->size >= new_size) return ptr;  // already big enough
+
+    void* new_ptr = malloc(new_size);
+    if (!new_ptr) return 0;
+
+    // Copy old data
+    uint8_t* src = (uint8_t*)ptr;
+    uint8_t* dst = (uint8_t*)new_ptr;
+    for (uint32_t i = 0; i < b->size; i++) dst[i] = src[i];
+    free(ptr);
+    return new_ptr;
+}

@@ -65,8 +65,9 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
 
         case SYS_STAT:
         {
-            uint32_t size;
-            return vfs_stat((const char*)ebx, &size);
+            uint32_t size = 0;
+            if (vfs_stat((const char*)ebx, &size) < 0) return -1;
+            return (int)size;
         }
 
         case SYS_ISDIR:

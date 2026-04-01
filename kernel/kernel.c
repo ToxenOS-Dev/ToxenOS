@@ -143,12 +143,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             // Check for FAT32/16/12: read LBA 1 (offset by 1 for QEMU quirk)
             // Valid FAT BPB has bytes_per_sector=512 and sectors_per_cluster != 0
             int fat_read_ok = ata_read_drive(drv, 1, probe_buf, 1);
-            print("[PROBE] drv="); print_hex(drv);
-            print(" fat_read="); print_hex((uint32_t)fat_read_ok);
-            print(" bps="); print_hex(probe_buf[11]|(probe_buf[12]<<8));
-            print(" spc="); print_hex(probe_buf[13]);
-            print(" nfat="); print_hex(probe_buf[16]);
-            print("\n");
+
             if (fat_read_ok == 1) {
                 uint16_t bps = (uint16_t)(probe_buf[11] | ((uint16_t)probe_buf[12] << 8));
                 uint8_t  spc = probe_buf[13];
@@ -164,9 +159,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             // This prevents false positives from CD-ROMs and empty slots
             if (!detected && fat_read_ok != -1) {
                 int ext2_read_ok = ata_read_drive(drv, 2, probe_buf, 1);
-                print("[PROBE] ext2 read="); print_hex((uint32_t)ext2_read_ok);
-                print(" magic="); print_hex(probe_buf[56]|(probe_buf[57]<<8));
-                print("\n");
+
                 if (ext2_read_ok == 1) {
                     uint16_t magic = (uint16_t)(probe_buf[56] | ((uint16_t)probe_buf[57] << 8));
                     if (magic == 0xEF53) {

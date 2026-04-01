@@ -831,11 +831,8 @@ static int ext2_stat_fn(const char* path, uint32_t* size)
 
 static int ext2_isdir_fn(const char* path)
 {
-    print("[EXT2] isdir mounted="); print_hex(ext2_fs.mounted);
-    print(" path="); print(path); print("\n");
     if (!ext2_fs.mounted) return -1;
     const char* local = ext2_strip_mount(path);
-    print("[EXT2] local="); print(local); print("\n");
     if (!e2_strcmp(local, "/")) return 1;
     uint32_t ino = ext2_lookup(local);
     if (!ino) return -1;

@@ -134,7 +134,7 @@ static void cmd_cd(const char* args)
 static void run_external(const char* cmd, const char* args)
 {
     char path[64];
-    str_copy(path, "/C:/bin/");
+    str_copy(path, "/C:/Programs/");
     int plen = str_len(path);
     str_copy(path + plen, cmd);
     int flen = str_len(path);

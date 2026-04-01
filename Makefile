@@ -84,19 +84,19 @@ tools/txfs_write: tools/txfs_write.c
 
 populate: tools/txfs_write
 	dd if=/dev/zero of=build/disk.img bs=4096 count=25600
-	tools/txfs_write build/disk.img build/user/bin/ls.elf /bin/ls.elf
-	tools/txfs_write build/disk.img build/user/bin/shw.elf /bin/shw.elf
-	tools/txfs_write build/disk.img build/user/bin/mkef.elf /bin/mkef.elf
-	tools/txfs_write build/disk.img build/user/bin/mkd.elf /bin/mkd.elf
-	tools/txfs_write build/disk.img build/user/bin/rm.elf /bin/rm.elf
-	tools/txfs_write build/disk.img build/user/bin/echo.elf /bin/echo.elf
-	tools/txfs_write build/disk.img build/user/bin/pcd.elf /bin/pcd.elf
-	tools/txfs_write build/disk.img build/user/bin/uname.elf /bin/uname.elf
-	tools/txfs_write build/disk.img build/user/bin/file.elf /bin/file.elf
-	tools/txfs_write build/disk.img build/user/bin/help.elf /bin/help.elf
-	tools/txfs_write build/disk.img build/user/bin/cp.elf /bin/cp.elf
-	tools/txfs_write build/disk.img build/user/bin/tree.elf /bin/tree.elf
-	tools/txfs_write build/disk.img build/user/bin/hex.elf /bin/hex.elf
+	tools/txfs_write build/disk.img build/user/bin/ls.elf /Programs/ls.elf
+	tools/txfs_write build/disk.img build/user/bin/shw.elf /Programs/shw.elf
+	tools/txfs_write build/disk.img build/user/bin/mkef.elf /Programs/mkef.elf
+	tools/txfs_write build/disk.img build/user/bin/mkd.elf /Programs/mkd.elf
+	tools/txfs_write build/disk.img build/user/bin/rm.elf /Programs/rm.elf
+	tools/txfs_write build/disk.img build/user/bin/echo.elf /Programs/echo.elf
+	tools/txfs_write build/disk.img build/user/bin/pcd.elf /Programs/pcd.elf
+	tools/txfs_write build/disk.img build/user/bin/uname.elf /Programs/uname.elf
+	tools/txfs_write build/disk.img build/user/bin/file.elf /Programs/file.elf
+	tools/txfs_write build/disk.img build/user/bin/help.elf /Programs/help.elf
+	tools/txfs_write build/disk.img build/user/bin/cp.elf /Programs/cp.elf
+	tools/txfs_write build/disk.img build/user/bin/tree.elf /Programs/tree.elf
+	tools/txfs_write build/disk.img build/user/bin/hex.elf /Programs/hex.elf
 	tools/txfs_write build/disk.img build/user/hello.elf /hello.elf
 	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
 	tools/txfs_write build/disk.img build/user/init.elf /init.elf

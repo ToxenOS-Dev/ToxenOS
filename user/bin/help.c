@@ -17,7 +17,7 @@ void _start() {
     print("    file <file>     - show file type\n");
 
     set_color(0x0B); print("\n  Drives\n"); set_color(0x07);
-    print("    ls /C:          - TxFS main drive\n");
+    print("    ls /C:              - TxFS main drive\n");
     print("    ls /D:          - secondary drive (auto-detected)\n");
 
     set_color(0x0B); print("\n  System\n"); set_color(0x07);

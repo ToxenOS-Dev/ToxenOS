@@ -195,14 +195,14 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         }
     }
 
-    // Shell ELF is embedded in the kernel binary
-    uint8_t*  elf_buf  = _binary_build_user_shell_elf_start;
-    uint32_t  elf_size = (uint32_t)(_binary_build_user_shell_elf_end
-                                   - _binary_build_user_shell_elf_start);
+    // Init ELF is embedded in the kernel binary — Tinit launches the shell
+    uint8_t*  elf_buf  = _binary_build_user_init_elf_start;
+    uint32_t  elf_size = (uint32_t)(_binary_build_user_init_elf_end
+                                   - _binary_build_user_init_elf_start);
 
     // Validate ELF magic
     if (*(uint32_t*)elf_buf != 0x464C457F) {
-        print("Failed to load shell: bad ELF\n");
+        print("Failed to load init: bad ELF\n");
         while(1) __asm__ volatile("hlt");
     }
 

@@ -24,6 +24,8 @@ all: user
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/tmpfs.c -o build/tmpfs.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/ata.c -o build/ata.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/txfs.c -o build/txfs.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/fat.c -o build/fat.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/ext2.c -o build/ext2.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/elf.c -o build/elf.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/tty.c -o build/tty.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/framebuffer.c -o build/framebuffer.o
@@ -34,9 +36,9 @@ all: user
 		build/boot.o build/kernel.o build/keyboard.o build/idt.o build/isr.o \
 		build/switch.o build/pic.o build/irq.o build/timer.o build/mm.o \
 		build/process.o build/syscall.o build/paging.o build/tss.o build/ring3.o \
-		build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/fat.o build/elf.o \
+		build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/fat.o build/ext2.o build/elf.o \
 		build/tty.o \
-		build/user/shell_blob.o build/user/init_blob.o build/framebuffer.o build/font.o build/fbterm.o build/ext2.o
+		build/user/shell_blob.o build/user/init_blob.o build/framebuffer.o build/font.o build/fbterm.o
 
 	cp build/kernel.bin iso/boot/kernel.bin
 	grub2-mkrescue --modules="part_gpt part_msdos all_video" \
@@ -98,6 +100,10 @@ populate: tools/txfs_write
 	tools/txfs_write build/disk.img build/user/hello.elf /hello.elf
 	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
 	tools/txfs_write build/disk.img build/user/init.elf /init.elf
+	# Create /etc directory and tinit.cfg
+	tools/txfs_write build/disk.img /dev/null /etc/.keep 2>/dev/null || true
+	printf "# Tinit configuration\n# Add services like:\n# service myservice restart\n# shell\n" > /tmp/tinit.cfg
+	tools/txfs_write build/disk.img /tmp/tinit.cfg /etc/tinit.cfg
 
 clean:
 	rm -rf build/*.o build/*.bin build/*.iso

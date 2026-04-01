@@ -84,7 +84,9 @@ static void print_prompt()
 {
     // Find drive letter: cwd starts with /X: so drive is cwd[1]
     // Display as [T] \\X:\path\to\dir\>
-    set_color(0x0A); print("[T] \\\\");
+    set_color(0x07); print("[");
+    set_color(0x06); print("T");
+    set_color(0x07); print("] \\\\");
     // Print drive letter and colon
     char drive[3] = {cwd[1], cwd[2], 0};  // e.g. "C:"
     print(drive);

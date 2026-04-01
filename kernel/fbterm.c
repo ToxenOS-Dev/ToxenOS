@@ -154,6 +154,12 @@ void fbterm_putchar(char c)
 
     if (c=='\n') { cx[t]=0; cy[t]++; }
     else if (c=='\r') { cx[t]=0; }
+    else if (c=='\x08') {  // move cursor left without erasing
+        if (cx[t] > 0) cx[t]--;
+    }
+    else if (c=='\x0E') {  // move cursor right without drawing
+        if (cx[t] < term_cols - 1) cx[t]++;
+    }
     else {
         cells[t][cy[t]][cx[t]].c  = c;
         cells[t][cy[t]][cx[t]].fg = cfg[t];

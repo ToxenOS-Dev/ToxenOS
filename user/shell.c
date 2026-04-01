@@ -203,10 +203,24 @@ static void run_command(char* input)
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+// Reprint from cursor to end of input, then move cursor back
+static void redraw_from(char* input, int len, int cur)
+{
+    // Print from cursor to end
+    for (int i = cur; i < len; i++) {
+        char buf[2] = {input[i], 0};
+        print(buf);
+    }
+    // Move cursor back to position
+    for (int i = cur; i < len; i++)
+        print("\x08");  // backspace moves cursor left visually
+}
+
 void _start()
 {
     char input[INPUT_MAX];
     int  len = 0;
+    int  cur = 0;  // cursor position within input
 
     print_prompt();
 
@@ -226,39 +240,77 @@ void _start()
             if (next_pos >= HISTORY_MAX)   next_pos = HISTORY_MAX - 1;
 
             // erase what's currently on the line
-            erase_n(len);
-            len = 0;
+            erase_n(cur);           // erase back to start
+            for (int i = cur; i < len; i++) {
+                char buf[2] = {input[i], 0}; print(buf);
+            }
+            erase_n(len - cur);     // erase rest
+            len = 0; cur = 0;
 
             if (next_pos == -1) {
-                history_pos = -1;  // empty line
+                history_pos = -1;
             } else {
                 const char* entry = history_get(next_pos);
                 if (entry) {
                     history_pos = next_pos;
                     str_copy(input, entry);
                     len = str_len(input);
+                    cur = len;
                     print(input);
                 }
             }
             continue;
         }
 
-        if (c == KEY_LEFT || c == KEY_RIGHT) continue;  // ignore for now
+        if (c == KEY_LEFT)
+        {
+            if (cur > 0) {
+                cur--;
+                print("\x08");  // move cursor left
+            }
+            continue;
+        }
+
+        if (c == KEY_RIGHT)
+        {
+            if (cur < len) {
+                print("\x0E");  // move cursor right without redrawing
+                cur++;
+            }
+            continue;
+        }
 
         // ── normal input ─────────────────────────────────────────────────────
         if (c == '\n')
         {
+            // Move to end of line before newline
+            for (int i = cur; i < len; i++) {
+                char buf[2] = {input[i], 0}; print(buf);
+            }
             print("\n");
             input[len] = 0;
             history_push(input);
             history_pos = -1;
             run_command(input);
-            len = 0;
+            len = 0; cur = 0;
             print_prompt();
         }
         else if (c == 8)  // backspace
         {
-            if (len > 0) { len--; erase(); }
+            if (cur > 0) {
+                // Remove char before cursor
+                for (int i = cur - 1; i < len - 1; i++)
+                    input[i] = input[i + 1];
+                len--; cur--;
+                print("\x08");  // move cursor left
+                // Redraw from cursor to end
+                for (int i = cur; i < len; i++) {
+                    char buf[2] = {input[i], 0}; print(buf);
+                }
+                print(" ");  // erase old last char
+                // Move cursor back to cur position
+                for (int i = cur; i < len + 1; i++) print("\x08");
+            }
         }
         else if (c == '\t')
         {
@@ -266,9 +318,20 @@ void _start()
         }
         else if (len < INPUT_MAX - 1)
         {
-            input[len++] = c;
-            char buf[2] = {c, 0};
-            print(buf);
+            // Insert char at cursor
+            for (int i = len; i > cur; i--)
+                input[i] = input[i - 1];
+            input[cur] = c;
+            len++; cur++;
+
+            // Reprint from insert point to end
+            for (int i = cur - 1; i < len; i++) {
+                char buf[2] = {input[i], 0};
+                print(buf);
+            }
+            // Move cursor back to after inserted char
+            for (int i = cur; i < len; i++)
+                print("\x08");
         }
     }
 }

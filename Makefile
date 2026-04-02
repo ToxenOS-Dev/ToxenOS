@@ -66,7 +66,7 @@ user:
 		-Ttext=0x10000000 \
 		-no-pie -static \
 		user/hello.c -o build/user/hello.elf
-	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif; do \
+	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg; do \
 		gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
 			-nostdlib -nostartfiles -Ttext=0x10000000 -no-pie -static \
 			user/bin/$$cmd.c -o build/user/bin/$$cmd.elf || exit 1; \
@@ -100,6 +100,8 @@ populate: tools/txfs_write
 	tools/txfs_write build/disk.img build/user/bin/mv.elf /Programs/mv.elf
 	tools/txfs_write build/disk.img build/user/bin/rname.elf /Programs/rname.elf
 	tools/txfs_write build/disk.img build/user/bin/sif.elf /Programs/sif.elf
+	tools/txfs_write build/disk.img build/user/bin/find.elf /Programs/find.elf
+	tools/txfs_write build/disk.img build/user/bin/bmsg.elf /Programs/bmsg.elf
 	tools/txfs_write build/disk.img build/user/hello.elf /hello.elf
 	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
 	tools/txfs_write build/disk.img build/user/init.elf /init.elf

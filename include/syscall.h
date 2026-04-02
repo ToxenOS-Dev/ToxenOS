@@ -29,10 +29,12 @@
 #define SYS_WAIT      23   // wait(pid)   — block until process exits
 #define SYS_SPAWN_TTY      24   // spawn_tty(path, tty) — spawn on specific TTY
 #define SYS_SPAWN_EMBEDDED 25  // spawn embedded shell on given TTY
+#define SYS_BMSG           30  // bmsg(buf, size) — read kernel log
 
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx,
                                                   uint32_t ecx, uint32_t edx);
 void syscall_init();
+void klog(const char* msg);
 
 void sys_exit(int code);
 void sys_print(const char* str);

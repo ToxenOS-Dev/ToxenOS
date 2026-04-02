@@ -1,4 +1,15 @@
 #include <stdint.h>
+
+// ── Kernel log buffer ────────────────────────────────────────────────────────
+#define KLOG_SIZE 4096
+static char klog_buf[KLOG_SIZE];
+static int  klog_pos = 0;
+
+void klog(const char* msg) {
+    for (int i = 0; msg[i] && klog_pos < KLOG_SIZE - 1; i++)
+        klog_buf[klog_pos++] = msg[i];
+    klog_buf[klog_pos] = 0;
+}
 #include "../include/syscall.h"
 #include "../include/idt.h"
 #include "../include/process.h"
@@ -135,6 +146,19 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             tty_assign_pid(pid, tty);
             fbterm_pid_tty[pid] = tty;
             return pid;
+        }
+
+        case SYS_BMSG:
+        {
+            char* buf  = (char*)ebx;
+            uint32_t sz = (uint32_t)ecx;
+            uint32_t len = 0;
+            while (klog_buf[len] && len < sz - 1) {
+                buf[len] = klog_buf[len];
+                len++;
+            }
+            buf[len] = 0;
+            return (int)len;
         }
 
         default:

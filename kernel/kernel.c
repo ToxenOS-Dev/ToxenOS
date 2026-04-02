@@ -118,6 +118,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     syscall_init();
     vfs_init();
     vfs_mount("/", tmpfs_init(), 0);
+    klog("ToxenOS kernel started\n");
 
     tss_init((uint32_t)&stack_top);
     tty_init();
@@ -128,7 +129,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     fbterm_draw_indicator();
 
     ata_init();
+    klog("ATA disk controller initialized\n");
     vfs_mount("/C:", txfs_init(), 0);
+    klog("Mounted /C: (TxFS)\n");
 
     // Auto-detect filesystems on all drives and assign drive letters D: E: F: G:
     {

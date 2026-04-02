@@ -29,6 +29,7 @@ typedef struct {
     char            args[256];
 } process_t;
 
+extern process_t processes[MAX_PROCESSES];
 void       process_init();
 int        process_create(const char* name, void (*entry)());
 int        process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size);

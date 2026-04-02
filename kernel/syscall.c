@@ -161,6 +161,43 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return (int)len;
         }
 
+        case SYS_PROC_LIST:
+        {
+            // Returns process info as packed array of: pid(4) + state(4) + name(32) = 40 bytes each
+            uint8_t* buf  = (uint8_t*)ebx;
+            uint32_t size = (uint32_t)ecx;
+            uint32_t written = 0;
+            for (int i = 0; i < MAX_PROCESSES; i++) {
+                if (processes[i].state == PROCESS_DEAD) continue;
+                if (written + 40 > size) break;
+                // pid
+                buf[written+0] = processes[i].pid & 0xFF;
+                buf[written+1] = (processes[i].pid >> 8) & 0xFF;
+                buf[written+2] = 0; buf[written+3] = 0;
+                // state
+                buf[written+4] = (uint8_t)processes[i].state;
+                buf[written+5] = 0; buf[written+6] = 0; buf[written+7] = 0;
+                // name (32 bytes)
+                for (int j = 0; j < 32; j++)
+                    buf[written+8+j] = processes[i].name[j];
+                written += 40;
+            }
+            return (int)written;
+        }
+
+        case SYS_KILL:
+        {
+            int pid = (int)ebx;
+            if (pid <= 0) return -1;  // can't kill kernel
+            for (int i = 0; i < MAX_PROCESSES; i++) {
+                if ((int)processes[i].pid == pid && processes[i].state != PROCESS_DEAD) {
+                    processes[i].state = PROCESS_DEAD;
+                    return 0;
+                }
+            }
+            return -1;
+        }
+
         default:
             print("Unknown syscall\n");
             return -1;

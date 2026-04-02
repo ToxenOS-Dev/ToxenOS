@@ -30,6 +30,8 @@
 #define SYS_SPAWN_TTY      24   // spawn_tty(path, tty) — spawn on specific TTY
 #define SYS_SPAWN_EMBEDDED 25  // spawn embedded shell on given TTY
 #define SYS_BMSG           30  // bmsg(buf, size) — read kernel log
+#define SYS_PROC_LIST      31  // proc_list(buf, size) — get process list
+#define SYS_KILL           32  // kill(pid) — terminate a process
 
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx,
                                                   uint32_t ecx, uint32_t edx);

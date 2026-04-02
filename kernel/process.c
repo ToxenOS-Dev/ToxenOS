@@ -6,7 +6,7 @@
 #include "../include/vga.h"
 #include "../include/tss.h"
 
-static process_t processes[MAX_PROCESSES];
+process_t processes[MAX_PROCESSES];
 static int       current_pid   = 0;
 static int       process_count = 0;
 

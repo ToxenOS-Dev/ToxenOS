@@ -18,6 +18,9 @@ static inline void tox_exit() {
 static inline void yield() {
     __asm__ volatile("int $0x80" :: "a"(4));
 }
+static inline void tox_clear() {
+    __asm__ volatile("int $0x80" :: "a"(7));
+}
 static inline int get_args(char* buf) {
     int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(26), "b"(buf)); return r;
 }

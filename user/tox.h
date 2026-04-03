@@ -53,6 +53,15 @@ static inline int tox_mkdir(const char* p) {
 static inline int tox_remove(const char* p) {
     int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(16), "b"(p)); return r;
 }
+static inline void tox_wait(int pid) {
+    __asm__ volatile("int $0x80" :: "a"(23), "b"(pid));
+}
+static inline void tox_sigint_target(int pid) {
+    __asm__ volatile("int $0x80" :: "a"(33), "b"(pid));
+}
+static inline int tox_pipe(int* rfd, int* wfd) {
+    int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(34), "b"(rfd), "c"(wfd)); return r;
+}
 
 // ── Strings ───────────────────────────────────────────────────────────────────
 static inline int tox_strlen(const char* s) {

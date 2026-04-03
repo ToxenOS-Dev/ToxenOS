@@ -15,6 +15,7 @@
 #include "../include/ata.h"
 #include "../include/mm.h"
 #include "../include/vga.h"
+#include "../include/timer.h"
 
 static char txfs_mountpoint[64] = "/C:";
 
@@ -451,9 +452,11 @@ static int txfs_open_fn(const char* path, int flags)
         txfs_inode_t inode;
         uint8_t* p = (uint8_t*)&inode;
         for (uint32_t i = 0; i < sizeof(inode); i++) p[i] = 0;
-        inode.mode  = (TXFS_TYPE_FILE << 12) | TXFS_PERM_OWNER_R | TXFS_PERM_OWNER_W;
-        inode.links = 1;
-        inode.size  = 0;
+        inode.mode     = (TXFS_TYPE_FILE << 12) | TXFS_PERM_OWNER_R | TXFS_PERM_OWNER_W;
+        inode.links    = 1;
+        inode.size     = 0;
+        inode.created  = timer_getticks();
+        inode.modified = inode.created;
         txfs_write_inode((uint32_t)new_inum, &inode);
 
         char parent_path[256], filename[256];
@@ -562,6 +565,7 @@ static int txfs_write_fn(int fd, const uint8_t* buf, uint32_t size)
         f->position += done;
         if (f->position > inode->size)
             inode->size = f->position;
+        inode->modified = timer_getticks();
         txfs_write_inode(f->inode_num, inode);
     }
 
@@ -581,10 +585,12 @@ static int txfs_mkdir_fn(const char* path)
     uint8_t* p = (uint8_t*)&inode;
     for (uint32_t i = 0; i < sizeof(inode); i++) p[i] = 0;
 
-    inode.mode  = (TXFS_TYPE_DIR << 12) |
-                  TXFS_PERM_OWNER_R | TXFS_PERM_OWNER_W | TXFS_PERM_OWNER_X;
-    inode.links = 1;
-    inode.size  = 0;
+    inode.mode     = (TXFS_TYPE_DIR << 12) |
+                     TXFS_PERM_OWNER_R | TXFS_PERM_OWNER_W | TXFS_PERM_OWNER_X;
+    inode.links    = 1;
+    inode.size     = 0;
+    inode.created  = timer_getticks();
+    inode.modified = inode.created;
     txfs_write_inode((uint32_t)new_inum, &inode);
 
     char parent_path[256], dirname[256];

@@ -29,12 +29,19 @@ typedef struct
     int          mounted;
 } mount_t;
 
+// fd types
+#define FD_TYPE_FILE    0
+#define FD_TYPE_PIPE_R  1
+#define FD_TYPE_PIPE_W  2
+
 typedef struct
 {
-    int    used;
-    int    mount_idx;
-    int    driver_fd;
-    char   path[VFS_NAME_MAX];
+    int      used;
+    int      type;       // FD_TYPE_FILE / PIPE_R / PIPE_W
+    int      mount_idx;
+    int      driver_fd;
+    int      pipe_idx;   // index into pipes[] when type != FD_TYPE_FILE
+    char     path[VFS_NAME_MAX];
     uint32_t position;
 } file_descriptor_t;
 
@@ -49,6 +56,7 @@ int  vfs_stat(const char* path, uint32_t* size);
 int  vfs_mkdir(const char* path);
 int  vfs_remove(const char* path);
 int vfs_isdir(const char* path);
+int vfs_pipe(int* rfd, int* wfd);  // create a pipe, fill rfd/wfd
 
 // flags for vfs_open
 #define VFS_O_READ   0x1

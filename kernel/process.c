@@ -23,11 +23,22 @@ static void copy_str(char* dst, const char* src, int max)
 
 void process_init()
 {
-    for (int i = 0; i < MAX_PROCESSES; i++)
-        processes[i].state = PROCESS_DEAD;
+    // Zero the entire array so no garbage fields cause issues
+    uint8_t* base = (uint8_t*)processes;
+    for (uint32_t i = 0; i < sizeof(processes); i++) base[i] = 0;
+
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        processes[i].state       = PROCESS_DEAD;
+        processes[i].waiting_for = -1;
+        processes[i].stdin_fd    = -1;
+        processes[i].stdout_fd   = -1;
+    }
 
     processes[0].pid            = 0;
     processes[0].state          = PROCESS_RUNNING;
+    processes[0].waiting_for    = -1;
+    processes[0].stdin_fd       = -1;
+    processes[0].stdout_fd      = -1;
     processes[0].page_directory = kernel_directory;
     processes[0].user_stack     = 0;
     copy_str(processes[0].name, "kernel", 32);
@@ -134,6 +145,9 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
 
     p->pid          = slot;
     p->state        = PROCESS_READY;
+    p->waiting_for  = -1;
+    p->stdin_fd     = -1;
+    p->stdout_fd    = -1;
     p->args[0]      = 0;
     copy_str(p->name, name, 32);
 
@@ -155,6 +169,11 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
         paging_map(p->page_directory, va, phys,
                    PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
     }
+
+    // Guard page: one unmapped page directly below the stack.
+    // A stack overflow will page-fault instead of silently corrupting memory.
+    uint32_t guard_va = USER_STACK_TOP - (USER_STACK_PAGES + 1) * PAGE_SIZE;
+    paging_unmap(p->page_directory, guard_va);  // ensure it stays unmapped
 
     uint32_t user_sp = USER_STACK_TOP - 4;  // start just below top
     p->user_stack = user_sp;
@@ -208,9 +227,12 @@ int process_create(const char* name, void (*entry)())
         p->kernel_stack = 0;
     }
 
-    p->pid   = slot;
-    p->state = PROCESS_READY;
-    p->args[0] = 0;
+    p->pid         = slot;
+    p->state       = PROCESS_READY;
+    p->waiting_for = -1;
+    p->stdin_fd    = -1;
+    p->stdout_fd   = -1;
+    p->args[0]     = 0;
     copy_str(p->name, name, 32);
 
     p->page_directory = paging_create_directory();
@@ -241,11 +263,47 @@ void process_exit()
 {
     if (current_pid == 0) return;
 
-    processes[current_pid].state = PROCESS_DEAD;
+    process_t* p = &processes[current_pid];
+    p->state = PROCESS_DEAD;
     process_count--;
 
-    // Just call the scheduler to pick the next process
-    // This lets the shell's polling loop detect the dead process naturally
+    // Free all user-space pages (non-kernel page tables).
+    // We walk the page directory and free any table/pages that were
+    // allocated specifically for this process (not shared kernel tables).
+    if (p->page_directory && p->page_directory != kernel_directory)
+    {
+        for (int i = 0; i < 1024; i++)
+        {
+            if (!(p->page_directory[i] & PAGE_PRESENT)) continue;
+            uint32_t table_phys = p->page_directory[i] & ~0xFFF;
+
+            // Skip any table that is shared with the kernel directory
+            // (covers ALL 1024 entries, not just the first 256)
+            if ((kernel_directory[i] & ~0xFFF) == table_phys) continue;
+
+            uint32_t* table = (uint32_t*)table_phys;
+            for (int j = 0; j < 1024; j++)
+            {
+                if (table[j] & PAGE_PRESENT)
+                    kfree((void*)(table[j] & ~0xFFF));
+            }
+            kfree(table);
+        }
+        kfree(p->page_directory);
+        p->page_directory = 0;
+    }
+
+    // Wake any process waiting on us
+    for (int i = 0; i < MAX_PROCESSES; i++)
+    {
+        if (processes[i].state == PROCESS_WAITING &&
+            processes[i].waiting_for == (int)p->pid)
+        {
+            processes[i].state       = PROCESS_READY;
+            processes[i].waiting_for = -1;
+        }
+    }
+
     scheduler();
 }
 
@@ -256,7 +314,6 @@ process_t* process_current()
 
 void scheduler()
 {
-
     int next = current_pid;
 
     for (int i = 1; i <= MAX_PROCESSES; i++)
@@ -272,21 +329,23 @@ void scheduler()
 
     if (next == current_pid)
     {
-        if (current_pid != 0 && processes[0].state != PROCESS_DEAD)
+        if (current_pid != 0 &&
+            processes[0].state != PROCESS_DEAD &&
+            processes[0].state != PROCESS_WAITING)
             next = 0;
         else
             return;
     }
 
-    // Only mark as READY if still alive (not dead from process_exit)
-    if (processes[current_pid].state != PROCESS_DEAD)
+    // Preserve WAITING/DEAD state; only demote RUNNING → READY
+    if (processes[current_pid].state == PROCESS_RUNNING)
         processes[current_pid].state = PROCESS_READY;
+
     processes[next].state = PROCESS_RUNNING;
 
     int old = current_pid;
     current_pid = next;
 
-    // Switch TSS kernel stack so syscalls from the new process use the right stack
     tss_set_kernel_stack((uint32_t)(processes[next].kernel_stack + KERNEL_STACK_SIZE));
     paging_switch(processes[next].page_directory);
     context_switch(&processes[old].regs.esp, &processes[next].regs.esp);
@@ -424,8 +483,14 @@ int process_is_alive(int pid)
 void sys_wait(int pid)
 {
     if (pid < 0 || pid >= MAX_PROCESSES) return;
-    while (process_is_alive(pid))
-        scheduler();
+    if (!process_is_alive(pid)) return;
+
+    // Block the calling process until target dies
+    process_t* me = process_current();
+    me->state       = PROCESS_WAITING;
+    me->waiting_for = pid;
+    scheduler();
+    // When we wake up the target is dead
 }
 
 // spawn on a specific TTY

@@ -9,6 +9,7 @@
 typedef enum {
     PROCESS_READY,
     PROCESS_RUNNING,
+    PROCESS_WAITING,   // blocked in sys_wait() until waiting_for dies
     PROCESS_DEAD
 } process_state_t;
 
@@ -21,10 +22,13 @@ typedef struct {
 typedef struct {
     uint32_t        pid;
     process_state_t state;
+    int             waiting_for;     // pid we're blocked on (-1 = none)
+    int             stdin_fd;        // -1 = keyboard, >=0 = pipe read end
+    int             stdout_fd;       // -1 = screen,   >=0 = pipe write end
     registers_t     regs;
-    uint8_t*        kernel_stack;    // kernel-mode stack (for syscalls/IRQs)
-    uint32_t        user_stack;      // user-mode stack virtual address
-    uint32_t*       page_directory;  // this process's page directory
+    uint8_t*        kernel_stack;
+    uint32_t        user_stack;
+    uint32_t*       page_directory;
     char            name[32];
     char            args[256];
 } process_t;

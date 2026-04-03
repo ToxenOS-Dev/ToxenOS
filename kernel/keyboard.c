@@ -2,6 +2,7 @@
 #include "../include/keyboard.h"
 #include "../include/irq.h"
 #include "../include/pic.h"
+#include "../include/process.h"
 
 static inline uint8_t inb(uint16_t port) {
     uint8_t r; __asm__ volatile("inb %1,%0":"=a"(r):"Nd"(port)); return r;
@@ -26,6 +27,14 @@ static char buffer[BUFFER_SIZE];
 static int  buf_head = 0, buf_tail = 0;
 static int  ctrl_pressed = 0, shift_pressed = 0, extended = 0;
 
+// pid of the process that should receive Ctrl+C (-1 = none / kill foreground)
+static int sigint_target = -1;
+
+void keyboard_set_sigint_target(int pid)
+{
+    sigint_target = pid;
+}
+
 static void keyboard_handler() {
     uint8_t sc = inb(0x60);
     if (sc == 0x1D) { ctrl_pressed  = 1; return; }
@@ -38,7 +47,7 @@ static void keyboard_handler() {
         char c = 0;
         if (sc == 0x48) c = 0x01;  // up
         if (sc == 0x50) c = 0x02;  // down
-        if (sc == 0x4B) c = 0x03;  // left
+        if (sc == 0x4B) c = 0x03;  // left — NOTE: not Ctrl+C, this is arrow
         if (sc == 0x4D) c = 0x04;  // right
         if (c) {
             int next = (buf_tail+1)%BUFFER_SIZE;
@@ -53,6 +62,25 @@ static void keyboard_handler() {
         if (c >= 'a' && c <= 'z') c = c-'a'+1;
         else if (c >= 'A' && c <= 'Z') c = c-'A'+1;
         else return;
+        // Ctrl+C (0x03): kill the foreground child process
+        if (c == 0x03) {
+            int target = sigint_target;
+            if (target > 0 && target < MAX_PROCESSES &&
+                processes[target].state != PROCESS_DEAD)
+            {
+                processes[target].state = PROCESS_DEAD;
+                // Wake any process waiting on the killed process
+                for (int i = 0; i < MAX_PROCESSES; i++) {
+                    if (processes[i].state == PROCESS_WAITING &&
+                        processes[i].waiting_for == target) {
+                        processes[i].state       = PROCESS_READY;
+                        processes[i].waiting_for = -1;
+                    }
+                }
+            }
+            sigint_target = -1;
+            return;  // don't put ^C in the key buffer
+        }
     }
     int next = (buf_tail+1)%BUFFER_SIZE;
     if (next != buf_head) { buffer[buf_tail]=c; buf_tail=next; }

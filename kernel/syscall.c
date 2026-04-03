@@ -16,6 +16,7 @@ void klog(const char* msg) {
 #include "../include/vga.h"
 #include "../include/keyboard.h"
 #include "../include/vfs.h"
+#include "../include/pipe.h"
 #include "../include/tty.h"
 #include "../include/fbterm.h"
 
@@ -31,13 +32,31 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return 0;
 
         case SYS_PRINT:
-            sys_print((const char*)ebx);
+        {
+            process_t* cur = process_current();
+            if (cur->stdout_fd >= 0 && cur->stdout_fd < VFS_MAX_FDS) {
+                const char* s = (const char*)ebx;
+                uint32_t len = 0;
+                while (s[len]) len++;
+                vfs_write(cur->stdout_fd, (const uint8_t*)s, len);
+            } else {
+                sys_print((const char*)ebx);
+            }
             return 0;
+        }
 
         case SYS_GETCHAR:
+        {
+            process_t* cur = process_current();
+            if (cur->stdin_fd >= 0 && cur->stdin_fd < VFS_MAX_FDS) {
+                uint8_t ch = 0;
+                int r = vfs_read(cur->stdin_fd, &ch, 1);
+                return (r > 0) ? ch : 0;
+            }
             if (keyboard_available())
                 return keyboard_getchar();
             return 0;
+        }
 
         case SYS_SETCOLOR:
             set_color((uint8_t)ebx);
@@ -188,18 +207,58 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_KILL:
         {
             int pid = (int)ebx;
-            if (pid <= 0) return -1;  // can't kill kernel
+            if (pid <= 0) return -1;
+            if (pid >= MAX_PROCESSES) return -1;
+            if (processes[pid].state == PROCESS_DEAD) return -1;
+            processes[pid].state = PROCESS_DEAD;
+            // Wake any waiter
             for (int i = 0; i < MAX_PROCESSES; i++) {
-                if ((int)processes[i].pid == pid && processes[i].state != PROCESS_DEAD) {
-                    processes[i].state = PROCESS_DEAD;
-                    return 0;
+                if (processes[i].state == PROCESS_WAITING &&
+                    processes[i].waiting_for == pid) {
+                    processes[i].state       = PROCESS_READY;
+                    processes[i].waiting_for = -1;
                 }
             }
-            return -1;
+            return 0;
+        }
+
+        case 33:  // SYS_SIGINT_TARGET
+        {
+            keyboard_set_sigint_target((int)ebx);
+            return 0;
+        }
+
+        case 34:  // SYS_PIPE
+        {
+            int* rfd_ptr = (int*)ebx;
+            int* wfd_ptr = (int*)ecx;
+            int rfd, wfd;
+            if (vfs_pipe(&rfd, &wfd) < 0) return -1;
+            *rfd_ptr = rfd;
+            *wfd_ptr = wfd;
+            return 0;
+        }
+
+        case 35:  // SYS_SPAWN_PIPE — spawn with overridden stdin/stdout fds
+        {
+            // ebx=path, ecx=args, edx=packed fds: high16=stdout_fd, low16=stdin_fd
+            // -1 in either slot means "use default" (keyboard/screen)
+            const char* path    = (const char*)ebx;
+            const char* args    = (const char*)ecx;
+            int         stdin_f = (int)(int16_t)(edx & 0xFFFF);
+            int         stdout_f= (int)(int16_t)((edx >> 16) & 0xFFFF);
+
+            int tty = tty_for_pid[process_current()->pid];
+            if (tty < 0) tty = 0;
+            int pid = sys_spawn_tty_args(path, tty, args ? args : "");
+            if (pid < 0) return -1;
+
+            processes[pid].stdin_fd  = stdin_f;
+            processes[pid].stdout_fd = stdout_f;
+            return pid;
         }
 
         default:
-            print("Unknown syscall\n");
             return -1;
     }
 }

@@ -28,6 +28,7 @@ all: user
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/ext2.c -o build/ext2.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/elf.c -o build/elf.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/tty.c -o build/tty.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/pipe.c -o build/pipe.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/framebuffer.c -o build/framebuffer.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/font.c -o build/font.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/fbterm.c -o build/fbterm.o
@@ -37,7 +38,7 @@ all: user
 		build/switch.o build/pic.o build/irq.o build/timer.o build/mm.o \
 		build/process.o build/syscall.o build/paging.o build/tss.o build/ring3.o \
 		build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/fat.o build/ext2.o build/elf.o \
-		build/tty.o \
+		build/tty.o build/pipe.o \
 		build/user/shell_blob.o build/user/init_blob.o build/framebuffer.o build/font.o build/fbterm.o
 
 	cp build/kernel.bin iso/boot/kernel.bin

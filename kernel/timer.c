@@ -19,15 +19,12 @@ static volatile uint32_t ticks = 0;
 static void timer_handler()
 {
     ticks++;
-
-    // blink cursor every tick (fbterm_tick is cheap — just checks ticks)
     fbterm_tick();
 
     if (ticks % 10 == 0)
-    {
-        pic_send_eoi(0);
         scheduler();
-    }
+
+    // EOI is sent by irq_handler after this returns
 }
 
 int timer_schedule_pending() { return 0; }

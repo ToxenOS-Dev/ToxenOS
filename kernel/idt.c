@@ -3,6 +3,7 @@
 #include "../include/idt.h"
 #include "../include/process.h"
 #include "../include/vga.h"
+#include "../include/paging.h"
 
 static const char* exception_messages[] = {
     "Divide By Zero",           // 0
@@ -100,9 +101,14 @@ void page_fault_handler(uint32_t error_code, uint32_t cr2)
         while (1) __asm__("hlt");
     } else {
         set_color(0x0C);
-        print("\nSegfault in pid ");
-        pf_print_hex(p->pid);
-        print(" addr="); pf_print_hex(cr2);
+        // Check if this is likely a stack overflow (hit the guard page)
+        uint32_t guard = USER_STACK_TOP - (USER_STACK_PAGES + 1) * PAGE_SIZE;
+        if (cr2 >= guard && cr2 < guard + PAGE_SIZE)
+            print("\nStack overflow in '");
+        else
+            print("\nSegfault in '");
+        print(p->name);
+        print("'  addr="); pf_print_hex(cr2);
         print(present ? " [protection]" : " [not mapped]");
         print(write   ? " [write]"      : " [read]");
         print(user    ? " [user]\n"     : " [kernel]\n");

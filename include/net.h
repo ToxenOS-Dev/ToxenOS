@@ -85,7 +85,10 @@ extern uint8_t  net_mac[ETH_ALEN];
 // ── Public API ────────────────────────────────────────────────────────────────
 
 void net_init();
-void net_poll();   // call regularly to process incoming packets
+void net_poll();
+uint32_t net_get_rx_count();
+uint32_t net_get_tx_count();
+uint32_t net_get_vq_used();   // raw RX used.idx from virtqueue
 
 // Send a UDP packet
 int  net_udp_send(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
@@ -95,6 +98,14 @@ int  net_udp_send(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
 typedef void (*udp_handler_t)(uint32_t src_ip, uint16_t src_port,
                                const uint8_t* data, uint16_t len);
 void net_udp_listen(uint16_t port, udp_handler_t handler);
+
+// Open a port for blocking receive from userland
+int  net_udp_open(uint16_t port);
+
+// Blocking receive — waits up to timeout_ms for a packet on port.
+// Returns bytes received, 0 on timeout, -1 on error.
+int  net_udp_recv(uint16_t port, uint8_t* buf, uint16_t maxlen,
+                  uint32_t* src_ip_out, uint32_t timeout_ms);
 
 // ARP: resolve IP to MAC. Returns 1 if found, 0 if still waiting.
 int  arp_lookup(uint32_t ip, uint8_t* mac_out);

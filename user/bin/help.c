@@ -45,6 +45,9 @@ void _start() {
     print("    ls /C:            - TxFS main drive\n");
     print("    ls /D:            - secondary drive (auto-detected)\n");
 
+    set_color(0x0B); print("\n  Network\n"); set_color(0x07);
+    print("    dns <hostname>    - DNS lookup (e.g. dns example.com)\n");
+
     set_color(0x0B); print("\n  Diagnostics\n"); set_color(0x07);
     print("    sleeptest         - test timer sleep & scheduler\n");
     print("    memtest           - test dynamic memory (sbrk/malloc)\n");

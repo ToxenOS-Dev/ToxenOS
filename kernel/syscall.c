@@ -311,6 +311,25 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_NET_GET_IP:
             return (int)net_ip;
 
+        case SYS_NET_UDP_RECV:
+        {
+            uint16_t  port    = (uint16_t)ebx;
+            uint8_t*  buf     = (uint8_t*)ecx;
+            uint16_t* maxlenp = (uint16_t*)edx;
+            uint32_t* timeoutp= (uint32_t*)(edx + 4);
+            net_udp_open(port);
+            return net_udp_recv(port, buf, *maxlenp, 0, *timeoutp);
+        }
+
+        case SYS_NET_STATS:
+        {
+            uint32_t* out = (uint32_t*)ebx;
+            out[0] = net_get_rx_count();
+            out[1] = net_get_tx_count();
+            out[2] = net_get_vq_used();   // raw virtqueue used.idx
+            return 0;
+        }
+
         default:
             return -1;
     }

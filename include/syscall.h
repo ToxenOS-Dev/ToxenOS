@@ -41,6 +41,8 @@
 #define SYS_NET_SEND_UDP   39  // send UDP packet
 #define SYS_NET_POLL       40  // poll for incoming packets
 #define SYS_NET_GET_IP     41  // get our IP address
+#define SYS_NET_UDP_RECV   42
+#define SYS_NET_STATS      43  // get rx/tx packet counts
 
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx,
                                                   uint32_t ecx, uint32_t edx);

@@ -104,4 +104,7 @@ extern uint8_t virtio_net_mac[ETH_ALEN];
 // 1 if the driver is up
 extern int virtio_net_ready;
 
+// Debug: returns raw RX used.idx from virtqueue
+uint32_t virtio_net_rx_used();
+
 #endif

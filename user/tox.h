@@ -79,9 +79,15 @@ static inline uint32_t tox_net_get_ip() {
 static inline void tox_net_poll() {
     __asm__ volatile("int $0x80" :: "a"(40));
 }
+static inline int tox_net_udp_recv(uint16_t port, uint8_t* buf,
+                                    uint16_t maxlen, uint32_t timeout_ms) {
+    struct { uint16_t maxlen; uint16_t pad; uint32_t timeout_ms; }
+        s = {maxlen, 0, timeout_ms};
+    int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(42), "b"(port), "c"(buf), "d"(&s));
+    return r;
+}
 static inline int tox_net_udp_send(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
                                     const uint8_t* data, uint16_t len) {
-    // Pack ports into ecx, pass data+len struct via edx
     struct { const uint8_t* p; uint16_t l; } s = {data, len};
     uint32_t ports = ((uint32_t)src_port << 16) | dst_port;
     int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(39), "b"(dst_ip), "c"(ports), "d"(&s));

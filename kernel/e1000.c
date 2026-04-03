@@ -27,7 +27,7 @@ static e1000_tx_desc_t* tx_descs;
 static uint8_t*          rx_bufs[E1000_NUM_RX_DESC];
 static uint8_t*          tx_bufs[E1000_NUM_TX_DESC];
 
-static uint32_t rx_tail = 0;
+static uint32_t rx_tail = E1000_NUM_RX_DESC - 1;
 static uint32_t tx_tail = 0;
 
 // ── EEPROM read ───────────────────────────────────────────────────────────────

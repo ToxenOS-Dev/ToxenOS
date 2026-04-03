@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "../include/net.h"
 #include "../include/e1000.h"
+#include "../include/tcp.h"
 #include "../include/timer.h"
 #include "../include/vga.h"
 #include "../include/syscall.h"
@@ -162,6 +163,8 @@ static void handle_ip(const uint8_t* d, uint16_t len) {
             for(uint16_t i=0;i<copy;i++) slot->buf[i]=udata[i];
             slot->len=copy; slot->src_ip=src_ip; slot->src_port=sport; slot->ready=1;
         }
+    } else if(ip->proto==IP_PROTO_TCP) {
+        tcp_rx(src_ip, pay, plen);
     }
 }
 
@@ -214,14 +217,11 @@ int net_udp_recv(uint16_t port, uint8_t* buf, uint16_t maxlen,
 
 // ── Poll ──────────────────────────────────────────────────────────────────────
 static uint8_t rx_frame[1518];
-static uint32_t net_rx_count = 0;
-static uint32_t net_tx_count = 0;
 
 void net_poll() {
     if(!e1000_ready) return;
     int len;
     while((len=e1000_recv(rx_frame))>0) {
-        net_rx_count++;
         if(len<(int)sizeof(eth_hdr_t)) continue;
         eth_hdr_t* eth=(eth_hdr_t*)rx_frame;
         uint16_t et=NTOHS(eth->ethertype);
@@ -232,9 +232,6 @@ void net_poll() {
     }
 }
 
-uint32_t net_get_rx_count() { return net_rx_count; }
-uint32_t net_get_tx_count() { return net_tx_count; }
-uint32_t net_get_vq_used()  { return 0; }
 
 // ── net_udp_listen (for kernel-internal use) ─────────────────────────────────
 #define UDP_LISTENERS_MAX 8
@@ -258,5 +255,6 @@ void net_init() {
     // Pre-populate gateway ARP (QEMU user-mode: always 52:55:0a:00:02:02)
     uint8_t gw_mac[ETH_ALEN]={0x52,0x55,0x0a,0x00,0x02,0x02};
     arp_store(net_gateway,gw_mac);
+    tcp_init();
     klog("net: IP=10.0.2.15 GW=10.0.2.2\n");
 }

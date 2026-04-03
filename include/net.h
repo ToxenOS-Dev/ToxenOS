@@ -85,10 +85,7 @@ extern uint8_t  net_mac[ETH_ALEN];
 // ── Public API ────────────────────────────────────────────────────────────────
 
 void net_init();
-void net_poll();
-uint32_t net_get_rx_count();
-uint32_t net_get_tx_count();
-uint32_t net_get_vq_used();   // raw RX used.idx from virtqueue
+void net_poll();   // call regularly to process incoming packets
 
 // Send a UDP packet
 int  net_udp_send(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,

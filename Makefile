@@ -33,6 +33,7 @@ all: user
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/pci.c -o build/pci.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/e1000.c -o build/e1000.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/net.c -o build/net.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/tcp.c -o build/tcp.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/framebuffer.c -o build/framebuffer.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/font.c -o build/font.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/fbterm.c -o build/fbterm.o
@@ -42,7 +43,7 @@ all: user
 		build/switch.o build/pic.o build/irq.o build/timer.o build/mm.o \
 		build/process.o build/syscall.o build/paging.o build/tss.o build/ring3.o \
 		build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/fat.o build/ext2.o build/elf.o \
-		build/tty.o build/pipe.o build/waitqueue.o build/pci.o build/e1000.o build/net.o \
+		build/tty.o build/pipe.o build/waitqueue.o build/pci.o build/e1000.o build/net.o build/tcp.o \
 		build/user/shell_blob.o build/user/init_blob.o build/framebuffer.o build/font.o build/fbterm.o
 
 	cp build/kernel.bin iso/boot/kernel.bin
@@ -71,7 +72,7 @@ user:
 		-Ttext=0x10000000 \
 		-no-pie -static \
 		user/hello.c -o build/user/hello.elf
-	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns; do \
+	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns http; do \
 		gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
 			-nostdlib -nostartfiles -Ttext=0x10000000 -no-pie -static \
 			user/bin/$$cmd.c -o build/user/bin/$$cmd.elf || exit 1; \
@@ -120,6 +121,7 @@ populate: tools/txfs_write
 	tools/txfs_write build/disk.img build/user/bin/pipetest.elf /Programs/pipetest.elf
 	tools/txfs_write build/disk.img build/user/bin/nettest.elf /Programs/nettest.elf
 	tools/txfs_write build/disk.img build/user/bin/dns.elf /Programs/dns.elf
+	tools/txfs_write build/disk.img build/user/bin/http.elf /Programs/http.elf
 	tools/txfs_write build/disk.img build/user/hello.elf /hello.elf
 	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
 	tools/txfs_write build/disk.img build/user/init.elf /init.elf

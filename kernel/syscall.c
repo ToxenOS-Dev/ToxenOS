@@ -18,6 +18,7 @@ void klog(const char* msg) {
 #include "../include/vfs.h"
 #include "../include/pipe.h"
 #include "../include/net.h"
+#include "../include/tcp.h"
 #include "../include/tty.h"
 #include "../include/fbterm.h"
 
@@ -321,14 +322,29 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return net_udp_recv(port, buf, *maxlenp, 0, *timeoutp);
         }
 
-        case SYS_NET_STATS:
+        case SYS_TCP_CONNECT:
+            // ebx=ip, ecx=port
+            return tcp_connect((uint32_t)ebx, (uint16_t)ecx);
+
+        case SYS_TCP_SEND:
         {
-            uint32_t* out = (uint32_t*)ebx;
-            out[0] = net_get_rx_count();
-            out[1] = net_get_tx_count();
-            out[2] = net_get_vq_used();   // raw virtqueue used.idx
-            return 0;
+            // ebx=sock, ecx=buf, edx=len
+            return tcp_send((int)ebx, (const uint8_t*)ecx, (uint32_t)edx);
         }
+
+        case SYS_TCP_RECV:
+        {
+            // ebx=sock, ecx=buf, edx=ptr to {uint16_t maxlen, uint16_t pad, uint32_t timeout}
+            int      sock    = (int)ebx;
+            uint8_t* buf     = (uint8_t*)ecx;
+            uint16_t maxlen  = *(uint16_t*)edx;
+            uint32_t timeout = *(uint32_t*)(edx + 4);
+            return tcp_recv(sock, buf, maxlen, timeout);
+        }
+
+        case SYS_TCP_CLOSE:
+            tcp_close((int)ebx);
+            return 0;
 
         default:
             return -1;

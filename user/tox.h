@@ -86,6 +86,20 @@ static inline int tox_net_udp_recv(uint16_t port, uint8_t* buf,
     int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(42), "b"(port), "c"(buf), "d"(&s));
     return r;
 }
+// TCP
+static inline int tox_tcp_connect(uint32_t ip, uint16_t port) {
+    int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(44), "b"(ip), "c"(port)); return r;
+}
+static inline int tox_tcp_send(int sock, const uint8_t* buf, uint32_t len) {
+    int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(45), "b"(sock), "c"(buf), "d"(len)); return r;
+}
+static inline int tox_tcp_recv(int sock, uint8_t* buf, uint16_t maxlen, uint32_t timeout_ms) {
+    struct { uint16_t maxlen; uint16_t pad; uint32_t timeout_ms; } s = {maxlen, 0, timeout_ms};
+    int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(46), "b"(sock), "c"(buf), "d"(&s)); return r;
+}
+static inline void tox_tcp_close(int sock) {
+    __asm__ volatile("int $0x80" :: "a"(47), "b"(sock));
+}
 static inline int tox_net_udp_send(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
                                     const uint8_t* data, uint16_t len) {
     struct { const uint8_t* p; uint16_t l; } s = {data, len};

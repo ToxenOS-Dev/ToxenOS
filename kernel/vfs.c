@@ -2,10 +2,58 @@
 #include "../include/vfs.h"
 #include "../include/vga.h"
 #include "../include/pipe.h"
+#include "../include/process.h"
 
-static mount_t          mounts[VFS_MAX_MOUNTS];
-static file_descriptor_t fds[VFS_MAX_FDS];
-static int              mount_count = 0;
+static mount_t           mounts[VFS_MAX_MOUNTS];
+static file_descriptor_t fds[VFS_MAX_FDS];   // global file description pool
+static int               mount_count = 0;
+
+// ── Per-process FD table ──────────────────────────────────────────────────────
+
+void fd_table_init(fd_table_t* t)
+{
+    for (int i = 0; i < VFS_PROC_FDS; i++)
+        t->local_fds[i] = -1;
+}
+
+void fd_table_copy(fd_table_t* dst, const fd_table_t* src)
+{
+    for (int i = 0; i < VFS_PROC_FDS; i++)
+        dst->local_fds[i] = src->local_fds[i];
+}
+
+int fd_table_alloc(fd_table_t* t, int gfd)
+{
+    for (int i = 0; i < VFS_PROC_FDS; i++) {
+        if (t->local_fds[i] == -1) {
+            t->local_fds[i] = gfd;
+            return i;
+        }
+    }
+    return -1;
+}
+
+int fd_table_get(fd_table_t* t, int local_fd)
+{
+    if (local_fd < 0 || local_fd >= VFS_PROC_FDS) return -1;
+    return t->local_fds[local_fd];
+}
+
+void fd_table_close_local(fd_table_t* t, int local_fd)
+{
+    if (local_fd < 0 || local_fd >= VFS_PROC_FDS) return;
+    t->local_fds[local_fd] = -1;
+}
+
+void fd_table_close_all(fd_table_t* t)
+{
+    for (int i = 0; i < VFS_PROC_FDS; i++) {
+        if (t->local_fds[i] >= 0) {
+            vfs_close(t->local_fds[i]);
+            t->local_fds[i] = -1;
+        }
+    }
+}
 
 static int string_starts_with(const char* str, const char* prefix)
 {

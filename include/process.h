@@ -2,6 +2,7 @@
 #define PROCESS_H
 
 #include <stdint.h>
+#include "vfs.h"
 
 #define KERNEL_STACK_SIZE  16384   // 16KB kernel stack per process
 #define MAX_PROCESSES      16
@@ -9,7 +10,8 @@
 typedef enum {
     PROCESS_READY,
     PROCESS_RUNNING,
-    PROCESS_WAITING,   // blocked in sys_wait() until waiting_for dies
+    PROCESS_WAITING,   // blocked on event (wait queue or waiting_for pid)
+    PROCESS_SLEEPING,  // sleeping until sleep_until ticks
     PROCESS_DEAD
 } process_state_t;
 
@@ -22,9 +24,12 @@ typedef struct {
 typedef struct {
     uint32_t        pid;
     process_state_t state;
-    int             waiting_for;     // pid we're blocked on (-1 = none)
-    int             stdin_fd;        // -1 = keyboard, >=0 = pipe read end
-    int             stdout_fd;       // -1 = screen,   >=0 = pipe write end
+    int             waiting_for;
+    uint32_t        sleep_until;
+    int             stdin_fd;        // legacy: -1 = keyboard, >=0 = pipe
+    int             stdout_fd;       // legacy: -1 = screen,   >=0 = pipe
+    uint32_t        heap_end;
+    fd_table_t      fds;             // per-process FD table
     registers_t     regs;
     uint8_t*        kernel_stack;
     uint32_t        user_stack;
@@ -46,6 +51,8 @@ process_t* process_current();
 int  sys_exec(const char* path);
 int  sys_spawn(const char* path);
 void sys_wait(int pid);
+void sys_sleep(uint32_t ms);
+uint32_t sys_sbrk(int32_t increment);
 int  process_is_alive(int pid);
 int  sys_spawn_tty(const char* path, int tty);
-int sys_spawn_tty_args(const char* path, int tty, const char* args);
+int  sys_spawn_tty_args(const char* path, int tty, const char* args);

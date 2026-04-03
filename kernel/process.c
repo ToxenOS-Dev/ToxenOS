@@ -5,6 +5,8 @@
 #include "../include/paging.h"
 #include "../include/vga.h"
 #include "../include/tss.h"
+#include "../include/timer.h"
+#include "../include/vfs.h"
 
 process_t processes[MAX_PROCESSES];
 static int       current_pid   = 0;
@@ -39,6 +41,8 @@ void process_init()
     processes[0].waiting_for    = -1;
     processes[0].stdin_fd       = -1;
     processes[0].stdout_fd      = -1;
+    processes[0].heap_end       = 0;
+    fd_table_init(&processes[0].fds);
     processes[0].page_directory = kernel_directory;
     processes[0].user_stack     = 0;
     copy_str(processes[0].name, "kernel", 32);
@@ -148,6 +152,8 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
     p->waiting_for  = -1;
     p->stdin_fd     = -1;
     p->stdout_fd    = -1;
+    p->heap_end     = 0;
+    fd_table_init(&p->fds);
     p->args[0]      = 0;
     copy_str(p->name, name, 32);
 
@@ -267,6 +273,9 @@ void process_exit()
     p->state = PROCESS_DEAD;
     process_count--;
 
+    // Close all open file descriptors
+    fd_table_close_all(&p->fds);
+
     // Free all user-space pages (non-kernel page tables).
     // We walk the page directory and free any table/pages that were
     // allocated specifically for this process (not shared kernel tables).
@@ -314,6 +323,14 @@ process_t* process_current()
 
 void scheduler()
 {
+    // Wake any sleeping processes whose timer has expired
+    uint32_t now = timer_getticks();
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (processes[i].state == PROCESS_SLEEPING &&
+            now >= processes[i].sleep_until)
+            processes[i].state = PROCESS_READY;
+    }
+
     int next = current_pid;
 
     for (int i = 1; i <= MAX_PROCESSES; i++)
@@ -331,13 +348,14 @@ void scheduler()
     {
         if (current_pid != 0 &&
             processes[0].state != PROCESS_DEAD &&
-            processes[0].state != PROCESS_WAITING)
+            processes[0].state != PROCESS_WAITING &&
+            processes[0].state != PROCESS_SLEEPING)
             next = 0;
         else
             return;
     }
 
-    // Preserve WAITING/DEAD state; only demote RUNNING → READY
+    // Preserve WAITING/SLEEPING/DEAD; only demote RUNNING → READY
     if (processes[current_pid].state == PROCESS_RUNNING)
         processes[current_pid].state = PROCESS_READY;
 
@@ -485,12 +503,62 @@ void sys_wait(int pid)
     if (pid < 0 || pid >= MAX_PROCESSES) return;
     if (!process_is_alive(pid)) return;
 
-    // Block the calling process until target dies
     process_t* me = process_current();
     me->state       = PROCESS_WAITING;
     me->waiting_for = pid;
     scheduler();
-    // When we wake up the target is dead
+}
+
+// Sleep for `ms` milliseconds. Timer runs at 100Hz so 1 tick = 10ms.
+void sys_sleep(uint32_t ms)
+{
+    if (ms == 0) return;
+    uint32_t ticks = (ms + 9) / 10;  // round up to nearest tick
+    process_t* me = process_current();
+    me->sleep_until = timer_getticks() + ticks;
+    me->state       = PROCESS_SLEEPING;
+    scheduler();
+}
+
+// Grow (or query) the process heap.
+// increment > 0: map more bytes, return old heap_end (like POSIX sbrk)
+// increment == 0: return current heap_end
+// Returns (uint32_t)-1 on failure.
+#define USER_HEAP_BASE  0x20000000u  // 512MB — well above ELF at 0x10000000
+
+uint32_t sys_sbrk(int32_t increment)
+{
+    process_t* p = process_current();
+
+    if (p->heap_end == 0)
+        p->heap_end = USER_HEAP_BASE;
+
+    if (increment == 0)
+        return p->heap_end;
+
+    if (increment < 0) {
+        uint32_t new_end = p->heap_end + (uint32_t)increment;
+        if (new_end < USER_HEAP_BASE) return (uint32_t)-1;
+        p->heap_end = new_end;
+        return p->heap_end;
+    }
+
+    uint32_t old_end  = p->heap_end;
+    uint32_t new_end  = old_end + (uint32_t)increment;
+
+    // Map any new pages needed between old and new end
+    uint32_t page_start = (old_end + 0xFFFu) & ~0xFFFu;
+    uint32_t page_end   = (new_end + 0xFFFu) & ~0xFFFu;
+
+    for (uint32_t va = page_start; va < page_end; va += PAGE_SIZE) {
+        uint32_t phys = paging_alloc_page();
+        if (!phys) return (uint32_t)-1;
+        paging_map(p->page_directory, va, phys,
+                   PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+    }
+
+    p->heap_end = new_end;
+    return old_end;
 }
 
 // spawn on a specific TTY

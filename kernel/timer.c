@@ -4,6 +4,7 @@
 #include "../include/process.h"
 #include "../include/pic.h"
 #include "../include/fbterm.h"
+#include "../include/net.h"
 
 #define PIT_CHANNEL0    0x40
 #define PIT_COMMAND     0x43
@@ -21,8 +22,10 @@ static void timer_handler()
     ticks++;
     fbterm_tick();
 
-    if (ticks % 10 == 0)
+    if (ticks % 10 == 0) {
+        net_poll();
         scheduler();
+    }
 
     // EOI is sent by irq_handler after this returns
 }

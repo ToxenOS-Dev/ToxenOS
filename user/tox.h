@@ -62,6 +62,31 @@ static inline void tox_sigint_target(int pid) {
 static inline int tox_pipe(int* rfd, int* wfd) {
     int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(34), "b"(rfd), "c"(wfd)); return r;
 }
+static inline void tox_sleep(uint32_t ms) {
+    __asm__ volatile("int $0x80" :: "a"(36), "b"(ms));
+}
+static inline uint32_t tox_sbrk(int32_t inc) {
+    uint32_t r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(37), "b"(inc)); return r;
+}
+// Spawn with FD inheritance. ilist = {child_fd, parent_gfd, ..., -1}
+static inline int tox_spawn_inherit(const char* path, const char* args, const int* ilist) {
+    int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(38), "b"(path), "c"(args), "d"(ilist)); return r;
+}
+// Network
+static inline uint32_t tox_net_get_ip() {
+    uint32_t r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(41)); return r;
+}
+static inline void tox_net_poll() {
+    __asm__ volatile("int $0x80" :: "a"(40));
+}
+static inline int tox_net_udp_send(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
+                                    const uint8_t* data, uint16_t len) {
+    // Pack ports into ecx, pass data+len struct via edx
+    struct { const uint8_t* p; uint16_t l; } s = {data, len};
+    uint32_t ports = ((uint32_t)src_port << 16) | dst_port;
+    int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(39), "b"(dst_ip), "c"(ports), "d"(&s));
+    return r;
+}
 
 // ── Strings ───────────────────────────────────────────────────────────────────
 static inline int tox_strlen(const char* s) {
@@ -147,67 +172,85 @@ static inline const char* type_label(file_type_t t) {
         default:            return "";
     }
 }
-#endif
 
-// ── Memory allocator ─────────────────────────────────────────────────────────
-// Simple bump allocator with free list
-// Heap sits in BSS at a fixed address — no syscall needed
+// ── Time ──────────────────────────────────────────────────────────────────────
+// (tox_sleep is defined above in the process section)
 
-#define TOX_HEAP_SIZE (256 * 1024)  // 256 KB heap per process
+// ── Memory — sbrk-backed heap ─────────────────────────────────────────────────
+// Uses SYS_SBRK (37) to grow the heap on demand instead of a fixed BSS array.
+// malloc/free/realloc are usable by any program that includes tox.h.
 
-typedef struct tox_block {
-    uint32_t          size;   // payload size in bytes
-    uint8_t           used;   // 1 = allocated, 0 = free
-    struct tox_block* next;   // next block in list
-} tox_block_t;
+static inline uint32_t _tox_sbrk(int32_t inc) {
+    uint32_t r;
+    __asm__ volatile("int $0x80" : "=a"(r) : "a"(37), "b"(inc));
+    return r;
+}
 
-static uint8_t  _tox_heap[TOX_HEAP_SIZE];
-static uint8_t  _tox_heap_init = 0;
-static tox_block_t* _tox_heap_head = 0;
+typedef struct _tox_blk {
+    uint32_t         size;  // payload bytes
+    uint8_t          used;
+    struct _tox_blk* next;
+} _tox_blk_t;
 
-static inline void _tox_heap_setup() {
-    _tox_heap_head = (tox_block_t*)_tox_heap;
-    _tox_heap_head->size = TOX_HEAP_SIZE - sizeof(tox_block_t);
-    _tox_heap_head->used = 0;
-    _tox_heap_head->next = 0;
-    _tox_heap_init = 1;
+static _tox_blk_t* _heap_head = 0;
+
+// Grow the heap by at least `need` bytes, add a new free block.
+static inline int _heap_grow(uint32_t need) {
+    // Round up to 4KB pages
+    uint32_t grow = (need + sizeof(_tox_blk_t) + 0xFFF) & ~0xFFFu;
+    uint32_t base = _tox_sbrk((int32_t)grow);
+    if (base == (uint32_t)-1) return 0;
+
+    _tox_blk_t* b = (_tox_blk_t*)base;
+    b->size = grow - sizeof(_tox_blk_t);
+    b->used = 0;
+    b->next = 0;
+
+    // Append to end of list
+    if (!_heap_head) {
+        _heap_head = b;
+    } else {
+        _tox_blk_t* p = _heap_head;
+        while (p->next) p = p->next;
+        p->next = b;
+    }
+    return 1;
 }
 
 static inline void* malloc(uint32_t size) {
     if (!size) return 0;
-    if (!_tox_heap_init) _tox_heap_setup();
+    size = (size + 3) & ~3u;
 
-    // Align to 4 bytes
-    size = (size + 3) & ~3;
-
-    tox_block_t* b = _tox_heap_head;
+    // Try existing free blocks first
+    _tox_blk_t* b = _heap_head;
     while (b) {
         if (!b->used && b->size >= size) {
-            // Split block if there's enough room left
-            if (b->size >= size + sizeof(tox_block_t) + 4) {
-                tox_block_t* next = (tox_block_t*)((uint8_t*)b + sizeof(tox_block_t) + size);
-                next->size = b->size - size - sizeof(tox_block_t);
-                next->used = 0;
-                next->next = b->next;
-                b->next    = next;
-                b->size    = size;
+            if (b->size >= size + sizeof(_tox_blk_t) + 4) {
+                _tox_blk_t* n = (_tox_blk_t*)((uint8_t*)b + sizeof(_tox_blk_t) + size);
+                n->size = b->size - size - sizeof(_tox_blk_t);
+                n->used = 0;
+                n->next = b->next;
+                b->next = n;
+                b->size = size;
             }
             b->used = 1;
-            return (uint8_t*)b + sizeof(tox_block_t);
+            return (uint8_t*)b + sizeof(_tox_blk_t);
         }
         b = b->next;
     }
-    return 0;  // out of memory
+
+    // No suitable block — grow heap
+    if (!_heap_grow(size)) return 0;
+    return malloc(size);  // retry after growing
 }
 
 static inline void free(void* ptr) {
     if (!ptr) return;
-    tox_block_t* b = (tox_block_t*)((uint8_t*)ptr - sizeof(tox_block_t));
+    _tox_blk_t* b = (_tox_blk_t*)((uint8_t*)ptr - sizeof(_tox_blk_t));
     b->used = 0;
-
-    // Coalesce with next block if also free
+    // Coalesce forward
     while (b->next && !b->next->used) {
-        b->size += sizeof(tox_block_t) + b->next->size;
+        b->size += sizeof(_tox_blk_t) + b->next->size;
         b->next  = b->next->next;
     }
 }
@@ -215,17 +258,15 @@ static inline void free(void* ptr) {
 static inline void* realloc(void* ptr, uint32_t new_size) {
     if (!ptr) return malloc(new_size);
     if (!new_size) { free(ptr); return 0; }
-
-    tox_block_t* b = (tox_block_t*)((uint8_t*)ptr - sizeof(tox_block_t));
-    if (b->size >= new_size) return ptr;  // already big enough
-
-    void* new_ptr = malloc(new_size);
-    if (!new_ptr) return 0;
-
-    // Copy old data
-    uint8_t* src = (uint8_t*)ptr;
-    uint8_t* dst = (uint8_t*)new_ptr;
-    for (uint32_t i = 0; i < b->size; i++) dst[i] = src[i];
+    _tox_blk_t* b = (_tox_blk_t*)((uint8_t*)ptr - sizeof(_tox_blk_t));
+    if (b->size >= new_size) return ptr;
+    void* n = malloc(new_size);
+    if (!n) return 0;
+    uint8_t* s = (uint8_t*)ptr;
+    uint8_t* d = (uint8_t*)n;
+    for (uint32_t i = 0; i < b->size; i++) d[i] = s[i];
     free(ptr);
-    return new_ptr;
+    return n;
 }
+
+#endif

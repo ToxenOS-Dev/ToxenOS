@@ -22,6 +22,9 @@
 #include "../include/framebuffer.h"
 #include "../include/font.h"
 #include "../include/fbterm.h"
+#include "../include/pci.h"
+#include "../include/virtio_net.h"
+#include "../include/net.h"
 
 uint16_t* const VGA_MEMORY = (uint16_t*)0xB8000;
 int     cursor_x      = 0;
@@ -132,6 +135,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     klog("ATA disk controller initialized\n");
     vfs_mount("/C:", txfs_init(), 0);
     klog("Mounted /C: (TxFS)\n");
+
+    pci_init();
+    virtio_net_init();
+    net_init();
 
     // Auto-detect filesystems on all drives and assign drive letters D: E: F: G:
     {

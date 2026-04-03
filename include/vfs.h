@@ -3,9 +3,10 @@
 
 #include <stdint.h>
 
-#define VFS_MAX_MOUNTS  16
-#define VFS_MAX_FDS     64
-#define VFS_NAME_MAX    256
+#define VFS_MAX_MOUNTS   16
+#define VFS_MAX_FDS      64   // global pool of file descriptions
+#define VFS_PROC_FDS     16   // per-process open FD slots (local fd 0..15)
+#define VFS_NAME_MAX     256
 
 typedef struct
 {
@@ -55,8 +56,25 @@ int  vfs_readdir(const char* path, char* out, uint32_t index);
 int  vfs_stat(const char* path, uint32_t* size);
 int  vfs_mkdir(const char* path);
 int  vfs_remove(const char* path);
-int vfs_isdir(const char* path);
-int vfs_pipe(int* rfd, int* wfd);  // create a pipe, fill rfd/wfd
+int  vfs_isdir(const char* path);
+int  vfs_pipe(int* rfd, int* wfd);
+
+// Per-process FD table — maps local fd numbers to global pool slots.
+// local_fds[i] = -1 means slot i is closed.
+typedef struct {
+    int local_fds[VFS_PROC_FDS];
+} fd_table_t;
+
+void fd_table_init(fd_table_t* t);
+void fd_table_copy(fd_table_t* dst, const fd_table_t* src);
+// Allocate next free local fd, pointing at global slot gfd. Returns local fd or -1.
+int  fd_table_alloc(fd_table_t* t, int gfd);
+// Translate local fd → global fd. Returns -1 if not open.
+int  fd_table_get(fd_table_t* t, int local_fd);
+// Close a local fd (does not touch global pool).
+void fd_table_close_local(fd_table_t* t, int local_fd);
+// Close all local fds in a table (called on process exit).
+void fd_table_close_all(fd_table_t* t);
 
 // flags for vfs_open
 #define VFS_O_READ   0x1

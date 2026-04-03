@@ -2,22 +2,24 @@
 #define PIPE_H
 
 #include <stdint.h>
+#include "waitqueue.h"
 
 #define PIPE_BUF_SIZE  4096
 #define MAX_PIPES      16
 
-// FD type flags stored in file_descriptor_t.type
 #define FD_TYPE_FILE    0
-#define FD_TYPE_PIPE_R  1   // read end of a pipe
-#define FD_TYPE_PIPE_W  2   // write end of a pipe
+#define FD_TYPE_PIPE_R  1
+#define FD_TYPE_PIPE_W  2
 
 typedef struct {
-    uint8_t  buf[PIPE_BUF_SIZE];
-    uint32_t head;        // next read position
-    uint32_t tail;        // next write position
-    int      used;
-    int      write_open;  // number of write-ends still open
-    int      read_open;   // number of read-ends still open
+    uint8_t      buf[PIPE_BUF_SIZE];
+    uint32_t     head;
+    uint32_t     tail;
+    int          used;
+    int          write_open;
+    int          read_open;
+    wait_queue_t readers;   // processes blocked waiting for data
+    wait_queue_t writers;   // processes blocked waiting for space
 } pipe_t;
 
 void pipe_init();

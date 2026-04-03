@@ -17,6 +17,7 @@ void klog(const char* msg) {
 #include "../include/keyboard.h"
 #include "../include/vfs.h"
 #include "../include/pipe.h"
+#include "../include/net.h"
 #include "../include/tty.h"
 #include "../include/fbterm.h"
 
@@ -257,6 +258,58 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             processes[pid].stdout_fd = stdout_f;
             return pid;
         }
+
+        case SYS_SLEEP:
+            sys_sleep((uint32_t)ebx);
+            return 0;
+
+        case SYS_SBRK:
+            return (int)sys_sbrk((int32_t)ebx);
+
+        case SYS_SPAWN_INHERIT:
+        {
+            // ebx=path, ecx=args, edx=int[] inheritance list (terminated by -1)
+            // inheritance list: [child_fd, parent_gfd, child_fd, parent_gfd, ..., -1]
+            const char* path  = (const char*)ebx;
+            const char* args  = (const char*)ecx;
+            const int*  ilist = (const int*)edx;
+
+            int tty = tty_for_pid[process_current()->pid];
+            if (tty < 0) tty = 0;
+
+            int pid = sys_spawn_tty_args(path, tty, args ? args : "");
+            if (pid < 0) return -1;
+
+            // Copy inherited FDs into child's fd table
+            if (ilist) {
+                for (int i = 0; ilist[i] >= 0; i += 2) {
+                    int child_local  = ilist[i];
+                    int parent_gfd   = ilist[i+1];
+                    if (child_local < VFS_PROC_FDS && parent_gfd >= 0)
+                        processes[pid].fds.local_fds[child_local] = parent_gfd;
+                }
+            }
+            return pid;
+        }
+
+        case SYS_NET_SEND_UDP:
+        {
+            // ebx=dst_ip, ecx=ports (src<<16|dst), edx=ptr to {uint8_t*,uint16_t}
+            uint32_t  dst_ip   = (uint32_t)ebx;
+            uint16_t  src_port = (uint16_t)(ecx >> 16);
+            uint16_t  dst_port = (uint16_t)(ecx & 0xFFFF);
+            // edx points to: [4 bytes data ptr][2 bytes len]
+            uint8_t**  pp  = (uint8_t**)edx;
+            uint16_t*  lp  = (uint16_t*)(edx + 4);
+            return net_udp_send(dst_ip, src_port, dst_port, *pp, *lp);
+        }
+
+        case SYS_NET_POLL:
+            net_poll();
+            return 0;
+
+        case SYS_NET_GET_IP:
+            return (int)net_ip;
 
         default:
             return -1;

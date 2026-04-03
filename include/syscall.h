@@ -33,8 +33,14 @@
 #define SYS_PROC_LIST      31  // proc_list(buf, size) — get process list
 #define SYS_KILL           32  // kill(pid) — terminate a process
 #define SYS_SIGINT_TARGET  33  // sigint_target(pid) — set Ctrl+C target
-#define SYS_PIPE           34  // pipe(rfd*, wfd*) — create a pipe
-#define SYS_SPAWN_PIPE     35  // spawn_pipe(path,tty,args,stdin_fd,stdout_fd)
+#define SYS_PIPE           34
+#define SYS_SPAWN_PIPE     35
+#define SYS_SLEEP          36
+#define SYS_SBRK           37
+#define SYS_SPAWN_INHERIT  38
+#define SYS_NET_SEND_UDP   39  // send UDP packet
+#define SYS_NET_POLL       40  // poll for incoming packets
+#define SYS_NET_GET_IP     41  // get our IP address
 
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx,
                                                   uint32_t ecx, uint32_t edx);

@@ -116,9 +116,25 @@ static void handle_arp(const uint8_t* d, uint16_t len) {
 
 // ── ICMP ping reply ───────────────────────────────────────────────────────────
 static uint8_t icmp_buf[1480];
+
+// Ping receive slot — stores last echo reply
+static uint32_t ping_reply_ip  = 0;
+static uint16_t ping_reply_seq = 0;
+static uint32_t ping_reply_time = 0;
+static int      ping_reply_ready = 0;
+
 static void handle_icmp(uint32_t src_ip, const uint8_t* d, uint16_t len) {
     if(len<sizeof(icmp_hdr_t)) return;
     const icmp_hdr_t* req=(const icmp_hdr_t*)d;
+
+    if(req->type==ICMP_ECHO_REPLY) {
+        ping_reply_ip    = src_ip;
+        ping_reply_seq   = NTOHS(req->seq);
+        ping_reply_time  = timer_getticks();
+        ping_reply_ready = 1;
+        return;
+    }
+
     if(req->type!=ICMP_ECHO_REQUEST) return;
     uint16_t ip_total=(uint16_t)(sizeof(ip_hdr_t)+len);
     ip_hdr_t* ip=(ip_hdr_t*)icmp_buf;
@@ -192,7 +208,58 @@ int net_udp_send(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
     return eth_send(dmac,ETHERTYPE_IP,udp_tx,ip_len);
 }
 
-// ── Blocking recv ─────────────────────────────────────────────────────────────
+// ── ICMP ping send ────────────────────────────────────────────────────────────
+// Returns round-trip time in ms, or -1 on timeout
+int net_ping(uint32_t dst_ip, uint16_t seq, uint32_t timeout_ms) {
+    uint8_t dst_mac[ETH_ALEN];
+    uint32_t hop = ((dst_ip & net_mask) == (net_ip & net_mask))
+                   ? dst_ip : net_gateway;
+    if(!arp_lookup(hop, dst_mac)) {
+        arp_send_request(hop);
+        // wait briefly for ARP
+        uint32_t arp_wait = timer_getticks() + 50;
+        while(timer_getticks() < arp_wait) net_poll();
+        if(!arp_lookup(hop, dst_mac)) return -1;
+    }
+
+    // Build ICMP echo request
+    static uint8_t ping_pkt[sizeof(ip_hdr_t) + sizeof(icmp_hdr_t) + 32];
+    uint8_t payload[32];
+    for(int i=0;i<32;i++) payload[i]=(uint8_t)i;
+
+    uint16_t icmp_len = sizeof(icmp_hdr_t) + 32;
+    uint16_t ip_total = (uint16_t)(sizeof(ip_hdr_t) + icmp_len);
+
+    ip_hdr_t* ip = (ip_hdr_t*)ping_pkt;
+    ip->ver_ihl=0x45; ip->dscp_ecn=0; ip->total_len=HTONS(ip_total);
+    ip->id=0; ip->flags_frag=0; ip->ttl=64; ip->proto=IP_PROTO_ICMP;
+    ip->checksum=0; ip->src_ip=HTONL(net_ip); ip->dst_ip=HTONL(dst_ip);
+    ip->checksum=ip_checksum(ip, sizeof(ip_hdr_t));
+
+    icmp_hdr_t* icmp = (icmp_hdr_t*)(ping_pkt + sizeof(ip_hdr_t));
+    icmp->type=ICMP_ECHO_REQUEST; icmp->code=0; icmp->checksum=0;
+    icmp->id=HTONS(0x1234); icmp->seq=HTONS(seq);
+    uint8_t* pay = ping_pkt + sizeof(ip_hdr_t) + sizeof(icmp_hdr_t);
+    for(int i=0;i<32;i++) pay[i]=payload[i];
+    icmp->checksum = ip_checksum(icmp, icmp_len);
+
+    ping_reply_ready = 0;
+    uint32_t t_send = timer_getticks();
+    eth_send(dst_mac, ETHERTYPE_IP, ping_pkt, ip_total);
+
+    // Wait for reply
+    uint32_t deadline = t_send + (timeout_ms + 9) / 10;
+    while(!ping_reply_ready) {
+        net_poll();
+        if(timer_getticks() >= deadline) return -1;
+        extern void scheduler();
+        scheduler();
+    }
+
+    // Return RTT in ms (ticks * 10ms per tick)
+    uint32_t rtt_ticks = ping_reply_time - t_send;
+    return (int)(rtt_ticks * 10);
+}
 int net_udp_recv(uint16_t port, uint8_t* buf, uint16_t maxlen,
                  uint32_t* src_ip_out, uint32_t timeout_ms)
 {

@@ -346,6 +346,12 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             tcp_close((int)ebx);
             return 0;
 
+        case SYS_PING:
+        {
+            // ebx=ip, ecx=seq, edx=timeout_ms
+            return net_ping((uint32_t)ebx, (uint16_t)ecx, (uint32_t)edx);
+        }
+
         default:
             return -1;
     }

@@ -87,6 +87,9 @@ extern uint8_t  net_mac[ETH_ALEN];
 void net_init();
 void net_poll();   // call regularly to process incoming packets
 
+// Ping (ICMP echo). Returns RTT in ms, or -1 on timeout.
+int  net_ping(uint32_t dst_ip, uint16_t seq, uint32_t timeout_ms);
+
 // Send a UDP packet
 int  net_udp_send(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
                   const uint8_t* data, uint16_t len);

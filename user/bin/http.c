@@ -34,9 +34,7 @@ void _start() {
     get_args(args);
     char* p = args;
     while (*p == ' ') p++;
-
-    // Shell prepends cwd to args — skip everything up to first digit
-    // since an IP address starts with a digit
+    // Shell prepends cwd — skip past it to first digit (start of IP)
     while (*p && (*p < '0' || *p > '9')) p++;
 
     // Parse IP and path from args: "1.2.3.4 /path"

@@ -47,6 +47,7 @@ void _start() {
 
     set_color(0x0B); print("\n  Network\n"); set_color(0x07);
     print("    dns <hostname>       - DNS lookup\n");
+    print("    ping <hostname>      - ping a host\n");
     print("    http <ip> [path]     - HTTP GET request\n");
 
     set_color(0x0B); print("\n  Diagnostics\n"); set_color(0x07);

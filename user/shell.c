@@ -239,7 +239,21 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
 
     static char full_args[256];
     if (args && args[0]) {
-        if (args[0] != '/') {
+        // Only prepend cwd for args that look like relative file paths
+        // Don't prepend for IPs (start with digit), hostnames with dots,
+        // or absolute paths (start with /)
+        int looks_like_path = 1;
+        if (args[0] == '/') looks_like_path = 0;  // already absolute
+        if (args[0] >= '0' && args[0] <= '9') looks_like_path = 0;  // IP or number
+        // Check for hostname (contains dot but no slash) — don't prepend
+        int has_dot = 0, has_slash = 0;
+        for (const char* q = args; *q && *q != ' '; q++) {
+            if (*q == '.') has_dot = 1;
+            if (*q == '/') has_slash = 1;
+        }
+        if (has_dot && !has_slash) looks_like_path = 0;
+
+        if (looks_like_path && args[0] != '/') {
             str_copy(full_args, cwd);
             int l = str_len(full_args);
             full_args[l] = '/';

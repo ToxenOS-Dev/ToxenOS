@@ -87,12 +87,12 @@ void _start() {
     static char args[256];
     get_args(args);
     char* name = args;
-    while (*name == ' ') name++;
-    if (name[0] == '/') {
-        char* last = name;
-        for (char* p = name; *p; p++) if (*p == '/') last = p + 1;
-        name = last;
-    }
+    while(*name == ' ') name++;
+    // Shell prepends cwd — actual arg is after the last space
+    char* last_space = 0;
+    for(char* q = name; *q; q++) if(*q == ' ') last_space = q;
+    if(last_space) name = last_space + 1;
+    while(*name == ' ') name++;
     if (!name[0]) {
         print("Usage: dns <hostname>\n");
         tox_exit();

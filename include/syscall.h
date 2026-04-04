@@ -58,3 +58,4 @@ int  sys_getpid();
 #define SYS_TCP_SEND       45
 #define SYS_TCP_RECV       46
 #define SYS_TCP_CLOSE      47
+#define SYS_PING           48  // ping(ip, count)

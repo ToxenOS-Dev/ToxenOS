@@ -100,6 +100,10 @@ static inline int tox_tcp_recv(int sock, uint8_t* buf, uint16_t maxlen, uint32_t
 static inline void tox_tcp_close(int sock) {
     __asm__ volatile("int $0x80" :: "a"(47), "b"(sock));
 }
+static inline int tox_ping(uint32_t ip, uint16_t seq, uint32_t timeout_ms) {
+    int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(48), "b"(ip), "c"(seq), "d"(timeout_ms));
+    return r;
+}
 static inline int tox_net_udp_send(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
                                     const uint8_t* data, uint16_t len) {
     struct { const uint8_t* p; uint16_t l; } s = {data, len};

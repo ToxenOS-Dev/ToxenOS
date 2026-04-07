@@ -26,9 +26,8 @@ static cell_t  cells[FBTERM_TTY_COUNT][MAX_ROWS][MAX_COLS];
 static int     cx[FBTERM_TTY_COUNT], cy[FBTERM_TTY_COUNT];
 static uint8_t cfg[FBTERM_TTY_COUNT], cbg[FBTERM_TTY_COUNT];
 static int active_tty = 0;
-static int cursor_visible = 1;  // current blink state
+static int cursor_visible = 1;
 
-int fbterm_pid_tty[MAX_PROCESSES];
 static const uint8_t indicator_fg[FBTERM_TTY_COUNT] = {6};
 
 // ── Pixel primitives ──────────────────────────────────────────────────────────
@@ -122,8 +121,6 @@ void fbterm_init(void)
         clear_cells(t);
         cx[t]=0; cy[t]=0; cfg[t]=7; cbg[t]=0;
     }
-    for (int i=0; i<MAX_PROCESSES; i++) fbterm_pid_tty[i]=-1;
-    fbterm_pid_tty[0]=0;
     active_tty=0;
     cursor_visible=1;
 

@@ -51,24 +51,6 @@ static struct {
 
 static int service_count = 0;
 
-static int spawn_service(const char* path) {
-    int r;
-    __asm__ volatile("int $0x80" : "=a"(r) : "a"(22), "b"(path));
-    return r;
-}
-
-static int spawn_embedded(int tty) {
-    int r;
-    __asm__ volatile("int $0x80" : "=a"(r) : "a"(25), "b"(tty));
-    return r;
-}
-
-static int get_pid() {
-    int r;
-    __asm__ volatile("int $0x80" : "=a"(r) : "a"(3));
-    return r;
-}
-
 // ── config parser ─────────────────────────────────────────────────────────────
 
 static void parse_config(const char* buf, int size) {
@@ -113,7 +95,7 @@ static void parse_config(const char* buf, int size) {
                 while (path[pi]) full[fi++] = path[pi++];
                 full[fi] = 0;
 
-                int pid = spawn_service(full);
+                int pid = tox_spawn(full);
                 if (pid > 0) {
                     tox_strcpy(services[service_count].path, full);
                     services[service_count].pid     = pid;
@@ -177,7 +159,7 @@ void _start()
     for (volatile int i = 0; i < 50000000; i++);
 
     // Launch shell on TTY 0
-    spawn_embedded(0);
+    tox_spawn_embedded(0);
 
     // Monitor loop — restart crashed services
     while (1) {

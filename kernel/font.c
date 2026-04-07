@@ -200,14 +200,14 @@ static const uint8_t font_data[96][16] = {
 
 const uint8_t* font_get_glyph(char c)
 {
-    if (c < 32 || c > 127) c = '?';
-    return font_data[c - 32];
+    if ((unsigned char)c < 32 || (unsigned char)c > 127) c = '?';
+    return font_data[(unsigned char)c - 32];
 }
 
 void font_draw_char(uint32_t x, uint32_t y, char c, uint32_t color)
 {
-    if (c < 32 || c > 127) c = '?';
-    const uint8_t* glyph = font_data[c - 32];
+    if ((unsigned char)c < 32 || (unsigned char)c > 127) c = '?';
+    const uint8_t* glyph = font_data[(unsigned char)c - 32];
 
     for (int row = 0; row < FONT_HEIGHT; row++)
     {

@@ -1,16 +1,5 @@
 #include "../tox.h"
 
-static inline int tox_proc_list(uint8_t* buf, uint32_t size) {
-    int r;
-    __asm__ volatile("int $0x80" : "=a"(r) : "a"(31), "b"(buf), "c"(size));
-    return r;
-}
-static inline int key_available() {
-    int r; __asm__ volatile("int $0x80":"=a"(r):"a"(29)); return r;
-}
-static inline char getchar() {
-    int r; __asm__ volatile("int $0x80":"=a"(r):"a"(2)); return (char)r;
-}
 
 static void print_num(uint32_t n) {
     char buf[12]; int i = 0;
@@ -53,8 +42,8 @@ void _start() {
 
         // Wait ~1 second then refresh, or quit on 'q'
         for (int i = 0; i < 5000000; i++) {
-            if (key_available()) {
-                char c = getchar();
+            if (tox_keyavail()) {
+                char c = tox_getchar();
                 if (c == 'q' || c == 'Q') {
                     tox_clear(); tox_exit();
                 }

@@ -85,7 +85,7 @@ static int parse_response(const uint8_t* buf, int len) {
 
 void _start() {
     static char args[256];
-    get_args(args);
+    tox_get_args(args);
     char* name = args;
     while(*name == ' ') name++;
     // Shell prepends cwd — actual arg is after the last space

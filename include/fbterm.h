@@ -19,6 +19,4 @@ int  fbterm_cols(void);
 int  fbterm_rows(void);
 void fbterm_draw_indicator(void);
 
-extern int fbterm_pid_tty[];
-
 #endif

@@ -92,7 +92,6 @@ static int tmpfs_read(int fd, uint8_t* buf, uint32_t size)
 {
     if (fd < 0 || fd >= TMPFS_MAX_FILES || !files[fd].used) return -1;
 
-    uint32_t pos = 0;  // simplified — no position tracking per fd yet
     uint32_t to_read = size;
     if (to_read > files[fd].size) to_read = files[fd].size;
 

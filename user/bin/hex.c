@@ -15,7 +15,7 @@ static void print_hex32(uint32_t v) {
 
 void _start() {
     char args[256];
-    get_args(args);
+    tox_get_args(args);
 
     if (!args[0]) {
         set_color(0x0C); print("usage: hex <file>\n");

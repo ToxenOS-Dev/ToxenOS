@@ -1,7 +1,6 @@
 // ToxenOS/kernel/tls.c
 // TLS client socket layer — wraps mbedTLS over our TCP stack
 
-#define MBEDTLS_CONFIG_FILE "../mbedtls/toxenos_config.h"
 
 #include <stdint.h>
 #include <stddef.h>

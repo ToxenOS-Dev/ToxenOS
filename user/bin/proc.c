@@ -1,10 +1,5 @@
 #include "../tox.h"
 
-static inline int tox_proc_list(uint8_t* buf, uint32_t size) {
-    int r;
-    __asm__ volatile("int $0x80" : "=a"(r) : "a"(31), "b"(buf), "c"(size));
-    return r;
-}
 
 static void print_num(uint32_t n) {
     char buf[12]; int i = 0;

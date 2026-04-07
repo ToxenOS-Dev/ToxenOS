@@ -15,7 +15,7 @@ static int str_contains(const char* haystack, const char* needle) {
 
 void _start() {
     char args[512];
-    get_args(args);
+    tox_get_args(args);
 
     // Split into pattern and file
     char pattern[128], file[256];

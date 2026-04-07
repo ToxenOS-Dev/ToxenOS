@@ -1,6 +1,6 @@
 #include "../tox.h"
 void _start() {
-    char args[256]; get_args(args);
+    char args[256]; tox_get_args(args);
     if(!args[0]){print("Usage: file <name>\n");tox_exit();}
     if(tox_stat(args)<0){set_color(0x0C);print("file: not found\n");set_color(0x07);tox_exit();}
     file_type_t ft=get_file_type(args);

@@ -26,6 +26,7 @@ typedef struct {
     process_state_t state;
     int             waiting_for;
     uint32_t        sleep_until;
+    int             tty;             // which TTY this process belongs to (-1 = none)
     int             stdin_fd;        // legacy: -1 = keyboard, >=0 = pipe
     int             stdout_fd;       // legacy: -1 = screen,   >=0 = pipe
     uint32_t        heap_end;

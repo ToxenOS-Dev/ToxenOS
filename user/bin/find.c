@@ -73,7 +73,7 @@ static void do_find(const char* dir, const char* pattern, int* found) {
 
 void _start() {
     char args[512];
-    get_args(args);
+    tox_get_args(args);
 
     // Parse: find <dir> <pattern>  or  find <pattern> (searches /C:)
     char dir[256], pattern[128];

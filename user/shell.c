@@ -1,68 +1,38 @@
 // ToxenOS/user/shell.c
-#include <stdint.h>
+#include "tox.h"
 
-// ── Syscall wrappers ──────────────────────────────────────────────────────────
+// ── Local aliases for tox.h functions ────────────────────────────────────────
+// Keep short names used throughout the rest of this file.
+static inline void  erase()                                    { tox_erase(); }
+static inline int   sys_open(const char* p, int f)             { return tox_open(p, f); }
+static inline int   sys_readdir(const char* p, char* o, int i) { return tox_readdir(p, o, (uint32_t)i); }
+static inline int   sys_stat(const char* p)                    { return tox_stat(p); }
+static inline int   sys_isdir(const char* p)                   { return tox_isdir(p); }
+static inline int   sys_my_tty(void)                           { return tox_my_tty(); }
+static inline int   sys_spawn_tty_args(const char* p, int t, const char* a) { return tox_spawn_args(p, t, a); }
+static inline void  sys_wait(int pid)                          { tox_wait(pid); }
+static inline void  sys_sigint_target(int pid)                 { tox_sigint_target(pid); }
+static inline int   sys_pipe(int* r, int* w)                   { return tox_pipe(r, w); }
+static inline int   sys_spawn_pipe(const char* p, const char* a, int si, int so) { return tox_spawn_pipe(p, a, si, so); }
+static inline int   sys_close(int fd)                          { return tox_close(fd); }
+static inline int   key_available(void)                        { return tox_keyavail(); }
+static inline char  sys_getchar(void)                          { return tox_getchar(); }
 
-static void print(const char* s)
-    { __asm__ volatile("int $0x80" :: "a"(1), "b"(s)); }
-static void set_color(uint8_t c)
-    { __asm__ volatile("int $0x80" :: "a"(6), "b"((uint32_t)c)); }
-static void erase()
-    { __asm__ volatile("int $0x80" :: "a"(5)); }
-static void tox_clear()
-    { __asm__ volatile("int $0x80" :: "a"(7)); }
-static void yield()
-    { __asm__ volatile("int $0x80" :: "a"(4)); }
-static int sys_open(const char* p, int f)
-    { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(12),"b"(p),"c"(f)); return r; }
-static int sys_readdir(const char* p, char* out, int idx)
-    { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(10),"b"(p),"c"(out),"d"(idx)); return r; }
-static int sys_stat(const char* p)
-    { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(17),"b"(p)); return r; }
-static int sys_isdir(const char* p)
-    { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(18),"b"(p)); return r; }
-static int sys_my_tty()
-    { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(20)); return r; }
-static int sys_spawn_tty_args(const char* path, int tty, const char* args)
-    { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(27),"b"(path),"c"(tty),"d"(args)); return r; }
-static void sys_wait(int pid)
-    { __asm__ volatile("int $0x80"::"a"(23),"b"(pid)); }
-static void sys_sigint_target(int pid)
-    { __asm__ volatile("int $0x80"::"a"(33),"b"(pid)); }
-static int sys_pipe(int* rfd, int* wfd)
-    { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(34),"b"(rfd),"c"(wfd)); return r; }
-static int sys_spawn_pipe(const char* path, const char* args, int stdin_fd, int stdout_fd)
-{
-    uint32_t packed = ((uint32_t)(uint16_t)stdout_fd << 16) | (uint16_t)(uint32_t)stdin_fd;
-    int r; __asm__ volatile("int $0x80":"=a"(r):"a"(35),"b"(path),"c"(args),"d"(packed));
-    return r;
-}
-static int sys_close(int fd)
-    { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(15),"b"(fd)); return r; }
-static int key_available()
-    { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(29)); return r; }
-static char sys_getchar()
-    { int r; __asm__ volatile("int $0x80":"=a"(r):"a"(2)); return (char)r; }
+// String helper aliases (shell.c uses short names internally)
+static inline int   str_len(const char* s)                     { return tox_strlen(s); }
+static inline void  str_copy(char* d, const char* s)           { tox_strcpy(d, s); }
+static inline int   str_equal(const char* a, const char* b)    { return !tox_strcmp(a, b); }
+static inline int   str_starts(const char* s, const char* p)   { return tox_starts_with(s, p); }
+static inline void  str_cat(char* d, const char* s)            { tox_strcat(d, s); }
 
-// Arrow key codes
+
+// Arrow key escape codes (sent by keyboard driver)
 #define KEY_UP    0x01
 #define KEY_DOWN  0x02
 #define KEY_LEFT  0x03
 #define KEY_RIGHT 0x04
 
-// ── String helpers ────────────────────────────────────────────────────────────
 
-static int str_len(const char* s) { int i=0; while(s[i]) i++; return i; }
-static void str_copy(char* d, const char* s) { int i=0; while(s[i]){d[i]=s[i];i++;} d[i]=0; }
-static int str_equal(const char* a, const char* b) {
-    int i; for(i=0;a[i]&&b[i];i++) if(a[i]!=b[i]) return 0; return a[i]==b[i];
-}
-static int str_starts(const char* s, const char* p) {
-    int i=0; while(p[i]&&s[i]==p[i]) i++; return !p[i];
-}
-static void str_cat(char* d, const char* s) { int l=str_len(d); str_copy(d+l,s); }
-
-// ── History ───────────────────────────────────────────────────────────────────
 
 #define INPUT_MAX   256
 #define HISTORY_MAX 16

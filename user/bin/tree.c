@@ -29,7 +29,7 @@ static void print_tree(const char* path, int depth) {
 
 void _start() {
     char args[256];
-    get_args(args);
+    tox_get_args(args);
     const char* path = args[0] ? args : "/C:";
 
     if (tox_isdir(path) < 0) {

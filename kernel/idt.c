@@ -4,6 +4,7 @@
 #include "../include/process.h"
 #include "../include/vga.h"
 #include "../include/paging.h"
+#include "../include/memmap.h"
 
 static const char* exception_messages[] = {
     "Divide By Zero",           // 0

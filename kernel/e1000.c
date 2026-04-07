@@ -5,7 +5,7 @@
 #include "../include/pci.h"
 #include "../include/mm.h"
 #include "../include/vga.h"
-#include "../include/syscall.h"
+#include "../include/klog.h"
 #include "../include/paging.h"
 
 uint8_t e1000_mac[6];

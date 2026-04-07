@@ -33,7 +33,6 @@ uint32_t* paging_create_directory()
     uint32_t* dir = (uint32_t*)kmalloc_aligned(PAGE_SIZE, PAGE_SIZE);
     if (!dir) return 0;
 
-    // Copy all kernel entries so kernel code/data is accessible
     for (int i = 0; i < 1024; i++)
         dir[i] = kernel_directory[i];
 
@@ -47,6 +46,14 @@ uint32_t paging_alloc_page()
     uint32_t* pg = (uint32_t*)p;
     for (int i = 0; i < 1024; i++) pg[i] = 0;
     return (uint32_t)p;
+}
+
+// Free a page-aligned allocation (page table or page directory).
+// Must use kfree_aligned, not kfree, because kmalloc_aligned stores the
+// original pointer just before the aligned address.
+void paging_free_aligned(void* ptr)
+{
+    kfree_aligned(ptr);
 }
 
 void paging_map(uint32_t* directory, uint32_t virt, uint32_t phys, uint32_t flags)

@@ -94,7 +94,7 @@ static uint32_t dns_resolve(const char* name) {
 
 void _start() {
     static char args[256];
-    get_args(args);
+    tox_get_args(args);
     char* p = args;
     while(*p == ' ') p++;
 

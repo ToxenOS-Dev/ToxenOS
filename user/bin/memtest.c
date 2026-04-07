@@ -1,13 +1,6 @@
 // user/bin/memtest.c — tests sbrk-backed malloc/free/realloc
 #include "../tox.h"
 
-static void print_hex(uint32_t v) {
-    const char* h = "0123456789ABCDEF";
-    char buf[11] = "0x00000000";
-    for (int i = 9; i >= 2; i--) { buf[i] = h[v & 0xF]; v >>= 4; }
-    print(buf);
-}
-
 void _start()
 {
     print("Memory test\n");

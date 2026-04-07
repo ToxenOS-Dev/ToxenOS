@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include "../include/pci.h"
 #include "../include/vga.h"
-#include "../include/syscall.h"
+#include "../include/klog.h"
 
 pci_device_t pci_devices[PCI_MAX_DEVICES];
 int          pci_device_count = 0;

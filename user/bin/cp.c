@@ -2,7 +2,7 @@
 
 void _start() {
     char args[512];
-    get_args(args);
+    tox_get_args(args);
 
     // Split args into src and dst
     char src[256], dst[256];

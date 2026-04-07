@@ -1,5 +1,4 @@
-// ToxenOS/kernel/process.c
-#include <stdint.h>
+#include "../include/memmap.h"
 #include "../include/process.h"
 #include "../include/mm.h"
 #include "../include/paging.h"
@@ -11,6 +10,7 @@
 process_t processes[MAX_PROCESSES];
 static int       current_pid   = 0;
 static int       process_count = 0;
+static uint32_t  next_pid      = 1;  // monotonically increasing; never reuses a PID
 
 extern void context_switch(uint32_t* old_esp, uint32_t* new_esp);
 extern void process_iret_trampoline();
@@ -34,11 +34,13 @@ void process_init()
         processes[i].waiting_for = -1;
         processes[i].stdin_fd    = -1;
         processes[i].stdout_fd   = -1;
+        processes[i].tty         = -1;
     }
 
     processes[0].pid            = 0;
     processes[0].state          = PROCESS_RUNNING;
     processes[0].waiting_for    = -1;
+    processes[0].tty            = 0;
     processes[0].stdin_fd       = -1;
     processes[0].stdout_fd      = -1;
     processes[0].heap_end       = 0;
@@ -104,10 +106,6 @@ static uint32_t load_elf_into_dir(uint32_t* dir,
             // for pages allocated by kmalloc (which lives in kernel heap < 1GB).
             uint8_t* dst = (uint8_t*)phys;
 
-            // How many bytes of file data go into this page?
-            uint32_t page_offset = va > vaddr ? va - vaddr : 0;
-            uint32_t file_start  = vaddr + page_offset > vaddr ? page_offset : 0;
-
             // Zero the whole page first (handles BSS)
             for (int j = 0; j < (int)PAGE_SIZE; j++) dst[j] = 0;
 
@@ -147,9 +145,10 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
         p->kernel_stack = 0;
     }
 
-    p->pid          = slot;
+    p->pid          = next_pid++;
     p->state        = PROCESS_READY;
     p->waiting_for  = -1;
+    p->tty          = -1;
     p->stdin_fd     = -1;
     p->stdout_fd    = -1;
     p->heap_end     = 0;
@@ -233,9 +232,10 @@ int process_create(const char* name, void (*entry)())
         p->kernel_stack = 0;
     }
 
-    p->pid         = slot;
+    p->pid         = next_pid++;
     p->state       = PROCESS_READY;
     p->waiting_for = -1;
+    p->tty         = -1;
     p->stdin_fd    = -1;
     p->stdout_fd   = -1;
     p->args[0]     = 0;
@@ -286,19 +286,17 @@ void process_exit()
             if (!(p->page_directory[i] & PAGE_PRESENT)) continue;
             uint32_t table_phys = p->page_directory[i] & ~0xFFF;
 
-            // Skip any table that is shared with the kernel directory
-            // (covers ALL 1024 entries, not just the first 256)
             if ((kernel_directory[i] & ~0xFFF) == table_phys) continue;
 
             uint32_t* table = (uint32_t*)table_phys;
             for (int j = 0; j < 1024; j++)
             {
                 if (table[j] & PAGE_PRESENT)
-                    kfree((void*)(table[j] & ~0xFFF));
+                    paging_free_aligned((void*)(table[j] & ~0xFFF));
             }
-            kfree(table);
+            paging_free_aligned(table);
         }
-        kfree(p->page_directory);
+        paging_free_aligned(p->page_directory);
         p->page_directory = 0;
     }
 
@@ -377,56 +375,65 @@ void scheduler()
     context_switch(&processes[old].regs.esp, &processes[next].regs.esp);
 }
 
-// ── exec: replace current process with a new ELF from disk ───────────────────
-// Loads the ELF at `path` into the current process's address space.
-// Clears all existing user mappings, loads new segments, resets stack.
-// Does not return on success — jumps directly to the new entry point.
-// Returns -1 on failure (file not found, bad ELF, etc.)
-int sys_exec(const char* path)
+// ── load_elf_from_path ────────────────────────────────────────────────────────
+// Read an ELF file from the VFS into a kernel heap buffer.
+// On success: *buf_out points to a kmalloc'd buffer the caller must kfree,
+//             *size_out is the number of bytes read, returns 0.
+// On failure: *buf_out is NULL, returns -1.
+static int load_elf_from_path(const char* path, uint8_t** buf_out, uint32_t* size_out)
 {
-    // Read the ELF file from VFS
-    extern int   vfs_open(const char*, int);
-    extern int   vfs_read(int, uint8_t*, uint32_t);
-    extern int   vfs_close(int);
-    extern int   vfs_stat(const char*, uint32_t*);
+    extern int vfs_stat(const char*, uint32_t*);
+    extern int vfs_open(const char*, int);
+    extern int vfs_read(int, uint8_t*, uint32_t);
+    extern int vfs_close(int);
+
+    *buf_out  = 0;
+    *size_out = 0;
 
     uint32_t file_size = 0;
     if (vfs_stat(path, &file_size) < 0) return -1;
-    if (file_size == 0 || file_size > 4*1024*1024) return -1;  // max 4MB
+    if (file_size == 0 || file_size > USER_ELF_MAX_SIZE) return -1;
 
-    // Allocate buffer for ELF (in kernel heap)
     uint8_t* buf = (uint8_t*)kmalloc(file_size);
     if (!buf) return -1;
 
-    int fd = vfs_open(path, 1);  // VFS_O_READ
+    int fd = vfs_open(path, 1);
     if (fd < 0) { kfree(buf); return -1; }
 
     uint32_t total = 0;
-    int bytes;
+    int n;
     while (total < file_size) {
-        bytes = vfs_read(fd, buf + total, file_size - total);
-        if (bytes <= 0) break;
-        total += bytes;
+        n = vfs_read(fd, buf + total, file_size - total);
+        if (n <= 0) break;
+        total += (uint32_t)n;
     }
     vfs_close(fd);
 
-    if (total < 52) { kfree(buf); return -1; }
+    if (total < 52 || *(uint32_t*)buf != 0x464C457F) {
+        kfree(buf);
+        return -1;
+    }
 
-    // Validate ELF
-    if (*(uint32_t*)buf != 0x464C457F) { kfree(buf); return -1; }
+    *buf_out  = buf;
+    *size_out = total;
+    return 0;
+}
+
+// ── exec: replace current process with a new ELF from disk ───────────────────
+int sys_exec(const char* path)
+{
+    uint8_t* buf; uint32_t size;
+    if (load_elf_from_path(path, &buf, &size) < 0) return -1;
 
     process_t* p = process_current();
 
-    // Create a fresh page directory for the new image
     uint32_t* new_dir = paging_create_directory();
     if (!new_dir) { kfree(buf); return -1; }
 
-    // Load ELF into new directory
-    uint32_t entry = load_elf_into_dir(new_dir, buf, total);
+    uint32_t entry = load_elf_into_dir(new_dir, buf, size);
     kfree(buf);
     if (!entry) return -1;
 
-    // Map user stack in new directory
     for (int i = 0; i < USER_STACK_PAGES; i++) {
         uint32_t va   = USER_STACK_TOP - (i+1) * PAGE_SIZE;
         uint32_t phys = paging_alloc_page();
@@ -434,7 +441,6 @@ int sys_exec(const char* path)
         paging_map(new_dir, va, phys, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
     }
 
-    // Switch to new address space
     p->page_directory = new_dir;
     p->user_stack     = USER_STACK_TOP - 4;
     paging_switch(new_dir);
@@ -452,49 +458,18 @@ int sys_exec(const char* path)
 }
 
 // ── spawn: launch a new process from an ELF on disk ──────────────────────────
-// Creates a new process slot, loads the ELF, and marks it ready.
-// The new process inherits the current TTY.
-// Returns the new PID, or -1 on failure.
 int sys_spawn(const char* path)
 {
-    extern int   vfs_open(const char*, int);
-    extern int   vfs_read(int, uint8_t*, uint32_t);
-    extern int   vfs_close(int);
-    extern int   vfs_stat(const char*, uint32_t*);
+    uint8_t* buf; uint32_t size;
+    if (load_elf_from_path(path, &buf, &size) < 0) return -1;
 
-    uint32_t file_size = 0;
-    if (vfs_stat(path, &file_size) < 0) return -1;
-    if (file_size == 0 || file_size > 4*1024*1024) return -1;
-
-    uint8_t* buf = (uint8_t*)kmalloc(file_size);
-    if (!buf) return -1;
-
-    int fd = vfs_open(path, 1);
-    if (fd < 0) { kfree(buf); return -1; }
-
-    uint32_t total = 0;
-    int bytes;
-    while (total < file_size) {
-        bytes = vfs_read(fd, buf + total, file_size - total);
-        if (bytes <= 0) break;
-        total += bytes;
-    }
-    vfs_close(fd);
-
-    if (total < 52) { kfree(buf); return -1; }
-    if (*(uint32_t*)buf != 0x464C457F) { kfree(buf); return -1; }
-
-    int pid = process_create_elf("program", buf, total);
+    int pid = process_create_elf("program", buf, size);
     kfree(buf);
     if (pid < 0) return -1;
 
-    // Inherit TTY from parent
-    extern int tty_for_pid[];
-    extern int fbterm_pid_tty[];
-    extern void tty_assign_pid(int pid, int tty);
-    int parent_tty = tty_for_pid[process_current()->pid];
-    tty_for_pid[pid]    = parent_tty;
-    fbterm_pid_tty[pid] = parent_tty;
+    int parent_tty = process_current()->tty;
+    process_t* child = process_get_by_pid(pid);
+    if (child) child->tty = parent_tty;
 
     return pid;
 }
@@ -502,13 +477,11 @@ int sys_spawn(const char* path)
 // ── wait: block until a process exits ────────────────────────────────────────
 int process_is_alive(int pid)
 {
-    if (pid < 0 || pid >= MAX_PROCESSES) return 0;
-    return processes[pid].state != PROCESS_DEAD;
+    return process_get_by_pid(pid) != 0;
 }
 
 void sys_wait(int pid)
 {
-    if (pid < 0 || pid >= MAX_PROCESSES) return;
     if (!process_is_alive(pid)) return;
 
     process_t* me = process_current();
@@ -532,7 +505,7 @@ void sys_sleep(uint32_t ms)
 // increment > 0: map more bytes, return old heap_end (like POSIX sbrk)
 // increment == 0: return current heap_end
 // Returns (uint32_t)-1 on failure.
-#define USER_HEAP_BASE  0x20000000u  // 512MB — well above ELF at 0x10000000
+// USER_HEAP_BASE comes from memmap.h
 
 uint32_t sys_sbrk(int32_t increment)
 {
@@ -572,41 +545,15 @@ uint32_t sys_sbrk(int32_t increment)
 // spawn on a specific TTY
 int sys_spawn_tty(const char* path, int tty)
 {
-    extern int vfs_open(const char*, int);
-    extern int vfs_read(int, uint8_t*, uint32_t);
-    extern int vfs_close(int);
-    extern int vfs_stat(const char*, uint32_t*);
+    uint8_t* buf; uint32_t size;
+    if (load_elf_from_path(path, &buf, &size) < 0) return -1;
 
-    uint32_t file_size = 0;
-    if (vfs_stat(path, &file_size) < 0) return -1;
-    if (file_size == 0 || file_size > 4*1024*1024) return -1;
-
-    uint8_t* buf = (uint8_t*)kmalloc(file_size);
-    if (!buf) return -1;
-
-    int fd = vfs_open(path, 1);
-    if (fd < 0) { kfree(buf); return -1; }
-
-    uint32_t total = 0;
-    int bytes;
-    while (total < file_size) {
-        bytes = vfs_read(fd, buf + total, file_size - total);
-        if (bytes <= 0) break;
-        total += bytes;
-    }
-    vfs_close(fd);
-
-    if (total < 52 || *(uint32_t*)buf != 0x464C457F) { kfree(buf); return -1; }
-
-    int pid = process_create_elf("shell", buf, total);
+    int pid = process_create_elf("shell", buf, size);
     kfree(buf);
     if (pid < 0) return -1;
 
-    extern int tty_for_pid[];
-    extern int fbterm_pid_tty[];
-    extern void tty_assign_pid(int pid, int tty);
-    tty_for_pid[pid]    = tty;
-    fbterm_pid_tty[pid] = tty;
+    process_t* child = process_get_by_pid(pid);
+    if (child) child->tty = tty;
 
     return pid;
 }
@@ -617,16 +564,15 @@ int sys_spawn_tty_args(const char* path, int tty, const char* args)
     int pid = sys_spawn_tty(path, tty);
     if (pid < 0) return -1;
 
-    // store args in the process slot
+    process_t* p = process_get_by_pid(pid);
+    if (!p) return -1;
+
     if (args) {
         int i = 0;
-        while (args[i] && i < 255) {
-            processes[pid].args[i] = args[i];
-            i++;
-        }
-        processes[pid].args[i] = 0;
+        while (args[i] && i < 255) { p->args[i] = args[i]; i++; }
+        p->args[i] = 0;
     } else {
-        processes[pid].args[0] = 0;
+        p->args[0] = 0;
     }
     return pid;
 }

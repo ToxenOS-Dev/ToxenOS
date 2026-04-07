@@ -29,15 +29,19 @@
 #define SYS_WAIT      23   // wait(pid)   — block until process exits
 #define SYS_SPAWN_TTY      24   // spawn_tty(path, tty) — spawn on specific TTY
 #define SYS_SPAWN_EMBEDDED 25  // spawn embedded shell on given TTY
+#define SYS_GET_ARGS       26  // get_args(buf) — copy process args to user buf
+#define SYS_SPAWN_ARGS     27  // spawn_args(path, tty, args)
+#define SYS_IS_ALIVE       28  // is_alive(pid) — 1 if process is running
+#define SYS_KEYAVAIL       29  // keyavail() — 1 if a key is waiting
 #define SYS_BMSG           30  // bmsg(buf, size) — read kernel log
 #define SYS_PROC_LIST      31  // proc_list(buf, size) — get process list
 #define SYS_KILL           32  // kill(pid) — terminate a process
 #define SYS_SIGINT_TARGET  33  // sigint_target(pid) — set Ctrl+C target
-#define SYS_PIPE           34
-#define SYS_SPAWN_PIPE     35
-#define SYS_SLEEP          36
-#define SYS_SBRK           37
-#define SYS_SPAWN_INHERIT  38
+#define SYS_PIPE           34  // pipe(rfd*, wfd*) — create a pipe
+#define SYS_SPAWN_PIPE     35  // spawn_pipe(path, args, stdin_fd, stdout_fd)
+#define SYS_SLEEP          36  // sleep(ms)
+#define SYS_SBRK           37  // sbrk(increment) — grow heap
+#define SYS_SPAWN_INHERIT  38  // spawn_inherit(path, args, ilist[])
 #define SYS_NET_SEND_UDP   39  // send UDP packet
 #define SYS_NET_POLL       40  // poll for incoming packets
 #define SYS_NET_GET_IP     41  // get our IP address
@@ -46,7 +50,6 @@
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx,
                                                   uint32_t ecx, uint32_t edx);
 void syscall_init();
-void klog(const char* msg);
 
 void sys_exit(int code);
 void sys_print(const char* str);

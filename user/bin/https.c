@@ -31,7 +31,7 @@ static uint8_t rxbuf[2048];
 
 void _start() {
     static char args[256];
-    get_args(args);
+    tox_get_args(args);
     char* p = args;
     while(*p==' ') p++;
     // Skip to first digit (start of IP)

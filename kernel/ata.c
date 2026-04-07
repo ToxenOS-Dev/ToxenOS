@@ -128,7 +128,6 @@ static void ata_init_channel(const ata_channel_t* ch)
 // Wake up slave drives by issuing several reads — QEMU ignores the first few
 static void ata_wake_slave(const ata_channel_t* ch)
 {
-    static uint8_t dummy[512];
     uint8_t slave_sel = 0xF0;
 
     // Check slave exists

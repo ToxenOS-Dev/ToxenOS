@@ -6,7 +6,7 @@
 #include "../include/tcp.h"
 #include "../include/timer.h"
 #include "../include/vga.h"
-#include "../include/syscall.h"
+#include "../include/klog.h"
 
 uint32_t net_ip      = IP4(10,0,2,15);
 uint32_t net_gateway = IP4(10,0,2,2);
@@ -32,8 +32,10 @@ static void arp_store(uint32_t ip, const uint8_t* mac) {
     }
 }
 int arp_lookup(uint32_t ip, uint8_t* out) {
-    arp_entry_t* e=arp_find(ip); if(!e) return 0;
-    for(int i=0;i<ETH_ALEN;i++) out[i]=e->mac[i]; return 1;
+    arp_entry_t* e = arp_find(ip);
+    if (!e) return 0;
+    for (int i = 0; i < ETH_ALEN; i++) out[i] = e->mac[i];
+    return 1;
 }
 
 // ── Checksum ──────────────────────────────────────────────────────────────────

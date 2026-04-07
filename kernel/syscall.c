@@ -1,16 +1,8 @@
+// ToxenOS/kernel/syscall.c
 #include <stdint.h>
-
-// ── Kernel log buffer ────────────────────────────────────────────────────────
-#define KLOG_SIZE 4096
-static char klog_buf[KLOG_SIZE];
-static int  klog_pos = 0;
-
-void klog(const char* msg) {
-    for (int i = 0; msg[i] && klog_pos < KLOG_SIZE - 1; i++)
-        klog_buf[klog_pos++] = msg[i];
-    klog_buf[klog_pos] = 0;
-}
 #include "../include/syscall.h"
+#include "../include/uaccess.h"
+#include "../include/klog.h"
 #include "../include/idt.h"
 #include "../include/process.h"
 #include "../include/vga.h"
@@ -36,14 +28,15 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
 
         case SYS_PRINT:
         {
+            CHECK_USER_STR(ebx);
+            const char* s = (const char*)ebx;
             process_t* cur = process_current();
             if (cur->stdout_fd >= 0 && cur->stdout_fd < VFS_MAX_FDS) {
-                const char* s = (const char*)ebx;
                 uint32_t len = 0;
                 while (s[len]) len++;
                 vfs_write(cur->stdout_fd, (const uint8_t*)s, len);
             } else {
-                sys_print((const char*)ebx);
+                sys_print(s);
             }
             return 0;
         }
@@ -82,15 +75,20 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return 0;
 
         case SYS_READDIR:
+            CHECK_USER_STR(ebx);
+            CHECK_USER_PTR(ecx, VFS_NAME_MAX);
             return vfs_readdir((const char*)ebx, (char*)ecx, edx);
 
         case SYS_OPEN:
+            CHECK_USER_STR(ebx);
             return vfs_open((const char*)ebx, ecx);
 
         case SYS_READ:
+            CHECK_USER_PTR(ecx, edx);
             return vfs_read(ebx, (uint8_t*)ecx, edx);
 
         case SYS_WRITE:
+            CHECK_USER_PTR(ecx, edx);
             return vfs_write(ebx, (const uint8_t*)ecx, edx);
 
         case SYS_CLOSE:
@@ -98,18 +96,22 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
 
         case SYS_STAT:
         {
+            CHECK_USER_STR(ebx);
             uint32_t size = 0;
-            if (vfs_stat((const char*)ebx, &size) < 0) return -1;
-            return (int)size;
+            if (vfs_stat((const char*)ebx, &size) < 0) return (uint32_t)-1;
+            return size;
         }
 
         case SYS_ISDIR:
+            CHECK_USER_STR(ebx);
             return vfs_isdir((const char*)ebx);
 
         case SYS_MKDIR:
+            CHECK_USER_STR(ebx);
             return vfs_mkdir((const char*)ebx);
 
         case SYS_REMOVE:
+            CHECK_USER_STR(ebx);
             return vfs_remove((const char*)ebx);
 
         case SYS_YIELD:
@@ -123,12 +125,14 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return tty_current();
 
         case SYS_MY_TTY:
-            return tty_for_pid[process_current()->pid];
+            return process_current()->tty;
 
         case SYS_EXEC:
+            CHECK_USER_STR(ebx);
             return sys_exec((const char*)ebx);
 
         case SYS_SPAWN:
+            CHECK_USER_STR(ebx);
             return sys_spawn((const char*)ebx);
 
         case SYS_WAIT:
@@ -136,10 +140,12 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return 0;
 
         case SYS_SPAWN_TTY:
+            CHECK_USER_STR(ebx);
             return sys_spawn_tty((const char*)ebx, (int)ecx);
 
-        case 26:  // SYS_GET_ARGS
+        case SYS_GET_ARGS:
         {
+            CHECK_USER_PTR(ebx, 256);
             char* buf = (char*)ebx;
             const char* src = process_current()->args;
             int i = 0;
@@ -148,13 +154,15 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return i;
         }
 
-        case 27:  // SYS_SPAWN_ARGS
-            return sys_spawn_tty_args((const char*)ebx, (int)ecx, (const char*)edx);
+        case SYS_SPAWN_ARGS:
+            CHECK_USER_STR(ebx);
+            if (edx) { CHECK_USER_STR(edx); }
+            return sys_spawn_tty_args((const char*)ebx, (int)ecx, edx ? (const char*)edx : "");
 
-        case 28:  // SYS_IS_ALIVE
+        case SYS_IS_ALIVE:
             return process_is_alive((int)ebx);
 
-        case 29:  // SYS_KEYAVAIL
+        case SYS_KEYAVAIL:
             return keyboard_available();
 
         case SYS_SPAWN_EMBEDDED:
@@ -164,42 +172,39 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
                                       - _binary_build_user_shell_elf_start);
             int tty = (int)ebx;
             int pid = process_create_elf("shell", buf, size);
-            if (pid < 0) return -1;
+            if (pid < 0) return (uint32_t)-1;
             tty_assign_pid(pid, tty);
-            fbterm_pid_tty[pid] = tty;
             return pid;
         }
 
         case SYS_BMSG:
         {
-            char* buf  = (char*)ebx;
-            uint32_t sz = (uint32_t)ecx;
+            if (ecx == 0) return 0;
+            CHECK_USER_PTR(ebx, ecx);
+            char* out       = (char*)ebx;
+            uint32_t sz     = (uint32_t)ecx;
+            const char* src = klog_get_buf();
             uint32_t len = 0;
-            while (klog_buf[len] && len < sz - 1) {
-                buf[len] = klog_buf[len];
-                len++;
-            }
-            buf[len] = 0;
+            while (src[len] && len < sz - 1) { out[len] = src[len]; len++; }
+            out[len] = 0;
             return (int)len;
         }
 
         case SYS_PROC_LIST:
         {
-            // Returns process info as packed array of: pid(4) + state(4) + name(32) = 40 bytes each
+            if (ecx == 0) return 0;
+            CHECK_USER_PTR(ebx, ecx);
             uint8_t* buf  = (uint8_t*)ebx;
             uint32_t size = (uint32_t)ecx;
             uint32_t written = 0;
             for (int i = 0; i < MAX_PROCESSES; i++) {
                 if (processes[i].state == PROCESS_DEAD) continue;
                 if (written + 40 > size) break;
-                // pid
                 buf[written+0] = processes[i].pid & 0xFF;
                 buf[written+1] = (processes[i].pid >> 8) & 0xFF;
                 buf[written+2] = 0; buf[written+3] = 0;
-                // state
                 buf[written+4] = (uint8_t)processes[i].state;
                 buf[written+5] = 0; buf[written+6] = 0; buf[written+7] = 0;
-                // name (32 bytes)
                 for (int j = 0; j < 32; j++)
                     buf[written+8+j] = processes[i].name[j];
                 written += 40;
@@ -210,11 +215,11 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_KILL:
         {
             int pid = (int)ebx;
-            if (pid <= 0) return -1;
-            if (pid >= MAX_PROCESSES) return -1;
-            if (processes[pid].state == PROCESS_DEAD) return -1;
-            processes[pid].state = PROCESS_DEAD;
-            // Wake any waiter
+            if (pid <= 0) return (uint32_t)-1;
+            process_t* target = process_get_by_pid(pid);
+            if (!target) return (uint32_t)-1;
+            target->state = PROCESS_DEAD;
+            // Wake any process waiting on this pid
             for (int i = 0; i < MAX_PROCESSES; i++) {
                 if (processes[i].state == PROCESS_WAITING &&
                     processes[i].waiting_for == pid) {
@@ -225,39 +230,40 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return 0;
         }
 
-        case 33:  // SYS_SIGINT_TARGET
-        {
+        case SYS_SIGINT_TARGET:
             keyboard_set_sigint_target((int)ebx);
             return 0;
-        }
 
-        case 34:  // SYS_PIPE
+        case SYS_PIPE:
         {
+            CHECK_USER_PTR(ebx, sizeof(int));
+            CHECK_USER_PTR(ecx, sizeof(int));
             int* rfd_ptr = (int*)ebx;
             int* wfd_ptr = (int*)ecx;
             int rfd, wfd;
-            if (vfs_pipe(&rfd, &wfd) < 0) return -1;
+            if (vfs_pipe(&rfd, &wfd) < 0) return (uint32_t)-1;
             *rfd_ptr = rfd;
             *wfd_ptr = wfd;
             return 0;
         }
 
-        case 35:  // SYS_SPAWN_PIPE — spawn with overridden stdin/stdout fds
+        case SYS_SPAWN_PIPE:
         {
-            // ebx=path, ecx=args, edx=packed fds: high16=stdout_fd, low16=stdin_fd
-            // -1 in either slot means "use default" (keyboard/screen)
+            CHECK_USER_STR(ebx);
+            if (ecx) { CHECK_USER_STR(ecx); }
             const char* path    = (const char*)ebx;
-            const char* args    = (const char*)ecx;
+            const char* args    = ecx ? (const char*)ecx : "";
             int         stdin_f = (int)(int16_t)(edx & 0xFFFF);
             int         stdout_f= (int)(int16_t)((edx >> 16) & 0xFFFF);
-
-            int tty = tty_for_pid[process_current()->pid];
+            int tty = process_current()->tty;
             if (tty < 0) tty = 0;
-            int pid = sys_spawn_tty_args(path, tty, args ? args : "");
-            if (pid < 0) return -1;
-
-            processes[pid].stdin_fd  = stdin_f;
-            processes[pid].stdout_fd = stdout_f;
+            int pid = sys_spawn_tty_args(path, tty, args);
+            if (pid < 0) return (uint32_t)-1;
+            process_t* child = process_get_by_pid(pid);
+            if (child) {
+                child->stdin_fd  = stdin_f;
+                child->stdout_fd = stdout_f;
+            }
             return pid;
         }
 
@@ -270,25 +276,25 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
 
         case SYS_SPAWN_INHERIT:
         {
-            // ebx=path, ecx=args, edx=int[] inheritance list (terminated by -1)
-            // inheritance list: [child_fd, parent_gfd, child_fd, parent_gfd, ..., -1]
+            CHECK_USER_STR(ebx);
+            if (ecx) { CHECK_USER_STR(ecx); }
             const char* path  = (const char*)ebx;
-            const char* args  = (const char*)ecx;
+            const char* args  = ecx ? (const char*)ecx : "";
             const int*  ilist = (const int*)edx;
-
-            int tty = tty_for_pid[process_current()->pid];
+            if (ilist) { CHECK_USER_PTR(ilist, sizeof(int)); }
+            int tty = process_current()->tty;
             if (tty < 0) tty = 0;
-
-            int pid = sys_spawn_tty_args(path, tty, args ? args : "");
-            if (pid < 0) return -1;
-
-            // Copy inherited FDs into child's fd table
-            if (ilist) {
-                for (int i = 0; ilist[i] >= 0; i += 2) {
-                    int child_local  = ilist[i];
-                    int parent_gfd   = ilist[i+1];
+            int pid = sys_spawn_tty_args(path, tty, args);
+            if (pid < 0) return (uint32_t)-1;
+            process_t* child = process_get_by_pid(pid);
+            if (child && ilist) {
+                for (int i = 0; ; i += 2) {
+                    if (!uaccess_ok(&ilist[i], sizeof(int) * 2)) break;
+                    if (ilist[i] < 0) break;
+                    int child_local = ilist[i];
+                    int parent_gfd  = ilist[i+1];
                     if (child_local < VFS_PROC_FDS && parent_gfd >= 0)
-                        processes[pid].fds.local_fds[child_local] = parent_gfd;
+                        child->fds.local_fds[child_local] = parent_gfd;
                 }
             }
             return pid;
@@ -296,14 +302,14 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
 
         case SYS_NET_SEND_UDP:
         {
-            // ebx=dst_ip, ecx=ports (src<<16|dst), edx=ptr to {uint8_t*,uint16_t}
+            CHECK_USER_PTR(edx, sizeof(uint8_t*) + sizeof(uint16_t));
             uint32_t  dst_ip   = (uint32_t)ebx;
             uint16_t  src_port = (uint16_t)(ecx >> 16);
             uint16_t  dst_port = (uint16_t)(ecx & 0xFFFF);
-            // edx points to: [4 bytes data ptr][2 bytes len]
-            uint8_t**  pp  = (uint8_t**)edx;
-            uint16_t*  lp  = (uint16_t*)(edx + 4);
-            return net_udp_send(dst_ip, src_port, dst_port, *pp, *lp);
+            uint8_t*  data_ptr = *(uint8_t**)edx;
+            uint16_t  data_len = *(uint16_t*)((uint8_t*)edx + sizeof(uint8_t*));
+            if (data_len > 0) { CHECK_USER_PTR(data_ptr, data_len); }
+            return net_udp_send(dst_ip, src_port, dst_port, data_ptr, data_len);
         }
 
         case SYS_NET_POLL:
@@ -315,32 +321,30 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
 
         case SYS_NET_UDP_RECV:
         {
+            CHECK_USER_PTR(edx, sizeof(uint16_t) * 2 + sizeof(uint32_t));
             uint16_t  port    = (uint16_t)ebx;
-            uint8_t*  buf     = (uint8_t*)ecx;
-            uint16_t* maxlenp = (uint16_t*)edx;
-            uint32_t* timeoutp= (uint32_t*)(edx + 4);
+            uint16_t  maxlen  = *(uint16_t*)edx;
+            uint32_t  timeout = *(uint32_t*)((uint8_t*)edx + sizeof(uint16_t) * 2);
+            if (maxlen > 0) { CHECK_USER_PTR(ecx, maxlen); }
             net_udp_open(port);
-            return net_udp_recv(port, buf, *maxlenp, 0, *timeoutp);
+            return net_udp_recv(port, (uint8_t*)ecx, maxlen, 0, timeout);
         }
 
         case SYS_TCP_CONNECT:
-            // ebx=ip, ecx=port
             return tcp_connect((uint32_t)ebx, (uint16_t)ecx);
 
         case SYS_TCP_SEND:
-        {
-            // ebx=sock, ecx=buf, edx=len
+            if (edx > 0) { CHECK_USER_PTR(ecx, edx); }
             return tcp_send((int)ebx, (const uint8_t*)ecx, (uint32_t)edx);
-        }
 
         case SYS_TCP_RECV:
         {
-            // ebx=sock, ecx=buf, edx=ptr to {uint16_t maxlen, uint16_t pad, uint32_t timeout}
+            CHECK_USER_PTR(edx, sizeof(uint16_t) * 2 + sizeof(uint32_t));
             int      sock    = (int)ebx;
-            uint8_t* buf     = (uint8_t*)ecx;
             uint16_t maxlen  = *(uint16_t*)edx;
-            uint32_t timeout = *(uint32_t*)(edx + 4);
-            return tcp_recv(sock, buf, maxlen, timeout);
+            uint32_t timeout = *(uint32_t*)((uint8_t*)edx + sizeof(uint16_t) * 2);
+            if (maxlen > 0) { CHECK_USER_PTR(ecx, maxlen); }
+            return tcp_recv(sock, (uint8_t*)ecx, maxlen, timeout);
         }
 
         case SYS_TCP_CLOSE:
@@ -348,33 +352,36 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return 0;
 
         case SYS_PING:
-        {
-            // ebx=ip, ecx=seq, edx=timeout_ms
             return net_ping((uint32_t)ebx, (uint16_t)ecx, (uint32_t)edx);
-        }
 
         case SYS_TLS_CONNECT:
+            CHECK_USER_STR(edx);
             return tls_connect((uint32_t)ebx, (uint16_t)ecx, (const char*)edx);
+
         case SYS_TLS_SEND:
+            if (edx > 0) { CHECK_USER_PTR(ecx, edx); }
             return tls_send((int)ebx, (const uint8_t*)ecx, (uint32_t)edx);
+
         case SYS_TLS_RECV:
+            CHECK_USER_PTR(ecx, 2048);
             return tls_recv((int)ebx, (uint8_t*)ecx, 2048, (uint32_t)edx);
+
         case SYS_TLS_CLOSE:
             tls_close((int)ebx);
             return 0;
+
         default:
-            return -1;
+            return (uint32_t)-1;
     }
 }
 
-void sys_exit(int code)   { process_exit(); }
+void sys_exit(int code)         { (void)code; process_exit(); }
 void sys_print(const char* str) { print(str); }
-char sys_getchar()        { return keyboard_getchar(); }
-int  sys_getpid()         { return process_current()->pid; }
+char sys_getchar()              { return keyboard_getchar(); }
+int  sys_getpid()               { return process_current()->pid; }
 
 void syscall_init()
 {
     extern void isr128();
-    extern void idt_set_gate(int n, uint32_t handler);
     idt_set_gate_user(0x80, (uint32_t)isr128);
 }

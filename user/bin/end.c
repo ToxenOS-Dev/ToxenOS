@@ -1,11 +1,5 @@
 #include "../tox.h"
 
-static inline int tox_kill(int pid) {
-    int r;
-    __asm__ volatile("int $0x80" : "=a"(r) : "a"(32), "b"(pid));
-    return r;
-}
-
 static int str_to_int(const char* s) {
     int n = 0;
     while (*s >= '0' && *s <= '9') n = n * 10 + (*s++ - '0');
@@ -14,7 +8,7 @@ static int str_to_int(const char* s) {
 
 void _start() {
     char args[64];
-    get_args(args);
+    tox_get_args(args);
 
     if (!args[0]) {
         set_color(0x0C); print("usage: end <pid>\n");

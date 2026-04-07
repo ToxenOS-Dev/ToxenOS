@@ -24,14 +24,12 @@ static uint32_t parse_ip(const char* s) {
     return r;
 }
 
-static int str_len(const char* s) { int i=0; while(s[i]) i++; return i; }
-static void str_copy(char* d, const char* s) { int i=0; while(s[i]){d[i]=s[i];i++;} d[i]=0; }
 
 static uint8_t rxbuf[2048];
 
 void _start() {
     static char args[256];
-    get_args(args);
+    tox_get_args(args);
     char* p = args;
     while (*p == ' ') p++;
     // Shell prepends cwd — skip past it to first digit (start of IP)
@@ -44,7 +42,7 @@ void _start() {
     while (*p && *p != ' ' && i < 31) { ip_str[i++] = *p++; }
     ip_str[i] = 0;
     while (*p == ' ') p++;
-    if (*p) str_copy(path, p);
+    if (*p) tox_strcpy(path, p);
 
     if (!ip_str[0]) {
         print("Usage: http <ip> [path]\n");
@@ -64,14 +62,14 @@ void _start() {
 
     // Build HTTP/1.0 GET request
     static char req[256];
-    str_copy(req, "GET ");
-    int rlen = str_len(req);
-    str_copy(req + rlen, path); rlen = str_len(req);
-    str_copy(req + rlen, " HTTP/1.0\r\nHost: "); rlen = str_len(req);
-    str_copy(req + rlen, ip_str); rlen = str_len(req);
-    str_copy(req + rlen, "\r\nConnection: close\r\n\r\n");
+    tox_strcpy(req, "GET ");
+    int rlen = tox_strlen(req);
+    tox_strcpy(req + rlen, path); rlen = tox_strlen(req);
+    tox_strcpy(req + rlen, " HTTP/1.0\r\nHost: "); rlen = tox_strlen(req);
+    tox_strcpy(req + rlen, ip_str); rlen = tox_strlen(req);
+    tox_strcpy(req + rlen, "\r\nConnection: close\r\n\r\n");
 
-    tox_tcp_send(sock, (const uint8_t*)req, (uint32_t)str_len(req));
+    tox_tcp_send(sock, (const uint8_t*)req, (uint32_t)tox_strlen(req));
 
     // Read and print response
     print("--- Response ---\n");

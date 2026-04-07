@@ -321,6 +321,14 @@ process_t* process_current()
     return &processes[current_pid];
 }
 
+process_t* process_get_by_pid(int pid)
+{
+    for (int i = 0; i < MAX_PROCESSES; i++)
+        if (processes[i].pid == (uint32_t)pid && processes[i].state != PROCESS_DEAD)
+            return &processes[i];
+    return 0;
+}
+
 void scheduler()
 {
     // Wake any sleeping processes whose timer has expired

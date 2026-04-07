@@ -34,6 +34,25 @@ all: user
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/e1000.c -o build/e1000.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/net.c -o build/net.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/tcp.c -o build/tcp.o
+	# Build mbedTLS
+	@mkdir -p build/mbedtls
+	@for f in mbedtls/library/*.c; do \
+		base=$$(basename $$f .c); \
+		case $$base in net_sockets|timing|pkcs7|ssl_tls13*|mps_*|platform) continue ;; esac; \
+		gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
+			-DMBEDTLS_CONFIG_FILE='"../toxenos_config.h"' \
+			-I mbedtls/include -I mbedtls \
+			-c $$f -o build/mbedtls/$$base.o 2>/dev/null; \
+	done
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
+		-DMBEDTLS_CONFIG_FILE='"../mbedtls/toxenos_config.h"' \
+		-I mbedtls/include -I mbedtls \
+		-c mbedtls/toxenos_platform.c -o build/mbedtls/toxenos_platform.o
+	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
+		-DMBEDTLS_CONFIG_FILE='"../mbedtls/toxenos_config.h"' \
+		-I mbedtls/include -I mbedtls \
+		-I include \
+		-c kernel/tls.c -o build/tls.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/framebuffer.c -o build/framebuffer.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/font.c -o build/font.o
 	gcc -ffreestanding -fno-stack-protector -fno-pic -m32 -c kernel/fbterm.c -o build/fbterm.o
@@ -43,7 +62,8 @@ all: user
 		build/switch.o build/pic.o build/irq.o build/timer.o build/mm.o \
 		build/process.o build/syscall.o build/paging.o build/tss.o build/ring3.o \
 		build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/fat.o build/ext2.o build/elf.o \
-		build/tty.o build/pipe.o build/waitqueue.o build/pci.o build/e1000.o build/net.o build/tcp.o \
+		build/tty.o build/pipe.o build/waitqueue.o build/pci.o build/e1000.o build/net.o build/tcp.o build/tls.o \
+		build/mbedtls/aes.o build/mbedtls/aesce.o build/mbedtls/aesni.o build/mbedtls/aria.o build/mbedtls/asn1parse.o build/mbedtls/asn1write.o build/mbedtls/base64.o build/mbedtls/bignum.o build/mbedtls/bignum_core.o build/mbedtls/bignum_mod.o build/mbedtls/bignum_mod_raw.o build/mbedtls/block_cipher.o build/mbedtls/camellia.o build/mbedtls/ccm.o build/mbedtls/chacha20.o build/mbedtls/chachapoly.o build/mbedtls/cipher.o build/mbedtls/cipher_wrap.o build/mbedtls/cmac.o build/mbedtls/constant_time.o build/mbedtls/ctr_drbg.o build/mbedtls/debug.o build/mbedtls/des.o build/mbedtls/dhm.o build/mbedtls/ecdh.o build/mbedtls/ecdsa.o build/mbedtls/ecjpake.o build/mbedtls/ecp.o build/mbedtls/ecp_curves.o build/mbedtls/ecp_curves_new.o build/mbedtls/entropy.o build/mbedtls/entropy_poll.o build/mbedtls/error.o build/mbedtls/gcm.o build/mbedtls/hkdf.o build/mbedtls/hmac_drbg.o build/mbedtls/lmots.o build/mbedtls/lms.o build/mbedtls/md.o build/mbedtls/md5.o build/mbedtls/memory_buffer_alloc.o build/mbedtls/nist_kw.o build/mbedtls/oid.o build/mbedtls/padlock.o build/mbedtls/pem.o build/mbedtls/pk.o build/mbedtls/pk_ecc.o build/mbedtls/pk_wrap.o build/mbedtls/pkcs12.o build/mbedtls/pkcs5.o build/mbedtls/pkparse.o build/mbedtls/pkwrite.o build/mbedtls/platform_util.o build/mbedtls/poly1305.o build/mbedtls/psa_crypto.o build/mbedtls/psa_crypto_aead.o build/mbedtls/psa_crypto_cipher.o build/mbedtls/psa_crypto_client.o build/mbedtls/psa_crypto_driver_wrappers_no_static.o build/mbedtls/psa_crypto_ecp.o build/mbedtls/psa_crypto_ffdh.o build/mbedtls/psa_crypto_hash.o build/mbedtls/psa_crypto_mac.o build/mbedtls/psa_crypto_pake.o build/mbedtls/psa_crypto_rsa.o build/mbedtls/psa_crypto_se.o build/mbedtls/psa_crypto_slot_management.o build/mbedtls/psa_crypto_storage.o build/mbedtls/psa_its_file.o build/mbedtls/psa_util.o build/mbedtls/ripemd160.o build/mbedtls/rsa.o build/mbedtls/rsa_alt_helpers.o build/mbedtls/sha1.o build/mbedtls/sha256.o build/mbedtls/sha3.o build/mbedtls/sha512.o build/mbedtls/ssl_cache.o build/mbedtls/ssl_ciphersuites.o build/mbedtls/ssl_client.o build/mbedtls/ssl_cookie.o build/mbedtls/ssl_debug_helpers_generated.o build/mbedtls/ssl_msg.o build/mbedtls/ssl_ticket.o build/mbedtls/ssl_tls.o build/mbedtls/ssl_tls12_client.o build/mbedtls/ssl_tls12_server.o build/mbedtls/threading.o build/mbedtls/version.o build/mbedtls/version_features.o build/mbedtls/x509.o build/mbedtls/x509_create.o build/mbedtls/x509_crl.o build/mbedtls/x509_crt.o build/mbedtls/x509_csr.o build/mbedtls/x509write.o build/mbedtls/x509write_crt.o build/mbedtls/x509write_csr.o build/mbedtls/toxenos_platform.o \
 		build/user/shell_blob.o build/user/init_blob.o build/framebuffer.o build/font.o build/fbterm.o
 
 	cp build/kernel.bin iso/boot/kernel.bin
@@ -72,7 +92,7 @@ user:
 		-Ttext=0x10000000 \
 		-no-pie -static \
 		user/hello.c -o build/user/hello.elf
-	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns http ping; do \
+	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns http ping https; do \
 		gcc -ffreestanding -fno-stack-protector -fno-pic -m32 \
 			-nostdlib -nostartfiles -Ttext=0x10000000 -no-pie -static \
 			user/bin/$$cmd.c -o build/user/bin/$$cmd.elf || exit 1; \
@@ -123,6 +143,7 @@ populate: tools/txfs_write
 	tools/txfs_write build/disk.img build/user/bin/dns.elf /Programs/dns.elf
 	tools/txfs_write build/disk.img build/user/bin/http.elf /Programs/http.elf
 	tools/txfs_write build/disk.img build/user/bin/ping.elf /Programs/ping.elf
+	tools/txfs_write build/disk.img build/user/bin/https.elf /Programs/https.elf
 	tools/txfs_write build/disk.img build/user/hello.elf /hello.elf
 	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
 	tools/txfs_write build/disk.img build/user/init.elf /init.elf

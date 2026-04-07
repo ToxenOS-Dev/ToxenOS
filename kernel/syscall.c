@@ -19,6 +19,7 @@ void klog(const char* msg) {
 #include "../include/pipe.h"
 #include "../include/net.h"
 #include "../include/tcp.h"
+#include "../include/tls.h"
 #include "../include/tty.h"
 #include "../include/fbterm.h"
 
@@ -352,6 +353,15 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return net_ping((uint32_t)ebx, (uint16_t)ecx, (uint32_t)edx);
         }
 
+        case SYS_TLS_CONNECT:
+            return tls_connect((uint32_t)ebx, (uint16_t)ecx, (const char*)edx);
+        case SYS_TLS_SEND:
+            return tls_send((int)ebx, (const uint8_t*)ecx, (uint32_t)edx);
+        case SYS_TLS_RECV:
+            return tls_recv((int)ebx, (uint8_t*)ecx, 2048, (uint32_t)edx);
+        case SYS_TLS_CLOSE:
+            tls_close((int)ebx);
+            return 0;
         default:
             return -1;
     }

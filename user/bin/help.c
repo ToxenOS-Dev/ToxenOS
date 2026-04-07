@@ -1,60 +1,55 @@
 #include "../tox.h"
+
+// Print "  <white name><gray args>" padded to column 26, then right side
+static void row(const char* lname, const char* largs,
+                const char* rname, const char* rargs) {
+    char buf[8];
+    int i;
+    // left cell: 4 spaces + name + args, padded to col 26
+    print("    ");
+    set_color(0x07); print(lname);
+    set_color(0x08); if (largs[0]) { print(" "); print(largs); }
+    // count chars printed so far
+    int len = 4;
+    for (i=0;lname[i];i++) len++;
+    if (largs[0]) { len++; for (i=0;largs[i];i++) len++; }
+    // pad to col 26
+    buf[1]=0;
+    while (len++ < 26) { buf[0]=' '; print(buf); }
+    // right cell
+    set_color(0x07); print(rname);
+    set_color(0x08); if (rargs[0]) { print(" "); print(rargs); }
+    set_color(0x07); print("\n");
+}
+
 void _start() {
-    set_color(0x0E); print("ToxenOS Commands:\n\n"); set_color(0x07);
+    set_color(0x0E); print("ToxenOS Commands\n\n"); set_color(0x07);
 
     set_color(0x0B); print("  Files & Directories\n"); set_color(0x07);
-    print("    ls [dir]          - list files\n");
-    print("    cd <dir>          - change directory\n");
-    print("    cdb               - go up one directory\n");
-    print("    pcd               - print current directory\n");
-    print("    shw <file>        - show file contents\n");
-    print("    hex <file>        - hex dump a file\n");
-    print("    cp <src> <dst>    - copy a file\n");
-    print("    mv <src> <dst>    - move a file\n");
-    print("    rname <old> <new> - rename a file\n");
-    print("    tree [dir]        - show directory tree\n");
-    print("    find [dir] <pat>  - find files by name\n");
-    print("    sif <pat> <file>  - search inside a file\n");
-    print("    mkef <file>       - create empty file\n");
-    print("    mkd <dir>         - make directory\n");
-    print("    rm <file>         - delete file\n");
-    print("    file <file>       - show file type\n");
+    row("ls",    "[dir]",       "cp",    "<src> <dst>");
+    row("cd",    "<dir>",       "mv",    "<src> <dst>");
+    row("cdb",   "",            "rname", "<old> <new>");
+    row("pcd",   "",            "rm",    "<path>");
+    row("shw",   "<file>",      "mkef",  "<file>");
+    row("hex",   "<file>",      "mkd",   "<dir>");
+    row("file",  "<file>",      "tree",  "[dir]");
+    row("find",  "[dir] <pat>", "sif",   "<pat> <file>");
 
     set_color(0x0B); print("\n  Processes\n"); set_color(0x07);
-    print("    proc              - list running processes\n");
-    print("    top               - live process viewer (q to quit)\n");
-    print("    end <pid>         - terminate a process\n");
-
-    set_color(0x0B); print("\n  Shell\n"); set_color(0x07);
-    print("    cmd | cmd         - pipe output to next command\n");
-    print("    cmd > file        - redirect output to file\n");
-    print("    cmd < file        - read input from file\n");
-    print("    Tab               - autocomplete command\n");
-    print("    Up/Down           - browse command history\n");
-    print("    Ctrl+C            - kill running program\n");
-
-    set_color(0x0B); print("\n  System\n"); set_color(0x07);
-    print("    bmsg              - show boot messages\n");
-    print("    echo <text>       - print text\n");
-    print("    uname             - OS info\n");
-    print("    clear             - clear screen\n");
-    print("    reboot            - restart\n");
-    print("    shutdown          - power off\n");
-
-    set_color(0x0B); print("\n  Drives\n"); set_color(0x07);
-    print("    ls /C:            - TxFS main drive\n");
-    print("    ls /D:            - secondary drive (auto-detected)\n");
+    row("proc",  "",      "uname",    "");
+    row("top",   "",      "echo",     "<text>");
+    row("end",   "<pid>", "bmsg",     "");
+    row("reboot","",      "shutdown", "");
 
     set_color(0x0B); print("\n  Network\n"); set_color(0x07);
-    print("    dns <hostname>       - DNS lookup\n");
-    print("    ping <hostname>      - ping a host\n");
-    print("    http <ip> [path]     - HTTP GET request\n");
+    row("dns",  "<hostname>",   "ping",  "<hostname>");
+    row("http", "<ip> [path]",  "https", "<ip> <host> [path]");
 
-    set_color(0x0B); print("\n  Diagnostics\n"); set_color(0x07);
-    print("    sleeptest         - test timer sleep & scheduler\n");
-    print("    memtest           - test dynamic memory (sbrk/malloc)\n");
-    print("    pipetest          - test kernel pipes & blocking I/O\n");
-    print("    nettest           - test UDP networking\n");
+    set_color(0x0B); print("\n  Shell\n"); set_color(0x07);
+    row("cmd | cmd",  "", "Tab",     "autocomplete");
+    row("cmd > file", "", "Up/Down", "history");
+    row("cmd < file", "", "Ctrl+C",  "kill");
 
+    print("\n");
     tox_exit();
 }

@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include "vfs.h"
 
-#define KERNEL_STACK_SIZE  16384   // 16KB kernel stack per process
+#define KERNEL_STACK_SIZE  65536   // 64KB kernel stack per process
 #define MAX_PROCESSES      16
 
 typedef enum {
@@ -56,3 +56,4 @@ uint32_t sys_sbrk(int32_t increment);
 int  process_is_alive(int pid);
 int  sys_spawn_tty(const char* path, int tty);
 int  sys_spawn_tty_args(const char* path, int tty, const char* args);
+process_t* process_get_by_pid(int pid);

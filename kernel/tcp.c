@@ -115,12 +115,16 @@ static void tcp_send_segment(tcp_socket_t* s, uint8_t flags,
 
 // ── Receive buffer helpers ────────────────────────────────────────────────────
 static uint32_t rxbuf_avail(tcp_socket_t* s) {
-    return (s->rx_tail - s->rx_head + TCP_RXBUF_SIZE) % TCP_RXBUF_SIZE;
+    // rx_head and rx_tail are unbounded; subtraction works with uint32 wrap
+    return s->rx_tail - s->rx_head;
 }
 
 static void rxbuf_push(tcp_socket_t* s, const uint8_t* data, uint32_t len) {
+    // Drop data if buffer would overflow
+    uint32_t space = TCP_RXBUF_SIZE - rxbuf_avail(s);
+    if (len > space) len = space;
     for (uint32_t i = 0; i < len; i++) {
-        s->rxbuf[s->rx_tail % TCP_RXBUF_SIZE] = data[i];
+        s->rxbuf[s->rx_tail & (TCP_RXBUF_SIZE - 1)] = data[i];
         s->rx_tail++;
     }
 }
@@ -129,7 +133,7 @@ static uint32_t rxbuf_pop(tcp_socket_t* s, uint8_t* buf, uint32_t maxlen) {
     uint32_t avail = rxbuf_avail(s);
     uint32_t n = avail < maxlen ? avail : maxlen;
     for (uint32_t i = 0; i < n; i++) {
-        buf[i] = s->rxbuf[s->rx_head % TCP_RXBUF_SIZE];
+        buf[i] = s->rxbuf[s->rx_head & (TCP_RXBUF_SIZE - 1)];
         s->rx_head++;
     }
     return n;
@@ -261,8 +265,8 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port)
     tcp_send_segment(s, TCP_SYN, 0, 0);
     s->seq++;  // SYN consumes one sequence number
 
-    // Wait for SYN-ACK
-    uint32_t deadline = timer_getticks() + 500;  // 5 second timeout
+    // Wait for SYN-ACK (10 second timeout)
+    uint32_t deadline = timer_getticks() + 1000;
     while (s->state == TCP_SYN_SENT) {
         extern void net_poll();
         net_poll();

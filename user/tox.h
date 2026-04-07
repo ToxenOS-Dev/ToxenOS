@@ -294,3 +294,25 @@ static inline void* realloc(void* ptr, uint32_t new_size) {
 }
 
 #endif
+
+// ── TLS ───────────────────────────────────────────────────────────────────────
+static inline int tox_tls_connect(uint32_t ip, uint16_t port, const char* hostname) {
+    int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(49), "b"(ip), "c"(port), "d"(hostname));
+    return r;
+}
+static inline int tox_tls_send(int sock, const uint8_t* buf, uint32_t len) {
+    int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(50), "b"(sock), "c"(buf), "d"(len));
+    return r;
+}
+static inline int tox_tls_recv(int sock, uint8_t* buf, uint16_t maxlen, uint32_t timeout_ms) {
+    int r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(51), "b"(sock), "c"(buf), "d"(timeout_ms));
+    return r;
+}
+static inline void tox_tls_close(int sock) {
+    __asm__ volatile("int $0x80" :: "a"(52), "b"(sock));
+}
+
+static inline char tox_getchar() {
+    char r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(2));
+    return r;
+}

@@ -16,7 +16,8 @@ extern uint32_t kernel_directory[1024];
 void      paging_init();
 uint32_t* paging_create_directory();
 uint32_t  paging_alloc_page();
-void      paging_free_aligned(void* ptr);
+void      paging_free_page(uint32_t phys_addr);   // return frame to PMM
+void      paging_free_aligned(void* ptr);          // return heap-allocated page table
 void      paging_map(uint32_t* dir, uint32_t virt, uint32_t phys, uint32_t flags);
 void      paging_unmap(uint32_t* dir, uint32_t virt);
 void      paging_switch(uint32_t* directory);

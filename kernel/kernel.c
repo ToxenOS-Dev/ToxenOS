@@ -26,6 +26,7 @@
 #include "../include/fbterm.h"
 #include "../include/pci.h"
 #include "../include/e1000.h"
+#include "../include/pmm.h"
 #include "../include/net.h"
 
 // ── VGA legacy state (referenced by fbterm layer) ────────────────────────────
@@ -274,6 +275,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     fb_info_t fb = parse_multiboot_fb(mb_info_addr);
 
     // ── Phase 1: memory and paging ───────────────────────────────────────────
+    pmm_init(mb_info_addr);   // must be first — builds physical frame bitmap
     mm_init();
     paging_init();
 

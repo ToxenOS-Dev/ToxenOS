@@ -292,11 +292,11 @@ void process_exit()
             for (int j = 0; j < 1024; j++)
             {
                 if (table[j] & PAGE_PRESENT)
-                    paging_free_aligned((void*)(table[j] & ~0xFFF));
+                    paging_free_page(table[j] & ~0xFFF);  // return frame to PMM
             }
-            paging_free_aligned(table);
+            paging_free_aligned(table);  // page table itself is from kernel heap
         }
-        paging_free_aligned(p->page_directory);
+        paging_free_aligned(p->page_directory);  // directory is from kernel heap
         p->page_directory = 0;
     }
 

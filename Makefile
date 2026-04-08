@@ -23,7 +23,7 @@ MBEDFLAGS := -ffreestanding -fno-stack-protector -fno-pic -m32 \
 KOBJS := \
 	build/boot.o build/isr.o build/switch.o \
 	build/kernel.o build/keyboard.o build/idt.o build/pic.o build/irq.o \
-	build/timer.o build/mm.o build/klog.o build/process.o build/syscall.o \
+	build/timer.o build/mm.o build/klog.o build/pmm.o build/process.o build/syscall.o \
 	build/paging.o build/tss.o build/ring3.o \
 	build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/fat.o \
 	build/ext2.o build/elf.o build/tty.o build/pipe.o build/waitqueue.o \
@@ -51,6 +51,7 @@ all: user
 	gcc $(KFLAGS) -c kernel/timer.c      -o build/timer.o
 	gcc $(KFLAGS) -c kernel/mm.c         -o build/mm.o
 	gcc $(KFLAGS) -c kernel/klog.c       -o build/klog.o
+	gcc $(KFLAGS) -c kernel/pmm.c        -o build/pmm.o
 	gcc $(KFLAGS) -c kernel/process.c    -o build/process.o
 	gcc $(KFLAGS) -c kernel/syscall.c    -o build/syscall.o
 	gcc $(KFLAGS) -c kernel/paging.c     -o build/paging.o

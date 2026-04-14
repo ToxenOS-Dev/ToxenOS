@@ -150,16 +150,20 @@ void pmm_init(uint32_t mb_info_addr)
     // Re-mark frames 0-255 (first 1MB) as used — BIOS, VGA, reserved
     pmm_mark_used(0, 0x100000);
 
-    // Re-mark the multiboot info block itself as used
-    pmm_mark_used(mb_info_addr, mb_total);
+    // Re-mark the multiboot info block itself as used (physical address)
+    // mb_info_addr is now a virtual address — convert to physical
+    uint32_t mb_info_phys = mb_info_addr - 0xC0000000u;
+    pmm_mark_used(mb_info_phys, mb_total);
 
     // Re-mark the kernel image + heap region as used.
-    // The kernel is loaded at 1MB; kernel_end is provided by the linker.
-    // The heap immediately follows kernel_end for HEAP_SIZE bytes.
+    // kernel_end is now a VIRTUAL address (0xC0xxxxxx) because the kernel
+    // is linked at KERNEL_VIRT_BASE.  Subtract KERNEL_VIRT_BASE to get
+    // the physical address.
     extern uint32_t kernel_end;
-    uint32_t kernel_phys_end = (uint32_t)&kernel_end;
-    // Cover kernel image + 16MB heap + a little slack
-    pmm_mark_used(0x100000, kernel_phys_end - 0x100000 + (18 * 1024 * 1024));
+    uint32_t kernel_virt_end = (uint32_t)&kernel_end;
+    uint32_t kernel_phys_end = kernel_virt_end - 0xC0000000u;
+    // Cover kernel image + 18MB (image + 16MB heap + slack)
+    pmm_mark_used(0x100000, kernel_phys_end - 0x100000 + (18u * 1024u * 1024u));
 
     klog("PMM: initialised\n");
 }
@@ -195,7 +199,7 @@ uint32_t phys_alloc_page(void)
 
             // Zero the page before returning it
             uint32_t phys = frame * PMM_FRAME_SIZE;
-            uint8_t* p = (uint8_t*)phys;
+            uint8_t* p = (uint8_t*)(phys + 0xC0000000u);
             for (int i = 0; i < (int)PMM_FRAME_SIZE; i++) p[i] = 0;
             return phys;
         }

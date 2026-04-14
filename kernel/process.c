@@ -47,8 +47,12 @@ void process_init()
     fd_table_init(&processes[0].fds);
     processes[0].page_directory = kernel_directory;
     processes[0].user_stack     = 0;
+    extern uint32_t stack_top;
+    processes[0].kernel_stack   = (uint8_t*)((uint32_t)&stack_top - KERNEL_STACK_SIZE);
+    extern uint32_t stack_top;
+    processes[0].kernel_stack   = (uint8_t*)((uint32_t)&stack_top - KERNEL_STACK_SIZE);
     copy_str(processes[0].name, "kernel", 32);
-
+        
     uint32_t esp;
     __asm__ volatile("mov %%esp, %0" : "=r"(esp));
     processes[0].regs.esp = esp;
@@ -101,10 +105,10 @@ static uint32_t load_elf_into_dir(uint32_t* dir,
 
             paging_map(dir, va, phys, pf);
 
-            // We need to temporarily access this physical page to copy data.
-            // Since we have identity mapping for all kernel memory, phys == virt
-            // for pages allocated by kmalloc (which lives in kernel heap < 1GB).
-            uint8_t* dst = (uint8_t*)phys;
+            // Access the physical frame via its kernel virtual address.
+            // With the higher-half kernel, physical address P is accessible
+            // at virtual address P + KERNEL_VIRT_BASE.
+            uint8_t* dst = (uint8_t*)KPHYS_TO_VIRT(phys);
 
             // Zero the whole page first (handles BSS)
             for (int j = 0; j < (int)PAGE_SIZE; j++) dst[j] = 0;
@@ -288,15 +292,16 @@ void process_exit()
 
             if ((kernel_directory[i] & ~0xFFF) == table_phys) continue;
 
-            uint32_t* table = (uint32_t*)table_phys;
+            // table_phys is a physical address — access via kernel virtual
+            uint32_t* table = (uint32_t*)KPHYS_TO_VIRT(table_phys);
             for (int j = 0; j < 1024; j++)
             {
                 if (table[j] & PAGE_PRESENT)
-                    paging_free_page(table[j] & ~0xFFF);  // return frame to PMM
+                    paging_free_page(table[j] & ~0xFFF);
             }
-            paging_free_aligned(table);  // page table itself is from kernel heap
+            paging_free_aligned(table);
         }
-        paging_free_aligned(p->page_directory);  // directory is from kernel heap
+        paging_free_aligned(p->page_directory);
         p->page_directory = 0;
     }
 

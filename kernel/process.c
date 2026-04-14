@@ -326,7 +326,7 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
     p->regs.eip = entry;
 
     process_count++;
-    return slot;
+    return (int)p->pid;  // return PID, not slot index
 }
 
 // Legacy: create a process that runs a kernel function (used during boot).
@@ -376,7 +376,7 @@ int process_create(const char* name, void (*entry)())
     p->regs.eip = (uint32_t)entry;
 
     process_count++;
-    return slot;
+    return (int)p->pid;  // return PID, not slot index
 }
 
 void process_exit()

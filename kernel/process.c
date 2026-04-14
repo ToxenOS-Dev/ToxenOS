@@ -23,6 +23,88 @@ static void copy_str(char* dst, const char* src, int max)
     dst[i] = 0;
 }
 
+// ── Kernel stack allocator ────────────────────────────────────────────────────
+// Each process gets KERNEL_STACK_SIZE bytes of kernel stack backed by real
+// physical pages, with one unmapped guard page immediately below the stack.
+// If the stack overflows it hits the guard page → clean kernel panic instead
+// of silent heap corruption.
+//
+// Virtual layout for slot N (base = KSTACK_VIRT_BASE + N * KSTACK_SLOT_SIZE):
+//
+//   base + 0                        ← guard page (NOT mapped — catches overflow)
+//   base + PAGE_SIZE                ← stack bottom (mapped)
+//   base + PAGE_SIZE + KERNEL_STACK_SIZE - 1  ← stack top (highest used byte)
+//
+// kstack_alloc() returns the stack BASE pointer (caller adds KERNEL_STACK_SIZE
+// to get the top, exactly like kmalloc did).
+
+static uint8_t kstack_used[MAX_PROCESSES];  // 1 = slot in use
+
+static uint8_t* kstack_alloc(void)
+{
+    for (int slot = 0; slot < MAX_PROCESSES; slot++) {
+        if (kstack_used[slot]) continue;
+
+        uint32_t base   = KSTACK_VIRT_BASE + (uint32_t)slot * KSTACK_SLOT_SIZE;
+        uint32_t stack_base = base + PAGE_SIZE;   // guard page at base, stack above
+
+        // Map KERNEL_STACK_SIZE / PAGE_SIZE pages for the actual stack
+        uint32_t pages = KERNEL_STACK_SIZE / PAGE_SIZE;
+        for (uint32_t i = 0; i < pages; i++) {
+            uint32_t va   = stack_base + i * PAGE_SIZE;
+            uint32_t phys = paging_alloc_page();
+            if (!phys) {
+                // Roll back already-mapped pages
+                for (uint32_t j = 0; j < i; j++) {
+                    uint32_t v2 = stack_base + j * PAGE_SIZE;
+                    uint32_t p2 = kernel_directory[v2 >> 22];
+                    if (p2 & PAGE_PRESENT) {
+                        uint32_t* tbl = (uint32_t*)KPHYS_TO_VIRT(p2 & ~0xFFF);
+                        uint32_t entry = tbl[(v2 >> 12) & 0x3FF];
+                        if (entry & PAGE_PRESENT)
+                            paging_free_page(entry & ~0xFFF);
+                    }
+                    paging_unmap(kernel_directory, v2);
+                }
+                return 0;
+            }
+            // Kernel stack pages: present + writable, NO PAGE_USER
+            paging_map(kernel_directory, va, phys, PAGE_PRESENT | PAGE_WRITABLE);
+        }
+        // Guard page: leave base unmapped (already zero in directory)
+
+        kstack_used[slot] = 1;
+        return (uint8_t*)stack_base;
+    }
+    return 0;  // no free slots
+}
+
+static void kstack_free(uint8_t* stack_base)
+{
+    if (!stack_base) return;
+
+    uint32_t base = (uint32_t)stack_base - PAGE_SIZE;  // guard page is one page below
+    int slot = (int)((base - KSTACK_VIRT_BASE) / KSTACK_SLOT_SIZE);
+    if (slot < 0 || slot >= MAX_PROCESSES) return;
+    if (!kstack_used[slot]) return;
+
+    // Unmap and free each stack page
+    uint32_t pages = KERNEL_STACK_SIZE / PAGE_SIZE;
+    for (uint32_t i = 0; i < pages; i++) {
+        uint32_t va = (uint32_t)stack_base + i * PAGE_SIZE;
+        // Get physical address from the page table
+        uint32_t dir_entry = kernel_directory[va >> 22];
+        if (dir_entry & PAGE_PRESENT) {
+            uint32_t* tbl = (uint32_t*)KPHYS_TO_VIRT(dir_entry & ~0xFFF);
+            uint32_t  pte = tbl[(va >> 12) & 0x3FF];
+            if (pte & PAGE_PRESENT)
+                paging_free_page(pte & ~0xFFF);
+        }
+        paging_unmap(kernel_directory, va);
+    }
+    kstack_used[slot] = 0;
+}
+
 void process_init()
 {
     // Zero the entire array so no garbage fields cause issues
@@ -47,12 +129,13 @@ void process_init()
     fd_table_init(&processes[0].fds);
     processes[0].page_directory = kernel_directory;
     processes[0].user_stack     = 0;
-    extern uint32_t stack_top;
-    processes[0].kernel_stack   = (uint8_t*)((uint32_t)&stack_top - KERNEL_STACK_SIZE);
+    // kernel_stack for pid 0 points to the boot stack so that when the
+    // scheduler updates TSS.esp0 for this process it uses the right address.
+    // tss_set_kernel_stack(p->kernel_stack + KERNEL_STACK_SIZE) must equal &stack_top.
     extern uint32_t stack_top;
     processes[0].kernel_stack   = (uint8_t*)((uint32_t)&stack_top - KERNEL_STACK_SIZE);
     copy_str(processes[0].name, "kernel", 32);
-        
+
     uint32_t esp;
     __asm__ volatile("mov %%esp, %0" : "=r"(esp));
     processes[0].regs.esp = esp;
@@ -67,15 +150,25 @@ static uint32_t load_elf_into_dir(uint32_t* dir,
                                    uint8_t* elf_buf,
                                    uint32_t elf_size)
 {
-    // Validate ELF header
+    // ── ELF header validation ─────────────────────────────────────────────────
     if (elf_size < 52) return 0;
-    uint32_t magic = *(uint32_t*)elf_buf;
-    if (magic != 0x464C457F) return 0;
+    if (*(uint32_t*)elf_buf != 0x464C457Fu) return 0;  // magic
+    if (elf_buf[4] != 1) return 0;                      // ELF32
+    if (elf_buf[5] != 1) return 0;                      // little-endian
+    if (*(uint16_t*)(elf_buf + 16) != 2) return 0;      // ET_EXEC
 
-    uint32_t entry    = *(uint32_t*)(elf_buf + 24);
-    uint32_t phoff    = *(uint32_t*)(elf_buf + 28);
+    uint32_t entry     = *(uint32_t*)(elf_buf + 24);
+    uint32_t phoff     = *(uint32_t*)(elf_buf + 28);
     uint16_t phentsize = *(uint16_t*)(elf_buf + 42);
-    uint16_t phnum    = *(uint16_t*)(elf_buf + 44);
+    uint16_t phnum     = *(uint16_t*)(elf_buf + 44);
+
+    // Program header table must be within the file
+    if (phentsize < 32) return 0;
+    if (phoff > elf_size) return 0;
+    if ((uint32_t)phnum * phentsize > elf_size - phoff) return 0;
+
+    // Entry point must be in user space
+    if (entry < USER_ELF_BASE || entry >= USER_STACK_TOP) return 0;
 
     for (int i = 0; i < phnum; i++)
     {
@@ -91,12 +184,30 @@ static uint32_t load_elf_into_dir(uint32_t* dir,
         if (type != 1) continue;  // PT_LOAD = 1
         if (memsz == 0) continue;
 
+        // ── Segment security checks ───────────────────────────────────────────
+        // 1. Segment must be in user address space
+        if (vaddr + memsz <= USER_ELF_BASE) continue;
+        if (vaddr >= USER_STACK_TOP) return 0;
+
+        // 2. memsz overflow check: vaddr + memsz must not wrap or enter kernel
+        if (memsz > USER_STACK_TOP - vaddr) return 0;
+
+        // 3. filesz must not exceed memsz
+        if (filesz > memsz) return 0;
+
+        // 4. file data must be within the ELF buffer
+        if (offset > elf_size) return 0;
+        if (filesz > elf_size - offset) return 0;
+
+        // 5. total mapped size must fit within allowed ELF region
+        if (vaddr + memsz > USER_ELF_BASE + USER_ELF_MAX_SIZE) return 0;
+
         uint32_t pf = PAGE_PRESENT | PAGE_USER;
         if (flags & 2) pf |= PAGE_WRITABLE;  // PF_W
 
-        // Map each page of this segment
-        uint32_t page_start = vaddr & ~0xFFF;
-        uint32_t page_end   = (vaddr + memsz + 0xFFF) & ~0xFFF;
+        // page_start/page_end are safe after the overflow checks above
+        uint32_t page_start = vaddr & ~0xFFFu;
+        uint32_t page_end   = (vaddr + memsz + 0xFFFu) & ~0xFFFu;
 
         for (uint32_t va = page_start; va < page_end; va += PAGE_SIZE)
         {
@@ -105,9 +216,6 @@ static uint32_t load_elf_into_dir(uint32_t* dir,
 
             paging_map(dir, va, phys, pf);
 
-            // Access the physical frame via its kernel virtual address.
-            // With the higher-half kernel, physical address P is accessible
-            // at virtual address P + KERNEL_VIRT_BASE.
             uint8_t* dst = (uint8_t*)KPHYS_TO_VIRT(phys);
 
             // Zero the whole page first (handles BSS)
@@ -145,7 +253,7 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
 
     // Free old kernel stack if reusing a dead slot
     if (p->kernel_stack) {
-        kfree(p->kernel_stack);
+        kstack_free(p->kernel_stack);
         p->kernel_stack = 0;
     }
 
@@ -160,36 +268,37 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
     p->args[0]      = 0;
     copy_str(p->name, name, 32);
 
+    // Allocate kernel stack FIRST — kstack_alloc may create new page table
+    // entries in kernel_directory. paging_create_directory() copies those
+    // entries, so it must run after kstack_alloc to get them.
+    p->kernel_stack = kstack_alloc();
+    if (!p->kernel_stack) return -1;
+
     // Create an isolated page directory for this process
     p->page_directory = paging_create_directory();
-    if (!p->page_directory) return -1;
+    if (!p->page_directory) { kstack_free(p->kernel_stack); p->kernel_stack = 0; return -1; }
 
     // Load ELF into the process's own address space
     uint32_t entry = load_elf_into_dir(p->page_directory, elf_buf, elf_size);
-    if (!entry) return -1;
+    if (!entry) { kstack_free(p->kernel_stack); p->kernel_stack = 0; return -1; }
 
     // Allocate and map user stack at USER_STACK_TOP
-    // Virtual: [USER_STACK_TOP - N*PAGE_SIZE, USER_STACK_TOP)
     for (int i = 0; i < USER_STACK_PAGES; i++)
     {
         uint32_t va   = USER_STACK_TOP - (i + 1) * PAGE_SIZE;
         uint32_t phys = paging_alloc_page();
-        if (!phys) return -1;
+        if (!phys) { kstack_free(p->kernel_stack); p->kernel_stack = 0; return -1; }
         paging_map(p->page_directory, va, phys,
                    PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
     }
 
-    // Guard page: one unmapped page directly below the stack.
-    // A stack overflow will page-fault instead of silently corrupting memory.
+    // Guard page below the user stack
     uint32_t guard_va = USER_STACK_TOP - (USER_STACK_PAGES + 1) * PAGE_SIZE;
-    paging_unmap(p->page_directory, guard_va);  // ensure it stays unmapped
+    paging_unmap(p->page_directory, guard_va);
 
-    uint32_t user_sp = USER_STACK_TOP - 4;  // start just below top
+    uint32_t user_sp = USER_STACK_TOP - 4;
     p->user_stack = user_sp;
 
-    // Allocate a kernel stack for this process (used during syscalls/IRQs)
-    p->kernel_stack = (uint8_t*)kmalloc(KERNEL_STACK_SIZE);
-    if (!p->kernel_stack) return -1;
     uint32_t kstack_top = (uint32_t)(p->kernel_stack + KERNEL_STACK_SIZE);
 
     // Set up the kernel stack to look like we were interrupted at ring3.
@@ -232,7 +341,7 @@ int process_create(const char* name, void (*entry)())
 
     // Free old kernel stack if reusing a dead slot
     if (p->kernel_stack) {
-        kfree(p->kernel_stack);
+        kstack_free(p->kernel_stack);
         p->kernel_stack = 0;
     }
 
@@ -245,11 +354,12 @@ int process_create(const char* name, void (*entry)())
     p->args[0]     = 0;
     copy_str(p->name, name, 32);
 
+    // kstack_alloc first — may create new kernel_directory entries
+    p->kernel_stack = kstack_alloc();
+    if (!p->kernel_stack) return -1;
+
     p->page_directory = paging_create_directory();
     p->user_stack     = 0;
-
-    p->kernel_stack = (uint8_t*)kmalloc(KERNEL_STACK_SIZE);
-    if (!p->kernel_stack) return -1;
     uint32_t kstack_top = (uint32_t)(p->kernel_stack + KERNEL_STACK_SIZE);
 
     uint32_t* ksp = (uint32_t*)kstack_top;
@@ -512,6 +622,9 @@ void sys_sleep(uint32_t ms)
 // Returns (uint32_t)-1 on failure.
 // USER_HEAP_BASE comes from memmap.h
 
+// Maximum heap size: must not reach the user stack guard page
+#define USER_HEAP_MAX  (USER_STACK_TOP - (USER_STACK_PAGES + 2) * PAGE_SIZE)
+
 uint32_t sys_sbrk(int32_t increment)
 {
     process_t* p = process_current();
@@ -532,13 +645,22 @@ uint32_t sys_sbrk(int32_t increment)
     uint32_t old_end  = p->heap_end;
     uint32_t new_end  = old_end + (uint32_t)increment;
 
+    // Overflow check: new_end must not wrap and must stay below the stack
+    if (new_end < old_end)         return (uint32_t)-1;  // integer overflow
+    if (new_end > USER_HEAP_MAX)   return (uint32_t)-1;  // would hit stack
+
     // Map any new pages needed between old and new end
-    uint32_t page_start = (old_end + 0xFFFu) & ~0xFFFu;
-    uint32_t page_end   = (new_end + 0xFFFu) & ~0xFFFu;
+    uint32_t page_start = (old_end  + 0xFFFu) & ~0xFFFu;
+    uint32_t page_end   = (new_end  + 0xFFFu) & ~0xFFFu;
 
     for (uint32_t va = page_start; va < page_end; va += PAGE_SIZE) {
         uint32_t phys = paging_alloc_page();
-        if (!phys) return (uint32_t)-1;
+        if (!phys) {
+            // OOM — roll back pages already mapped in this call
+            for (uint32_t v2 = page_start; v2 < va; v2 += PAGE_SIZE)
+                paging_unmap(p->page_directory, v2);
+            return (uint32_t)-1;
+        }
         paging_map(p->page_directory, va, phys,
                    PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
     }

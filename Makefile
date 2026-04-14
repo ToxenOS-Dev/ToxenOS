@@ -130,7 +130,7 @@ user:
 	objcopy -I binary -O elf32-i386 -B i386 \
 		build/user/init.elf build/user/init_blob.o
 	gcc $(UFLAGS) user/hello.c -o build/user/hello.elf
-	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns http ping https; do \
+	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns http ping https isolation_test; do \
 		gcc $(UFLAGS) user/bin/$$cmd.c -o build/user/bin/$$cmd.elf || exit 1; \
 	done
 
@@ -180,6 +180,7 @@ populate: tools/txfs_write
 	tools/txfs_write build/disk.img build/user/bin/http.elf /Programs/http.elf
 	tools/txfs_write build/disk.img build/user/bin/ping.elf /Programs/ping.elf
 	tools/txfs_write build/disk.img build/user/bin/https.elf /Programs/https.elf
+	tools/txfs_write build/disk.img build/user/bin/isolation_test.elf /Programs/isolation_test.elf
 	tools/txfs_write build/disk.img build/user/hello.elf /hello.elf
 	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
 	tools/txfs_write build/disk.img build/user/init.elf /init.elf

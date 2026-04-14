@@ -8,6 +8,8 @@
 #include "../include/vga.h"
 #include "../include/keyboard.h"
 #include "../include/vfs.h"
+#include "../include/paging.h"
+#include "../include/memmap.h"
 #include "../include/pipe.h"
 #include "../include/net.h"
 #include "../include/tcp.h"
@@ -369,6 +371,22 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_TLS_CLOSE:
             tls_close((int)ebx);
             return 0;
+
+        case SYS_PAGE_FLAGS: {
+            // Walk the current process's page directory and return the flags
+            // for the given virtual address. Returns 0 if not mapped.
+            // Bit 0 = present, bit 1 = writable, bit 2 = user-accessible.
+            uint32_t vaddr    = (uint32_t)ebx;
+            uint32_t dir_idx  = vaddr >> 22;
+            uint32_t page_idx = (vaddr >> 12) & 0x3FF;
+            process_t* cp     = process_current();
+            uint32_t* dir     = cp->page_directory;
+            if (!(dir[dir_idx] & PAGE_PRESENT)) return 0;
+            uint32_t* tbl = (uint32_t*)KPHYS_TO_VIRT(dir[dir_idx] & ~0xFFFu);
+            uint32_t   pte = tbl[page_idx];
+            if (!(pte & PAGE_PRESENT)) return 0;
+            return pte & 0x7;  // present + writable + user bits
+        }
 
         default:
             return (uint32_t)-1;

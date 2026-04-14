@@ -1,10 +1,8 @@
-// ToxenOS/kernel/idt.c
-#include <stdint.h>
+#include "../include/memmap.h"
 #include "../include/idt.h"
 #include "../include/process.h"
 #include "../include/vga.h"
 #include "../include/paging.h"
-#include "../include/memmap.h"
 
 static const char* exception_messages[] = {
     "Divide By Zero",           // 0
@@ -93,11 +91,27 @@ void page_fault_handler(uint32_t error_code, uint32_t cr2)
     if (is_kernel) {
         __asm__("cli");
         set_color(0x0C);
-        print("\n\n*** KERNEL PAGE FAULT ***\n");
-        print("addr="); pf_print_hex(cr2);
-        print(present ? "  [protection]" : "  [not mapped]");
-        print(write   ? "  [write]"      : "  [read]");
-        print("\n");
+
+        // Detect kernel stack overflow: the faulting address is in the guard
+        // page region (one PAGE_SIZE below a kernel stack base).
+        int is_kstack_overflow = 0;
+        if (cr2 >= KSTACK_VIRT_BASE &&
+            cr2 <  KSTACK_VIRT_BASE + (uint32_t)MAX_PROCESSES * KSTACK_SLOT_SIZE) {
+            uint32_t offset = cr2 - KSTACK_VIRT_BASE;
+            if ((offset % KSTACK_SLOT_SIZE) < PAGE_SIZE)
+                is_kstack_overflow = 1;
+        }
+
+        if (is_kstack_overflow) {
+            print("\n\n*** KERNEL STACK OVERFLOW ***\n");
+            print("process: "); print(p->name); print("\n");
+        } else {
+            print("\n\n*** KERNEL PAGE FAULT ***\n");
+            print("addr="); pf_print_hex(cr2);
+            print(present ? "  [protection]" : "  [not mapped]");
+            print(write   ? "  [write]"      : "  [read]");
+            print("\n");
+        }
         set_color(0x07);
         while (1) __asm__("hlt");
     } else {

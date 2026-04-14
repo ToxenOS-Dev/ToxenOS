@@ -76,6 +76,7 @@
 #define SYS_TLS_SEND      50
 #define SYS_TLS_RECV      51
 #define SYS_TLS_CLOSE     52
+#define SYS_PAGE_FLAGS    53   // query page table flags for a virtual address (debug)
 
 // ── Output ────────────────────────────────────────────────────────────────────
 static inline void print(const char* s)   { SYSCALL1(SYS_PRINT, s); }
@@ -298,6 +299,11 @@ static inline int tox_tls_send(int sock, const uint8_t* buf, uint32_t len)
 static inline int tox_tls_recv(int sock, uint8_t* buf, uint16_t maxlen, uint32_t timeout_ms)
     { return SYSCALL3(SYS_TLS_RECV, sock, buf, timeout_ms); }
 static inline void tox_tls_close(int sock) { SYSCALL1(SYS_TLS_CLOSE, sock); }
+
+// Returns the page table flags for a virtual address (kernel use, debug).
+// Bits: 0=present, 1=writable, 2=user-accessible. Returns 0 if not mapped.
+static inline uint32_t tox_page_flags(uint32_t vaddr)
+    { return (uint32_t)SYSCALL1(SYS_PAGE_FLAGS, vaddr); }
 
 // ── sbrk-backed heap (malloc / free / realloc) ────────────────────────────────
 static inline uint32_t _tox_sbrk(int32_t inc) {

@@ -66,3 +66,4 @@ int  sys_getpid();
 #define SYS_TLS_SEND       50
 #define SYS_TLS_RECV       51
 #define SYS_TLS_CLOSE      52
+#define SYS_PAGE_FLAGS     53  // query page table flags for a virtual address

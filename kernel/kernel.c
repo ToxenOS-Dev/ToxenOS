@@ -281,62 +281,41 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     fb_info_t fb = parse_multiboot_fb(mb_info_virt);
 
     // ── Phase 1: memory and paging ───────────────────────────────────────────
-    klog("pmm_init\n");
     pmm_init(mb_info_virt);
-    klog("paging_init\n");
     paging_init();
-    klog("mm_init\n");
     mm_init();
 
     // ── Phase 2: core hardware ───────────────────────────────────────────────
-    klog("idt_init\n");
     idt_init();
-    klog("pic_remap\n");
     pic_remap();
-    klog("timer_init\n");
     timer_init(100);
-    klog("keyboard_init\n");
     keyboard_init();
 
     // ── Phase 3: kernel subsystems ───────────────────────────────────────────
-    klog("process_init\n");
     process_init();
-    klog("syscall_init\n");
     syscall_init();
-    klog("tss_init\n");
     tss_init((uint32_t)&stack_top);
-    klog("tss_init done\n");
     // Enable interrupts only after TSS and process table are ready
     __asm__ volatile("sti");
-    klog("vfs_init\n");
     vfs_init();
-    klog("vfs_init done\n");
     klog("vfs_mount /\n");
     vfs_mount("/", tmpfs_init(), 0);
     klog("ToxenOS kernel started\n");
 
     // ── Phase 4: display ─────────────────────────────────────────────────────
-    klog("tty_init\n");
     tty_init();
-    klog("fb_setup\n");
     fb_setup(&fb);
 
     // ── Phase 5: storage ─────────────────────────────────────────────────────
-    klog("ata_init\n");
     ata_init();
     klog("ATA initialised\n");
-    klog("vfs_mount /C:\n");
     vfs_mount("/C:", txfs_init(), 0);
     klog("Mounted /C: (TxFS)\n");
-    klog("mount_detected_drives\n");
     mount_detected_drives();
 
     // ── Phase 6: networking ──────────────────────────────────────────────────
-    klog("pci_init\n");
     pci_init();
-    klog("e1000_init\n");
     e1000_init();
-    klog("net_init\n");
     net_init();
 
     // ── Phase 7: launch userspace ────────────────────────────────────────────

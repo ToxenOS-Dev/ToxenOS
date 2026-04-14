@@ -37,9 +37,7 @@ void tss_init(uint32_t kernel_stack)
     entry[6] = 0x00;
     entry[7] = (base >> 24) & 0xFF;
 
-    klog("ltr\n");
     __asm__ volatile("ltr %0" : : "r"((uint16_t)0x28));
-    klog("ltr done\n");
 }
 
 void tss_set_kernel_stack(uint32_t stack)

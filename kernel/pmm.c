@@ -197,7 +197,8 @@ uint32_t phys_alloc_page(void)
             alloc_hint = frame + 1;
             if (alloc_hint >= total_frames) alloc_hint = 0;
 
-            // Zero the page before returning it
+            // Zero the page via its kernel virtual address.
+            // With higher-half kernel: physical P is at virtual P + 0xC0000000.
             uint32_t phys = frame * PMM_FRAME_SIZE;
             uint8_t* p = (uint8_t*)(phys + 0xC0000000u);
             for (int i = 0; i < (int)PMM_FRAME_SIZE; i++) p[i] = 0;

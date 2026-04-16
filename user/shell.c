@@ -333,7 +333,8 @@ static void run_pipeline(char* line) {
             set_color(0x07); goto cleanup;
         }
         if (pid < 0) {
-            set_color(0x0C); print("spawn failed: "); print(cmd); print("\n");
+            set_color(0x0C); print("Failed to run '"); print(cmd);
+            print("' (out of memory or process slots)\n");
             set_color(0x07); goto cleanup;
         }
         pids[s] = pid;

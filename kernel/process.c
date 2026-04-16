@@ -1,6 +1,7 @@
 #include "../include/memmap.h"
 #include "../include/process.h"
 #include "../include/mm.h"
+#include "../include/klog.h"
 #include "../include/paging.h"
 #include "../include/vga.h"
 #include "../include/tss.h"
@@ -76,6 +77,7 @@ static uint8_t* kstack_alloc(void)
         kstack_used[slot] = 1;
         return (uint8_t*)stack_base;
     }
+    klog("kstack: no free slots\n");
     return 0;  // no free slots
 }
 
@@ -185,11 +187,15 @@ static uint32_t load_elf_into_dir(uint32_t* dir,
         if (memsz == 0) continue;
 
         // ── Segment security checks ───────────────────────────────────────────
-        // 1. Segment must be in user address space
+        // Skip segments that fall entirely below user ELF base —
+        // these are linker-generated metadata segments (e.g. 0x08048000)
+        // that aren't meant to be executed and have no user-visible content.
         if (vaddr + memsz <= USER_ELF_BASE) continue;
+
+        // Segment must be in user address space (not kernel)
         if (vaddr >= USER_STACK_TOP) return 0;
 
-        // 2. memsz overflow check: vaddr + memsz must not wrap or enter kernel
+        // memsz overflow check: vaddr + memsz must not wrap or enter kernel
         if (memsz > USER_STACK_TOP - vaddr) return 0;
 
         // 3. filesz must not exceed memsz
@@ -256,9 +262,11 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
         kstack_free(p->kernel_stack);
         p->kernel_stack = 0;
     }
+    // page_directory was already freed by process_exit — just clear the pointer
+    p->page_directory = 0;
 
     p->pid          = next_pid++;
-    p->state        = PROCESS_READY;
+    p->state        = PROCESS_DEAD;   // keep DEAD until fully constructed
     p->waiting_for  = -1;
     p->tty          = -1;
     p->stdin_fd     = -1;
@@ -268,21 +276,15 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
     p->args[0]      = 0;
     copy_str(p->name, name, 32);
 
-    // Allocate kernel stack FIRST — kstack_alloc may create new page table
-    // entries in kernel_directory. paging_create_directory() copies those
-    // entries, so it must run after kstack_alloc to get them.
     p->kernel_stack = kstack_alloc();
     if (!p->kernel_stack) return -1;
 
-    // Create an isolated page directory for this process
     p->page_directory = paging_create_directory();
     if (!p->page_directory) { kstack_free(p->kernel_stack); p->kernel_stack = 0; return -1; }
 
-    // Load ELF into the process's own address space
     uint32_t entry = load_elf_into_dir(p->page_directory, elf_buf, elf_size);
     if (!entry) { kstack_free(p->kernel_stack); p->kernel_stack = 0; return -1; }
 
-    // Allocate and map user stack at USER_STACK_TOP
     for (int i = 0; i < USER_STACK_PAGES; i++)
     {
         uint32_t va   = USER_STACK_TOP - (i + 1) * PAGE_SIZE;
@@ -292,7 +294,6 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
                    PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
     }
 
-    // Guard page below the user stack
     uint32_t guard_va = USER_STACK_TOP - (USER_STACK_PAGES + 1) * PAGE_SIZE;
     paging_unmap(p->page_directory, guard_va);
 
@@ -300,36 +301,28 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
     p->user_stack = user_sp;
 
     uint32_t kstack_top = (uint32_t)(p->kernel_stack + KERNEL_STACK_SIZE);
-
-    // Set up the kernel stack to look like we were interrupted at ring3.
-    // context_switch will pop registers and ret into process_iret_trampoline,
-    // which does iret using the ring3 frame we push here.
     uint32_t* ksp = (uint32_t*)kstack_top;
 
-    // Ring-3 iret frame (consumed by process_iret_trampoline):
-    *(--ksp) = 0x23;           // ss  (ring3 data segment)
-    *(--ksp) = user_sp;        // esp (user stack)
-    *(--ksp) = 0x00000202;     // eflags (IF=1)
-    *(--ksp) = 0x1B;           // cs  (ring3 code segment)
-    *(--ksp) = entry;          // eip (process entry point)
-
-    // Fake return address — context_switch does ret which lands here
+    *(--ksp) = 0x23;
+    *(--ksp) = user_sp;
+    *(--ksp) = 0x00000202;
+    *(--ksp) = 0x1B;
+    *(--ksp) = entry;
     *(--ksp) = (uint32_t)process_iret_trampoline;
-
-    // Saved registers (popped by context_switch before the ret)
-    *(--ksp) = 0;  // ebp
-    *(--ksp) = 0;  // edi
-    *(--ksp) = 0;  // esi
-    *(--ksp) = 0;  // ebx
+    *(--ksp) = 0;
+    *(--ksp) = 0;
+    *(--ksp) = 0;
+    *(--ksp) = 0;
 
     p->regs.esp = (uint32_t)ksp;
     p->regs.eip = entry;
 
+    // Only mark READY once fully constructed — scheduler won't touch it until now
+    p->state = PROCESS_READY;
     process_count++;
-    return (int)p->pid;  // return PID, not slot index
+    return (int)p->pid;
 }
 
-// Legacy: create a process that runs a kernel function (used during boot).
 int process_create(const char* name, void (*entry)())
 {
     int slot = -1;
@@ -390,9 +383,13 @@ void process_exit()
     // Close all open file descriptors
     fd_table_close_all(&p->fds);
 
+    // NOTE: kernel stack (p->kernel_stack) is NOT freed here because we are
+    // currently executing on it. It will be freed lazily when the slot is
+    // reused by process_create_elf / process_create (which call kstack_free
+    // before allocating a new one). This is safe because MAX_PROCESSES limits
+    // the total number of live + dead slots.
+
     // Free all user-space pages (non-kernel page tables).
-    // We walk the page directory and free any table/pages that were
-    // allocated specifically for this process (not shared kernel tables).
     if (p->page_directory && p->page_directory != kernel_directory)
     {
         for (int i = 0; i < 1024; i++)
@@ -402,7 +399,6 @@ void process_exit()
 
             if ((kernel_directory[i] & ~0xFFF) == table_phys) continue;
 
-            // table_phys is a physical address — access via kernel virtual
             uint32_t* table = (uint32_t*)KPHYS_TO_VIRT(table_phys);
             for (int j = 0; j < 1024; j++)
             {
@@ -677,7 +673,7 @@ int sys_spawn_tty(const char* path, int tty)
 
     int pid = process_create_elf("shell", buf, size);
     kfree(buf);
-    if (pid < 0) return -1;
+    if (pid < 0) { klog("spawn_tty: create_elf failed\n"); return -1; }
 
     process_t* child = process_get_by_pid(pid);
     if (child) child->tty = tty;
@@ -692,7 +688,7 @@ int sys_spawn_tty_args(const char* path, int tty, const char* args)
     if (pid < 0) return -1;
 
     process_t* p = process_get_by_pid(pid);
-    if (!p) return -1;
+    if (!p) { klog("spawn_tty_args: get_by_pid failed\n"); return -1; }
 
     if (args) {
         int i = 0;

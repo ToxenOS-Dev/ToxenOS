@@ -134,9 +134,7 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return sys_exec((const char*)ebx);
 
         case SYS_SPAWN:
-            klog("SYS_SPAWN\n");
             CHECK_USER_STR(ebx);
-            klog("SYS_SPAWN str ok\n");
             return sys_spawn((const char*)ebx);
 
         case SYS_WAIT:

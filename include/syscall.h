@@ -67,3 +67,5 @@ int  sys_getpid();
 #define SYS_TLS_RECV       51
 #define SYS_TLS_CLOSE      52
 #define SYS_PAGE_FLAGS     53  // query page table flags for a virtual address
+#define SYS_GETENV         54  // get environment variable
+#define SYS_SETENV         55  // set environment variable

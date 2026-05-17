@@ -60,25 +60,91 @@ static const char* history_get(int offset) {
 
 static char cwd[256] = "/C:";
 
+// ── Shell-local environment table ────────────────────────────────────────────
+// Stored entirely in user space — no kernel syscalls needed.
+
+#define ENV_MAX      16
+#define ENV_KEY_MAX  32
+#define ENV_VAL_MAX  128
+
+static char env_keys[ENV_MAX][ENV_KEY_MAX];
+static char env_vals[ENV_MAX][ENV_VAL_MAX];
+static int  env_count = 0;
+
+static int env_get(const char* name, char* buf, int max) {
+    for (int i = 0; i < env_count; i++) {
+        if (str_equal(env_keys[i], name)) {
+            int j = 0;
+            while (env_vals[i][j] && j < max - 1) { buf[j] = env_vals[i][j]; j++; }
+            buf[j] = 0;
+            return j;
+        }
+    }
+    return -1;
+}
+
+static void env_set(const char* name, const char* val) {
+    for (int i = 0; i < env_count; i++) {
+        if (str_equal(env_keys[i], name)) {
+            int j = 0;
+            while (val[j] && j < ENV_VAL_MAX - 1) { env_vals[i][j] = val[j]; j++; }
+            env_vals[i][j] = 0;
+            return;
+        }
+    }
+    if (env_count >= ENV_MAX) return;
+    int k = 0;
+    while (name[k] && k < ENV_KEY_MAX - 1) { env_keys[env_count][k] = name[k]; k++; }
+    env_keys[env_count][k] = 0;
+    int v = 0;
+    while (val[v] && v < ENV_VAL_MAX - 1) { env_vals[env_count][v] = val[v]; v++; }
+    env_vals[env_count][v] = 0;
+    env_count++;
+}
+
 // ── PATH search ──────────────────────────────────────────────────────────────
 
-// Avoid pointer arrays — freestanding binary has no relocation support.
-// Inline each path dir as a separate check instead.
 static int find_in_path(const char* cmd, char* out) {
-    // Try each directory explicitly (no pointer array = no relocation issues)
-    static const char dirs[3][16] = {
-        "/C:/Programs",
-        "/C:/bin",
-        "/D:/Programs",
-    };
-    for (int i = 0; i < 3; i++) {
-        str_copy(out, dirs[i]);
-        str_cat(out, "/");
-        str_cat(out, cmd);
-        str_cat(out, ".elf");
+    if (cmd[0] == '/') {
+        str_copy(out, cmd);
+        if (sys_stat(out) >= 0) return 1;
+        str_copy(out, cmd); str_cat(out, ".elf");
+        if (sys_stat(out) >= 0) return 1;
+        return 0;
+    }
+
+    // Use shell-local PATH env var; fall back to well-known dirs.
+    // Use ';' as separator — ':' conflicts with drive-letter notation (/C:/).
+    char path_env[256];
+    if (env_get("PATH", path_env, sizeof(path_env)) < 0)
+        str_copy(path_env, "/C:/System/bin;/C:/Programs;/C:/bin");
+
+    char dir[128];
+    const char* p = path_env;
+    while (*p) {
+        int dlen = 0;
+        while (*p && dlen < 127) {
+            if (*p == ';') break;
+            // ':' is a separator unless it's the drive-letter colon (e.g. /C: or C:)
+            if (*p == ':') {
+                int is_drive = (dlen == 2 && dir[0] == '/' &&
+                               ((dir[1]>='A'&&dir[1]<='Z')||(dir[1]>='a'&&dir[1]<='z'))) ||
+                               (dlen == 1 &&
+                               ((dir[0]>='A'&&dir[0]<='Z')||(dir[0]>='a'&&dir[0]<='z')));
+                if (is_drive) { dir[dlen++] = *p++; continue; }
+                break;
+            }
+            dir[dlen++] = *p++;
+        }
+        dir[dlen] = 0;
+        if (*p == ';' || *p == ':') p++;
+        if (!dlen) continue;
+
+        str_copy(out, dir); str_cat(out, "/"); str_cat(out, cmd);
+        if (sys_stat(out) >= 0) return 1;
+        str_copy(out, dir); str_cat(out, "/"); str_cat(out, cmd); str_cat(out, ".elf");
         if (sys_stat(out) >= 0) return 1;
     }
-    if (cmd[0] == '/') { str_copy(out, cmd); if (sys_stat(out) >= 0) return 1; }
     return 0;
 }
 
@@ -367,6 +433,23 @@ static void run_command(char* input) {
     if (str_equal(cmd_buf,"clear"))    { tox_clear(); return; }
     if (str_equal(cmd_buf,"reboot"))   { tox_reboot();   return; }
     if (str_equal(cmd_buf,"shutdown")) { tox_shutdown(); return; }
+    if (str_equal(cmd_buf,"export")) {
+        if (!args || !args[0]) return;
+        char name[ENV_KEY_MAX]; int ni = 0;
+        while (args[ni] && args[ni] != '=' && ni < ENV_KEY_MAX - 1) { name[ni] = args[ni]; ni++; }
+        name[ni] = 0;
+        const char* val = (args[ni] == '=') ? args + ni + 1 : "";
+        env_set(name, val);
+        return;
+    }
+    if (str_equal(cmd_buf,"env")) {
+        char buf[ENV_VAL_MAX];
+        for (int i = 0; i < env_count; i++) {
+            print(env_keys[i]); print("="); print(env_vals[i]); print("\n");
+        }
+        (void)buf;
+        return;
+    }
 
     run_pipeline(input);
 }

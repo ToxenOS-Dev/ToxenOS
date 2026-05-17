@@ -77,6 +77,11 @@
 #define SYS_TLS_RECV      51
 #define SYS_TLS_CLOSE     52
 #define SYS_PAGE_FLAGS    53   // query page table flags for a virtual address (debug)
+#define SYS_GETENV        54   // get environment variable
+#define SYS_SETENV        55   // set environment variable
+#define SYS_SYSCTL        56   // read kernel parameter
+#define SYS_SYMLINK       57   // create symbolic link
+#define SYS_READLINK      58   // read symlink target
 
 // ── Output ────────────────────────────────────────────────────────────────────
 static inline void print(const char* s)   { SYSCALL1(SYS_PRINT, s); }
@@ -375,5 +380,32 @@ static inline void* realloc(void* ptr, uint32_t new_size) {
     for (uint32_t i = 0; i < b->size; i++) d[i] = s[i];
     free(ptr); return n;
 }
+
+// ── Environment variables ─────────────────────────────────────────────────────
+// Get the value of an environment variable into buf (max maxlen bytes).
+// Returns length written, or -1 if not set.
+static inline int tox_getenv(const char* name, char* buf, uint32_t maxlen)
+    { return SYSCALL3(SYS_GETENV, name, buf, maxlen); }
+
+// Set (or create) an environment variable.  Empty value clears it.
+static inline int tox_setenv(const char* name, const char* value)
+    { return SYSCALL2(SYS_SETENV, name, value); }
+
+// ── sysctl ────────────────────────────────────────────────────────────────────
+// Read a kernel parameter by dotted name (e.g. "kern.version", "net.ip").
+// Writes the value as a null-terminated string into buf.
+// Returns length, or -1 if key not found.
+static inline int tox_sysctl(const char* key, char* buf, uint32_t maxlen)
+    { return SYSCALL3(SYS_SYSCTL, key, buf, maxlen); }
+
+// ── Symlinks ──────────────────────────────────────────────────────────────────
+// Create a symbolic link at 'path' pointing to 'target'.
+static inline int tox_symlink(const char* target, const char* path)
+    { return SYSCALL2(SYS_SYMLINK, target, path); }
+
+// Read the target of a symbolic link into buf (not null-terminated by spec,
+// but we add a null for convenience).  Returns bytes written, or -1.
+static inline int tox_readlink(const char* path, char* buf, uint32_t maxlen)
+    { return SYSCALL3(SYS_READLINK, path, buf, maxlen); }
 
 #endif // TOX_H

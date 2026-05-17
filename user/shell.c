@@ -365,10 +365,8 @@ static void run_command(char* input) {
     if (str_equal(cmd_buf,"cd"))       { cmd_cd(args); return; }
     if (str_equal(cmd_buf,"cdb"))      { cmd_cd(".."); return; }
     if (str_equal(cmd_buf,"clear"))    { tox_clear(); return; }
-    if (str_equal(cmd_buf,"reboot"))
-        { __asm__ volatile("movb $0xFE,%%al; outb %%al,$0x64":::"eax"); return; }
-    if (str_equal(cmd_buf,"shutdown"))
-        { __asm__ volatile("movw $0x2000,%%ax; movw $0x604,%%dx; outw %%ax,%%dx":::"eax","edx"); return; }
+    if (str_equal(cmd_buf,"reboot"))   { tox_reboot();   return; }
+    if (str_equal(cmd_buf,"shutdown")) { tox_shutdown(); return; }
 
     run_pipeline(input);
 }

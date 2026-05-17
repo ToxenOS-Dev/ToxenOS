@@ -153,15 +153,20 @@ static void mount_detected_drives(void)
     for (uint8_t drv = 1; drv <= 3; drv++) {
         fs_driver_t* detected = 0;
 
-        // FAT: BPB at LBA 1 (QEMU offset quirk), check bytes_per_sector + sanity
-        int fat_ok = ata_read_drive(drv, 1, probe_buf, 1);
-        if (fat_ok == 1) {
-            uint16_t bps  = (uint16_t)(probe_buf[FAT_BPB_BPS_OFF] |
-                            ((uint16_t)probe_buf[FAT_BPB_BPS_OFF + 1] << 8));
-            uint8_t  spc  = probe_buf[FAT_BPB_SPC_OFF];
-            uint8_t  nfat = probe_buf[FAT_BPB_NFAT_OFF];
-            if (bps == ATA_SECTOR_SIZE && spc != 0 && (nfat == 1 || nfat == 2))
-                detected = fat_init();
+        // FAT: BPB is at LBA 0 on real hardware; QEMU virtual drives have it at
+        // LBA 1 due to a quirk in how QEMU's disk image emulation works.
+        // Try LBA 0 first (standard), then LBA 1 (QEMU fallback).
+        int fat_ok = -1;
+        for (uint32_t fat_lba = 0; fat_lba <= 1 && !detected; fat_lba++) {
+            fat_ok = ata_read_drive(drv, fat_lba, probe_buf, 1);
+            if (fat_ok == 1) {
+                uint16_t bps  = (uint16_t)(probe_buf[FAT_BPB_BPS_OFF] |
+                                ((uint16_t)probe_buf[FAT_BPB_BPS_OFF + 1] << 8));
+                uint8_t  spc  = probe_buf[FAT_BPB_SPC_OFF];
+                uint8_t  nfat = probe_buf[FAT_BPB_NFAT_OFF];
+                if (bps == ATA_SECTOR_SIZE && spc != 0 && (nfat == 1 || nfat == 2))
+                    detected = fat_init();
+            }
         }
 
         // ext2: superblock at LBA 2 (byte offset 1024), magic at offset 56

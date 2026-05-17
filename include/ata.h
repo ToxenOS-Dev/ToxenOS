@@ -54,7 +54,8 @@ int  ata_read(uint32_t lba, uint8_t* buf, uint32_t sectors);
 int  ata_write(uint32_t lba, const uint8_t* buf, uint32_t sectors);
 
 // Drive-selectable functions — use ATA_DRIVE_* constants
-int  ata_read_drive(uint8_t drive, uint32_t lba, uint8_t* buf, uint32_t sectors);
-int  ata_write_drive(uint8_t drive, uint32_t lba, const uint8_t* buf, uint32_t sectors);
+int      ata_read_drive(uint8_t drive, uint32_t lba, uint8_t* buf, uint32_t sectors);
+int      ata_write_drive(uint8_t drive, uint32_t lba, const uint8_t* buf, uint32_t sectors);
+uint32_t ata_get_sectors(uint8_t drive);  // total 512-byte sectors via IDENTIFY
 
 #endif

@@ -296,8 +296,11 @@ static inline int tox_tls_connect(uint32_t ip, uint16_t port, const char* hostna
     { return SYSCALL3(SYS_TLS_CONNECT, ip, port, hostname); }
 static inline int tox_tls_send(int sock, const uint8_t* buf, uint32_t len)
     { return SYSCALL3(SYS_TLS_SEND, sock, buf, len); }
-static inline int tox_tls_recv(int sock, uint8_t* buf, uint16_t maxlen, uint32_t timeout_ms)
-    { return SYSCALL3(SYS_TLS_RECV, sock, buf, timeout_ms); }
+static inline int tox_tls_recv(int sock, uint8_t* buf, uint16_t maxlen, uint32_t timeout_ms) {
+    struct { uint16_t maxlen; uint16_t pad; uint32_t timeout_ms; }
+        s = {maxlen, 0, timeout_ms};
+    return SYSCALL3(SYS_TLS_RECV, sock, buf, &s);
+}
 static inline void tox_tls_close(int sock) { SYSCALL1(SYS_TLS_CLOSE, sock); }
 
 // Returns the page table flags for a virtual address (kernel use, debug).

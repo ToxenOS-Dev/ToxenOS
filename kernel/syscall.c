@@ -69,11 +69,28 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return 0;
 
         case SYS_REBOOT:
-            __asm__ volatile("movb $0xFE,%%al; outb %%al,$0x64":::"eax");
+            __asm__ volatile("cli");
+            // Keyboard controller CPU reset line (works on virtually all x86 hardware)
+            __asm__ volatile("outb %0, %1" :: "a"((uint8_t)0xFE), "Nd"((uint16_t)0x64));
+            // Fallback: triple-fault via null IDT
+            { volatile struct { uint16_t limit; uint32_t base; } idt = {0, 0};
+              __asm__ volatile("lidt (%0); int $3" :: "r"(&idt)); }
+            while(1) __asm__ volatile("hlt");
             return 0;
 
         case SYS_SHUTDOWN:
-            __asm__ volatile("movw $0x2000,%%ax; movw $0x604,%%dx; outw %%ax,%%dx":::"eax","edx");
+            __asm__ volatile("cli");
+            // ACPI S5 shutdown — try multiple ports used by different QEMU/hardware configs:
+            // 0x604 = QEMU pc/i440fx PIIX ACPI PM1a control (most common)
+            __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0x604));
+            // 0xB004 = Bochs and old QEMU
+            __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0xB004));
+            // 0x600 = Some QEMU versions base port
+            __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0x600));
+            // 0x4004 = QEMU with q35 chipset
+            __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x3400), "Nd"((uint16_t)0x4004));
+            // None worked — halt forever (battery will drain on real hardware)
+            while(1) __asm__ volatile("hlt");
             return 0;
 
         case SYS_READDIR:
@@ -365,8 +382,14 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return tls_send((int)ebx, (const uint8_t*)ecx, (uint32_t)edx);
 
         case SYS_TLS_RECV:
-            CHECK_USER_PTR(ecx, 2048);
-            return tls_recv((int)ebx, (uint8_t*)ecx, 2048, (uint32_t)edx);
+        {
+            CHECK_USER_PTR(edx, sizeof(uint16_t) * 2 + sizeof(uint32_t));
+            uint16_t maxlen  = *(uint16_t*)edx;
+            uint32_t timeout = *(uint32_t*)((uint8_t*)edx + sizeof(uint16_t) * 2);
+            if (maxlen > 65535) return (uint32_t)-1;
+            if (maxlen > 0) { CHECK_USER_PTR(ecx, maxlen); }
+            return tls_recv((int)ebx, (uint8_t*)ecx, maxlen, timeout);
+        }
 
         case SYS_TLS_CLOSE:
             tls_close((int)ebx);

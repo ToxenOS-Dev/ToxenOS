@@ -186,8 +186,7 @@ populate: tools/txfs_write
 	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
 	tools/txfs_write build/disk.img build/user/init.elf /init.elf
 	@tools/txfs_write build/disk.img /dev/null /etc/.keep 2>/dev/null || true
-	@printf "# Tinit configuration\n# service myservice restart\n# shell\n" > /tmp/tinit.cfg
-	tools/txfs_write build/disk.img /tmp/tinit.cfg /etc/tinit.cfg
+	@tools/txfs_write build/disk.img /dev/null /etc/.keep 2>/dev/null || true
 
 clean:
 	rm -rf build/*.o build/*.d build/*.bin build/*.iso build/mbedtls build/user

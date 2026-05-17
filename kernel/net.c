@@ -2,15 +2,16 @@
 // Ethernet / ARP / IPv4 / UDP / ICMP
 #include <stdint.h>
 #include "../include/net.h"
+#include "../include/net_config.h"
 #include "../include/e1000.h"
 #include "../include/tcp.h"
 #include "../include/timer.h"
 #include "../include/vga.h"
 #include "../include/klog.h"
 
-uint32_t net_ip      = IP4(10,0,2,15);
-uint32_t net_gateway = IP4(10,0,2,2);
-uint32_t net_mask    = IP4(255,255,255,0);
+uint32_t net_ip      = IP4(NET_IP_A,   NET_IP_B,   NET_IP_C,   NET_IP_D);
+uint32_t net_gateway = IP4(NET_GW_A,   NET_GW_B,   NET_GW_C,   NET_GW_D);
+uint32_t net_mask    = IP4(NET_MASK_A, NET_MASK_B, NET_MASK_C, NET_MASK_D);
 uint8_t  net_mac[ETH_ALEN];
 
 // ── ARP cache ─────────────────────────────────────────────────────────────────
@@ -321,9 +322,8 @@ void net_init() {
     for(int i=0;i<UDP_RXSLOT_MAX;i++) udp_rxslots[i].used=0;
     udp_listener_count=0;
     for(int i=0;i<ETH_ALEN;i++) net_mac[i]=e1000_mac[i];
-    // Pre-populate gateway ARP (QEMU user-mode: always 52:55:0a:00:02:02)
-    uint8_t gw_mac[ETH_ALEN]={0x52,0x55,0x0a,0x00,0x02,0x02};
-    arp_store(net_gateway,gw_mac);
+    // Gateway MAC is discovered on first use via ARP request (arp_send_request).
+    // No hardcoded MAC needed — works on any network, not just QEMU.
     tcp_init();
-    klog("net: IP=10.0.2.15 GW=10.0.2.2\n");
+    klog("net: initialised\n");
 }

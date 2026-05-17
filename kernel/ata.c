@@ -296,3 +296,32 @@ int ata_write_drive(uint8_t drive, uint32_t lba, const uint8_t* buf, uint32_t se
     ata_decode_drive(drive, &ch_idx, &sel);
     return ata_do_write(&channels[ch_idx], sel, lba, buf, sectors);
 }
+
+// Return total 512-byte sectors on drive via ATA IDENTIFY (words 60-61 = LBA28 count).
+// Returns 0 if the drive doesn't respond or reports no capacity.
+uint32_t ata_get_sectors(uint8_t drive)
+{
+    int ch_idx; uint8_t sel;
+    ata_decode_drive(drive, &ch_idx, &sel);
+    const ata_channel_t* ch = &channels[ch_idx];
+
+    if (ata_wait_not_busy(ch) < 0) return 0;
+    outb(ch->drive_sel, sel);
+    ata_delay(ch);
+    outb(ch->sec_count, 0); outb(ch->lba_lo, 0);
+    outb(ch->lba_mid,   0); outb(ch->lba_hi, 0);
+    outb(ch->status, 0xEC); // IDENTIFY
+    ata_delay(ch);
+
+    uint8_t s = inb(ch->status);
+    if (!s || s == 0xFF) return 0;
+    if (ata_wait_not_busy(ch) < 0) return 0;
+    if (!(inb(ch->status) & ATA_STATUS_DRQ)) return 0;
+
+    uint16_t id[256];
+    for (int i = 0; i < 256; i++) id[i] = inw(ch->data);
+
+    // Words 60-61: 28-bit LBA total sectors (little-endian in the word array)
+    uint32_t lba28 = (uint32_t)id[60] | ((uint32_t)id[61] << 16);
+    return lba28;
+}

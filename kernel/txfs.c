@@ -431,7 +431,13 @@ static int txfs_mount_fn(const char* device)
         open_files[i].used = 0;
 
     if (txfs_read_super() < 0) {
-        txfs_format(204800);
+        // Query the drive's actual size instead of hardcoding 204800.
+        // ata_get_sectors(0) returns 512-byte sector count via ATA IDENTIFY.
+        // Falls back to 204800 (100 MB) if IDENTIFY fails.
+        extern uint32_t ata_get_sectors(uint8_t drive);
+        uint32_t total = ata_get_sectors(0);
+        if (!total) total = 204800;
+        txfs_format(total);
         txfs_read_super();
     }
 

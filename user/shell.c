@@ -117,7 +117,7 @@ static int find_in_path(const char* cmd, char* out) {
     // Use ';' as separator — ':' conflicts with drive-letter notation (/C:/).
     char path_env[256];
     if (env_get("PATH", path_env, sizeof(path_env)) < 0)
-        str_copy(path_env, "/C:/System/bin;/C:/Programs;/C:/bin");
+        str_copy(path_env, "/C:/BSM/SystemT:/C:/BSM/usr/lst");
 
     char dir[128];
     const char* p = path_env;

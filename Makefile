@@ -151,41 +151,41 @@ tools/txfs_write: tools/txfs_write.c
 
 populate: tools/txfs_write
 	dd if=/dev/zero of=build/disk.img bs=4096 count=25600
-	tools/txfs_write build/disk.img build/user/bin/ls.elf /Programs/ls.elf
-	tools/txfs_write build/disk.img build/user/bin/shw.elf /Programs/shw.elf
-	tools/txfs_write build/disk.img build/user/bin/mkef.elf /Programs/mkef.elf
-	tools/txfs_write build/disk.img build/user/bin/mkd.elf /Programs/mkd.elf
-	tools/txfs_write build/disk.img build/user/bin/rm.elf /Programs/rm.elf
-	tools/txfs_write build/disk.img build/user/bin/echo.elf /Programs/echo.elf
-	tools/txfs_write build/disk.img build/user/bin/pcd.elf /Programs/pcd.elf
-	tools/txfs_write build/disk.img build/user/bin/uname.elf /Programs/uname.elf
-	tools/txfs_write build/disk.img build/user/bin/file.elf /Programs/file.elf
-	tools/txfs_write build/disk.img build/user/bin/help.elf /Programs/help.elf
-	tools/txfs_write build/disk.img build/user/bin/cp.elf /Programs/cp.elf
-	tools/txfs_write build/disk.img build/user/bin/tree.elf /Programs/tree.elf
-	tools/txfs_write build/disk.img build/user/bin/hex.elf /Programs/hex.elf
-	tools/txfs_write build/disk.img build/user/bin/mv.elf /Programs/mv.elf
-	tools/txfs_write build/disk.img build/user/bin/rname.elf /Programs/rname.elf
-	tools/txfs_write build/disk.img build/user/bin/sif.elf /Programs/sif.elf
-	tools/txfs_write build/disk.img build/user/bin/find.elf /Programs/find.elf
-	tools/txfs_write build/disk.img build/user/bin/bmsg.elf /Programs/bmsg.elf
-	tools/txfs_write build/disk.img build/user/bin/proc.elf /Programs/proc.elf
-	tools/txfs_write build/disk.img build/user/bin/end.elf /Programs/end.elf
-	tools/txfs_write build/disk.img build/user/bin/top.elf /Programs/top.elf
-	tools/txfs_write build/disk.img build/user/bin/sleeptest.elf /Programs/sleeptest.elf
-	tools/txfs_write build/disk.img build/user/bin/memtest.elf /Programs/memtest.elf
-	tools/txfs_write build/disk.img build/user/bin/pipetest.elf /Programs/pipetest.elf
-	tools/txfs_write build/disk.img build/user/bin/nettest.elf /Programs/nettest.elf
-	tools/txfs_write build/disk.img build/user/bin/dns.elf /Programs/dns.elf
-	tools/txfs_write build/disk.img build/user/bin/http.elf /Programs/http.elf
-	tools/txfs_write build/disk.img build/user/bin/ping.elf /Programs/ping.elf
-	tools/txfs_write build/disk.img build/user/bin/https.elf /Programs/https.elf
-	tools/txfs_write build/disk.img build/user/bin/isolation_test.elf /Programs/isolation_test.elf
-	tools/txfs_write build/disk.img build/user/bin/stresstest.elf /Programs/stresstest.elf
+	tools/txfs_write build/disk.img build/user/bin/ls.elf /BSM/SystemT/ls.elf
+	tools/txfs_write build/disk.img build/user/bin/shw.elf /BSM/SystemT/shw.elf
+	tools/txfs_write build/disk.img build/user/bin/mkef.elf /BSM/SystemT/mkef.elf
+	tools/txfs_write build/disk.img build/user/bin/mkd.elf /BSM/SystemT/mkd.elf
+	tools/txfs_write build/disk.img build/user/bin/rm.elf /BSM/SystemT/rm.elf
+	tools/txfs_write build/disk.img build/user/bin/echo.elf /BSM/SystemT/echo.elf
+	tools/txfs_write build/disk.img build/user/bin/pcd.elf /BSM/SystemT/pcd.elf
+	tools/txfs_write build/disk.img build/user/bin/uname.elf /BSM/SystemT/uname.elf
+	tools/txfs_write build/disk.img build/user/bin/file.elf /BSM/SystemT/file.elf
+	tools/txfs_write build/disk.img build/user/bin/help.elf /BSM/SystemT/help.elf
+	tools/txfs_write build/disk.img build/user/bin/cp.elf /BSM/SystemT/cp.elf
+	tools/txfs_write build/disk.img build/user/bin/tree.elf /BSM/SystemT/tree.elf
+	tools/txfs_write build/disk.img build/user/bin/hex.elf /BSM/SystemT/hex.elf
+	tools/txfs_write build/disk.img build/user/bin/mv.elf /BSM/SystemT/mv.elf
+	tools/txfs_write build/disk.img build/user/bin/rname.elf /BSM/SystemT/rname.elf
+	tools/txfs_write build/disk.img build/user/bin/sif.elf /BSM/SystemT/sif.elf
+	tools/txfs_write build/disk.img build/user/bin/find.elf /BSM/SystemT/find.elf
+	tools/txfs_write build/disk.img build/user/bin/bmsg.elf /BSM/SystemT/bmsg.elf
+	tools/txfs_write build/disk.img build/user/bin/proc.elf /BSM/SystemT/proc.elf
+	tools/txfs_write build/disk.img build/user/bin/end.elf /BSM/SystemT/end.elf
+	tools/txfs_write build/disk.img build/user/bin/top.elf /BSM/SystemT/top.elf
+	tools/txfs_write build/disk.img build/user/bin/sleeptest.elf /BSM/SystemT/sleeptest.elf
+	tools/txfs_write build/disk.img build/user/bin/memtest.elf /BSM/SystemT/memtest.elf
+	tools/txfs_write build/disk.img build/user/bin/pipetest.elf /BSM/SystemT/pipetest.elf
+	tools/txfs_write build/disk.img build/user/bin/nettest.elf /BSM/SystemT/nettest.elf
+	tools/txfs_write build/disk.img build/user/bin/dns.elf /BSM/SystemT/dns.elf
+	tools/txfs_write build/disk.img build/user/bin/http.elf /BSM/SystemT/http.elf
+	tools/txfs_write build/disk.img build/user/bin/ping.elf /BSM/SystemT/ping.elf
+	tools/txfs_write build/disk.img build/user/bin/https.elf /BSM/SystemT/https.elf
+	tools/txfs_write build/disk.img build/user/bin/isolation_test.elf /BSM/SystemT/isolation_test.elf
+	tools/txfs_write build/disk.img build/user/bin/stresstest.elf /BSM/SystemT/stresstest.elf
 	tools/txfs_write build/disk.img build/user/hello.elf /hello.elf
 	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
 	tools/txfs_write build/disk.img build/user/init.elf /init.elf
-	@tools/txfs_write build/disk.img /dev/null /etc/.keep 2>/dev/null || true
+	@tools/txfs_write build/disk.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true
 	@tools/txfs_write build/disk.img /dev/null /etc/.keep 2>/dev/null || true
 
 clean:

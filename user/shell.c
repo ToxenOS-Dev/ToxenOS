@@ -473,6 +473,20 @@ static void run_command(char* input) {
     if (str_equal(cmd_buf,"clear"))    { tox_clear(); return; }
     if (str_equal(cmd_buf,"reboot"))   { tox_reboot();   return; }
     if (str_equal(cmd_buf,"shutdown")) { tox_shutdown(); return; }
+    if (str_equal(cmd_buf,"sysctl")) {
+        if (args && args[0]) {
+            set_color(0x0C); print("sysctl: no arguments — just run: sysctl\n");
+            set_color(0x07); return;
+        }
+        char buf[128];
+        const char* keys[] = {"version","hostname","uptime","procs",0};
+        for (int i = 0; keys[i]; i++) {
+            if (tox_sysctl(keys[i], buf, sizeof(buf)) < 0) continue;
+            set_color(0x0B); print(keys[i]); set_color(0x08); print(" = ");
+            set_color(0x07); print(buf); print("\n");
+        }
+        return;
+    }
     if (str_equal(cmd_buf,"jobs")) {
         int found = 0;
         for (int i = 0; i < job_count; i++) {

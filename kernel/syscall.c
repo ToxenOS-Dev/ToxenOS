@@ -441,9 +441,7 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             if (!ebx || !ecx || !edx) return (uint32_t)-1;
             CHECK_USER_STR(ebx);
             CHECK_USER_PTR(ecx, edx);
-            // Shell prepends cwd so key may arrive as "/C:/uptime" — strip to basename
             const char* key = (const char*)ebx;
-            for (const char* p = key; *p; p++) if (*p == '/') key = p + 1;
             char*       out = (char*)ecx;
             uint32_t    maxl = (uint32_t)edx;
 

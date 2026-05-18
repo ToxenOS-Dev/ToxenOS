@@ -1,0 +1,101 @@
+#include "../tox.h"
+
+static int str_eq(const char* a, const char* b) {
+    while (*a && *b && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+static const char* basename(const char* path) {
+    const char* last = path;
+    for (const char* p = path; *p; p++) if (*p == '/') last = p + 1;
+    return last;
+}
+
+static void usage(void) {
+    set_color(0x0B); print("tox - ToxenOS Package Manager\n"); set_color(0x07);
+    print("  tox install <path>   install program to /BSM/usr/lst/\n");
+    print("  tox remove  <name>   remove program from /BSM/usr/lst/\n");
+    print("  tox list             list installed packages\n");
+}
+
+void _start() {
+    char args[512]; tox_get_args(args);
+    if (!args[0]) { usage(); tox_exit(); }
+
+    char cmd[32]; int ci = 0;
+    while (args[ci] && args[ci] != ' ' && ci < 31) { cmd[ci] = args[ci]; ci++; }
+    cmd[ci] = 0;
+    while (args[ci] == ' ') ci++;
+    const char* param = args + ci;
+
+    if (str_eq(cmd, "list")) {
+        set_color(0x0B); print("Installed packages (/BSM/usr/lst/):\n"); set_color(0x07);
+        char name[128]; int count = 0;
+        for (int i = 0; ; i++) {
+            if (tox_readdir("/C:/BSM/usr/lst", name, (uint32_t)i) < 0) break;
+            if (name[0] == '.') continue;
+            set_color(0x0A); print("  "); print(name); print("\n"); set_color(0x07);
+            count++;
+        }
+        if (count == 0) { set_color(0x08); print("  (none installed)\n"); set_color(0x07); }
+        tox_exit();
+    }
+
+    if (str_eq(cmd, "install")) {
+        if (!param[0]) { set_color(0x0C); print("tox: usage: tox install <path>\n"); set_color(0x07); tox_exit(); }
+
+        int size = tox_stat(param);
+        if (size < 0) {
+            set_color(0x0C); print("tox: not found: "); print(param); print("\n");
+            set_color(0x07); tox_exit();
+        }
+
+        const char* name = basename(param);
+        char dst[256];
+        tox_strcpy(dst, "/C:/BSM/usr/lst/");
+        tox_strcat(dst, name);
+
+        uint8_t* buf = malloc((uint32_t)size);
+        if (!buf) { set_color(0x0C); print("tox: out of memory\n"); set_color(0x07); tox_exit(); }
+
+        int fd = tox_open(param, 1);
+        tox_read(fd, buf, (uint32_t)size);
+        tox_close(fd);
+
+        fd = tox_open(dst, 2 | 4);
+        if (fd < 0) {
+            free(buf);
+            set_color(0x0C); print("tox: install failed\n"); set_color(0x07); tox_exit();
+        }
+        tox_write(fd, buf, (uint32_t)size);
+        tox_close(fd);
+        free(buf);
+
+        set_color(0x0A); print("installed: "); print(name); print("\n"); set_color(0x07);
+        tox_exit();
+    }
+
+    if (str_eq(cmd, "remove")) {
+        if (!param[0]) { set_color(0x0C); print("tox: usage: tox remove <name>\n"); set_color(0x07); tox_exit(); }
+
+        char path[256];
+        tox_strcpy(path, "/C:/BSM/usr/lst/");
+        tox_strcat(path, param);
+
+        if (tox_stat(path) < 0) {
+            tox_strcpy(path, "/C:/BSM/usr/lst/");
+            tox_strcat(path, param);
+            tox_strcat(path, ".elf");
+            if (tox_stat(path) < 0) {
+                set_color(0x0C); print("tox: not installed: "); print(param); print("\n");
+                set_color(0x07); tox_exit();
+            }
+        }
+        tox_remove(path);
+        set_color(0x0A); print("removed: "); print(param); print("\n"); set_color(0x07);
+        tox_exit();
+    }
+
+    usage();
+    tox_exit();
+}

@@ -280,6 +280,7 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
         // or absolute paths (start with /)
         int looks_like_path = 1;
         if (args[0] == '/') looks_like_path = 0;  // already absolute
+        if (args[0] == '-') looks_like_path = 0;  // flag/option argument
         if (args[0] >= '0' && args[0] <= '9') looks_like_path = 0;  // IP or number
         // Hostnames (google.com) have dots but no slash — don't prepend cwd.
         // Exception: .elf files are always local paths, not hostnames.

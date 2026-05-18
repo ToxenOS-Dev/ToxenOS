@@ -130,9 +130,10 @@ user:
 	objcopy -I binary -O elf32-i386 -B i386 \
 		build/user/init.elf build/user/init_blob.o
 	gcc $(UFLAGS) user/hello.c -o build/user/hello.elf
-	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns http ping https isolation_test stresstest; do \
+	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns http ping https isolation_test stresstest restore trash rmdir; do \
 		gcc $(UFLAGS) user/bin/$$cmd.c -o build/user/bin/$$cmd.elf || exit 1; \
 	done
+	gcc $(UFLAGS) user/bin/tox_pkg.c -o build/user/bin/tox.elf
 
 run: all populate
 	qemu-system-i386 \
@@ -185,7 +186,12 @@ populate: tools/txfs_write
 	tools/txfs_write build/disk.img build/user/hello.elf /hello.elf
 	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
 	tools/txfs_write build/disk.img build/user/init.elf /init.elf
+	tools/txfs_write build/disk.img build/user/bin/rmdir.elf /BSM/SystemT/rmdir.elf
+	tools/txfs_write build/disk.img build/user/bin/restore.elf /BSM/SystemT/restore.elf
+	tools/txfs_write build/disk.img build/user/bin/trash.elf /BSM/SystemT/trash.elf
+	tools/txfs_write build/disk.img build/user/bin/tox.elf /BSM/SystemT/tox.elf
 	@tools/txfs_write build/disk.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true
+	@tools/txfs_write build/disk.img /dev/null /Trash/.keep 2>/dev/null || true
 	@tools/txfs_write build/disk.img /dev/null /etc/.keep 2>/dev/null || true
 
 clean:

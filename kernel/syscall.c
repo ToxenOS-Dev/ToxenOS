@@ -20,12 +20,23 @@
 extern uint8_t _binary_build_user_shell_elf_start[];
 extern uint8_t _binary_build_user_shell_elf_end[];
 
+static int kstreq(const char* a, const char* b) {
+    int i = 0; while (a[i] && b[i] && a[i]==b[i]) i++; return a[i]==b[i];
+}
+static int kstarts(const char* s, const char* p) {
+    int i = 0; while (p[i] && s[i]==p[i]) i++; return p[i]==0;
+}
+
 // Returns 1 if path is inside /BSM/SystemT/ (write-protected from all user processes)
 static int path_is_system_protected(const char* path) {
-    const char* guard = "/C:/BSM/SystemT/";
-    int i = 0;
-    while (guard[i] && path[i] == guard[i]) i++;
-    return guard[i] == 0;
+    return kstarts(path, "/C:/BSM/SystemT/");
+}
+
+// Returns 1 if path IS a core system directory that cannot be deleted
+static int path_is_system_dir(const char* path) {
+    return kstreq(path, "/C:/BSM")   || kstreq(path, "/C:/BSM/") ||
+           kstreq(path, "/C:/Trash") || kstreq(path, "/C:/Trash/") ||
+           kstreq(path, "/C:/etc")   || kstreq(path, "/C:/etc/");
 }
 
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx)
@@ -143,6 +154,7 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_REMOVE:
             CHECK_USER_STR(ebx);
             if (path_is_system_protected((const char*)ebx)) return (uint32_t)-1;
+            if (path_is_system_dir((const char*)ebx)) return (uint32_t)-1;
             return vfs_remove((const char*)ebx);
 
         case SYS_YIELD:

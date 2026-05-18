@@ -20,6 +20,14 @@
 extern uint8_t _binary_build_user_shell_elf_start[];
 extern uint8_t _binary_build_user_shell_elf_end[];
 
+// Returns 1 if path is inside /BSM/SystemT/ (write-protected from all user processes)
+static int path_is_system_protected(const char* path) {
+    const char* guard = "/BSM/SystemT/";
+    int i = 0;
+    while (guard[i] && path[i] == guard[i]) i++;
+    return guard[i] == 0;
+}
+
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx)
 {
     switch (eax)
@@ -100,6 +108,8 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
 
         case SYS_OPEN:
             CHECK_USER_STR(ebx);
+            if ((ecx & (VFS_O_WRITE | VFS_O_CREATE)) && path_is_system_protected((const char*)ebx))
+                return (uint32_t)-1;
             return vfs_open((const char*)ebx, ecx);
 
         case SYS_READ:
@@ -127,10 +137,12 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
 
         case SYS_MKDIR:
             CHECK_USER_STR(ebx);
+            if (path_is_system_protected((const char*)ebx)) return (uint32_t)-1;
             return vfs_mkdir((const char*)ebx);
 
         case SYS_REMOVE:
             CHECK_USER_STR(ebx);
+            if (path_is_system_protected((const char*)ebx)) return (uint32_t)-1;
             return vfs_remove((const char*)ebx);
 
         case SYS_YIELD:

@@ -82,6 +82,7 @@
 #define SYS_SYSCTL        56   // read kernel parameter
 #define SYS_SYMLINK       57   // create symbolic link
 #define SYS_READLINK      58   // read symlink target
+#define SYS_GETTIME       59   // read CMOS RTC → formatted date/time string
 
 // ── Output ────────────────────────────────────────────────────────────────────
 static inline void print(const char* s)   { SYSCALL1(SYS_PRINT, s); }
@@ -397,6 +398,11 @@ static inline int tox_setenv(const char* name, const char* value)
 // Returns length, or -1 if key not found.
 static inline int tox_sysctl(const char* key, char* buf, uint32_t maxlen)
     { return SYSCALL3(SYS_SYSCTL, key, buf, maxlen); }
+
+// ── Date/time ────────────────────────────────────────────────────────────────
+// Read CMOS RTC. Writes "YYYY-MM-DD HH:MM:SS" into buf. Returns length or -1.
+static inline int tox_gettime(char* buf, uint32_t maxlen)
+    { return SYSCALL2(SYS_GETTIME, buf, maxlen); }
 
 // ── Symlinks ──────────────────────────────────────────────────────────────────
 // Create a symbolic link at 'path' pointing to 'target'.

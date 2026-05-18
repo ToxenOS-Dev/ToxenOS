@@ -472,6 +472,61 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return (uint32_t)-1;
         }
 
+        case SYS_GETTIME:
+        {
+            if (!ebx || !ecx) return (uint32_t)-1;
+            CHECK_USER_PTR(ebx, ecx);
+            char* buf = (char*)ebx;
+            uint32_t maxl = (uint32_t)ecx;
+            if (maxl < 20) return (uint32_t)-1;
+
+            // Read CMOS RTC via I/O ports 0x70/0x71
+            // Wait until RTC update is not in progress (bit 7 of reg 0x0A)
+            uint8_t a;
+            do {
+                __asm__ volatile("outb %0, %1" :: "a"((uint8_t)0x0A), "Nd"((uint16_t)0x70));
+                __asm__ volatile("inb %1, %0" : "=a"(a) : "Nd"((uint16_t)0x71));
+            } while (a & 0x80);
+
+            #define CMOS_READ(reg, out) do { \
+                __asm__ volatile("outb %0,%1"::"a"((uint8_t)(reg)),"Nd"((uint16_t)0x70)); \
+                __asm__ volatile("inb %1,%0":"=a"(out):"Nd"((uint16_t)0x71)); \
+            } while(0)
+
+            uint8_t sec, min, hour, day, mon, yr, cent = 20;
+            CMOS_READ(0x00, sec);  CMOS_READ(0x02, min);
+            CMOS_READ(0x04, hour); CMOS_READ(0x07, day);
+            CMOS_READ(0x08, mon);  CMOS_READ(0x09, yr);
+            CMOS_READ(0x32, cent);
+            #undef CMOS_READ
+
+            // Check if values are BCD (bit 2 of status reg B = 0 means BCD)
+            uint8_t statb;
+            __asm__ volatile("outb %0,%1"::"a"((uint8_t)0x0B),"Nd"((uint16_t)0x70));
+            __asm__ volatile("inb %1,%0":"=a"(statb):"Nd"((uint16_t)0x71));
+            if (!(statb & 0x04)) {
+                sec  = (uint8_t)((sec  >> 4) * 10 + (sec  & 0xF));
+                min  = (uint8_t)((min  >> 4) * 10 + (min  & 0xF));
+                hour = (uint8_t)((hour >> 4) * 10 + (hour & 0xF));
+                day  = (uint8_t)((day  >> 4) * 10 + (day  & 0xF));
+                mon  = (uint8_t)((mon  >> 4) * 10 + (mon  & 0xF));
+                yr   = (uint8_t)((yr   >> 4) * 10 + (yr   & 0xF));
+                cent = (uint8_t)((cent >> 4) * 10 + (cent & 0xF));
+            }
+            if (cent == 0) cent = 20;
+            uint16_t year = (uint16_t)(cent * 100 + yr);
+
+            // Format: "YYYY-MM-DD HH:MM:SS"
+            #define D2(buf, i, v) do { (buf)[i]='0'+(v)/10; (buf)[i+1]='0'+(v)%10; } while(0)
+            D2(buf, 0, year/100); D2(buf, 2, year%100);
+            buf[4]='-'; D2(buf,5,mon);  buf[7]='-'; D2(buf,8,day);
+            buf[10]=' '; D2(buf,11,hour); buf[13]=':';
+            D2(buf,14,min); buf[16]=':'; D2(buf,17,sec);
+            buf[19]=0;
+            #undef D2
+            return 19;
+        }
+
         default:
             return (uint32_t)-1;
     }

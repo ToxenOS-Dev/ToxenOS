@@ -40,7 +40,8 @@ void _start() {
     row("cmd &", "",        "uname",    "");
 
     set_color(0x0B); print("\n  System\n"); set_color(0x07);
-    row("sysctl",   "[key]",         "syslog",    "");
+    row("sysctl",   "",              "syslog",    "");
+    row("date",     "",              "",          "");
     row("reg set",  "<key> <val>",   "reg get",   "<key>");
     row("reg del",  "<key>",         "reg list",  "");
     row("reboot",   "",              "shutdown",  "");

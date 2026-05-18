@@ -93,6 +93,10 @@ align 4096
 global boot_pgtab_hi
 boot_pgtab_hi:  times 1024 dd 0
 
+align 4096
+global boot_pgtab_hi2
+boot_pgtab_hi2: times 1024 dd 0
+
 ; ── Entry point (in .boot) ────────────────────────────────────────────────────
 section .boot exec alloc
 global start
@@ -108,7 +112,7 @@ start:
     cld
     mov edi, boot_pgdir
     xor eax, eax
-    mov ecx, (3 * 1024)     ; 3 pages × 1024 dwords
+    mov ecx, (4 * 1024)     ; 4 pages × 1024 dwords (pgdir + lo + hi + hi2)
     rep stosd
 
     pop esi                 ; mb_info_addr
@@ -126,7 +130,7 @@ start:
     cmp ecx, 1024
     jl  .fill_lo
 
-    ; Fill boot_pgtab_hi: map PA 0x000xxxxx -> VA 0xC00xxxxx
+    ; Fill boot_pgtab_hi: map PA 0x000xxxxx -> VA 0xC00xxxxx (first 4MB)
     mov edx, boot_pgtab_hi
     xor ecx, ecx
 .fill_hi:
@@ -138,14 +142,31 @@ start:
     cmp ecx, 1024
     jl  .fill_hi
 
+    ; Fill boot_pgtab_hi2: map PA 0x400xxxxx -> VA 0xC04xxxxx (next 4MB)
+    mov edx, boot_pgtab_hi2
+    xor ecx, ecx
+.fill_hi2:
+    mov eax, ecx
+    add eax, 1024               ; start at physical page 1024 = PA 0x400000
+    shl eax, 12
+    or  eax, (PAGE_PRESENT | PAGE_WRITABLE)
+    mov [edx + ecx*4], eax
+    inc ecx
+    cmp ecx, 1024
+    jl  .fill_hi2
+
     ; Install tables into directory
     mov eax, boot_pgtab_lo
     or  eax, (PAGE_PRESENT | PAGE_WRITABLE)
-    mov [boot_pgdir + 0*4], eax         ; entry 0: identity
+    mov [boot_pgdir + 0*4], eax         ; entry 0: identity (PA 0–4MB)
 
     mov eax, boot_pgtab_hi
     or  eax, (PAGE_PRESENT | PAGE_WRITABLE)
-    mov [boot_pgdir + 768*4], eax       ; entry 768: high half
+    mov [boot_pgdir + 768*4], eax       ; entry 768: VA 0xC0000000 (PA 0–4MB)
+
+    mov eax, boot_pgtab_hi2
+    or  eax, (PAGE_PRESENT | PAGE_WRITABLE)
+    mov [boot_pgdir + 769*4], eax       ; entry 769: VA 0xC0400000 (PA 4–8MB)
 
     ; Enable paging
     mov eax, boot_pgdir

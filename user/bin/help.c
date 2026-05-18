@@ -27,7 +27,7 @@ void _start() {
     row("hex",   "<file>",       "mkd",    "<dir>");
     row("file",  "<file>",       "rmdir",  "<dir>");
     row("find",  "[dir] <pat>",  "tree",   "[dir]");
-    row("sif",   "<pat> <file>", "cp",     "<src> <dst>");
+    row("sif",   "<pat> <file>", "wc",     "<file>");
 
     set_color(0x0B); print("\n  Trash\n"); set_color(0x07);
     row("rm",      "<file>",   "trash",   "");

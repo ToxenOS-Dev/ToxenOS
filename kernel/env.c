@@ -1,61 +1,65 @@
-// kernel/env.c — Per-process environment variable store.
-// Kept separate from process_t to avoid inflating the static processes[] BSS.
+// kernel/env.c — Global environment variable store.
+// Flat shared table: all processes read/write the same vars.
+// Simple, safe, no per-process complexity, no inheritance needed.
 #include <stdint.h>
 #include "../include/env.h"
-#include "../include/process.h"
 
-#define ENV_TOTAL (MAX_PROCESSES * MAX_ENV_VARS)
+#define MAX_ENV   32
+#define KEY_MAX   32
+#define VAL_MAX   128
 
-static struct {
-    uint32_t pid;
-    char     key[ENV_KEY_MAX];
-    char     val[ENV_VAL_MAX];
-    int      used;
-} env_table[ENV_TOTAL];
+static char g_keys[MAX_ENV][KEY_MAX];   // 1024 bytes BSS
+static char g_vals[MAX_ENV][VAL_MAX];   // 4096 bytes BSS
+static int  g_count = 0;               //    4 bytes BSS
+// Total: ~5KB — safe
 
-static int keycmp(const char* a, const char* b) {
+static int keq(const char* a, const char* b) {
     int i = 0;
     while (a[i] && b[i] && a[i] == b[i]) i++;
-    return a[i] == b[i] ? 1 : 0;
+    return a[i] == 0 && b[i] == 0;
 }
 
-static void kstrcpy(char* dst, const char* src, int max) {
+static void kcopy(char* dst, const char* src, int max) {
     int i = 0;
     while (src[i] && i < max - 1) { dst[i] = src[i]; i++; }
     dst[i] = 0;
 }
 
-int env_get(uint32_t pid, const char* name, char* buf, uint32_t maxl) {
+int env_get(const char* name, char* buf, uint32_t maxl) {
     if (!name || !buf || !maxl) return -1;
-    for (int i = 0; i < ENV_TOTAL; i++) {
-        if (!env_table[i].used || env_table[i].pid != pid) continue;
-        if (keycmp(env_table[i].key, name)) {
-            kstrcpy(buf, env_table[i].val, (int)maxl);
-            int n = 0; while (env_table[i].val[n]) n++;
+    for (int i = 0; i < g_count; i++) {
+        if (keq(g_keys[i], name)) {
+            kcopy(buf, g_vals[i], (int)maxl);
+            int n = 0; while (g_vals[i][n]) n++;
             return n < (int)maxl ? n : (int)maxl - 1;
         }
     }
     return -1;
 }
 
-int env_set(uint32_t pid, const char* name, const char* val) {
+int env_set(const char* name, const char* val) {
     if (!name) return -1;
-    // Find existing slot for this pid+key, or first free slot
-    int slot = -1, free_slot = -1;
-    for (int i = 0; i < ENV_TOTAL; i++) {
-        if (!env_table[i].used) { if (free_slot < 0) free_slot = i; continue; }
-        if (env_table[i].pid == pid && keycmp(env_table[i].key, name)) { slot = i; break; }
+    // Update existing
+    for (int i = 0; i < g_count; i++) {
+        if (keq(g_keys[i], name)) {
+            if (!val || !val[0]) {
+                // Unset: shift table down
+                for (int j = i; j < g_count - 1; j++) {
+                    kcopy(g_keys[j], g_keys[j+1], KEY_MAX);
+                    kcopy(g_vals[j], g_vals[j+1], VAL_MAX);
+                }
+                g_count--;
+            } else {
+                kcopy(g_vals[i], val, VAL_MAX);
+            }
+            return 0;
+        }
     }
-    if (slot < 0) slot = free_slot;
-    if (slot < 0) return -1;
-
-    // Setting to empty string or null unsets the variable
-    if (!val || !val[0]) { env_table[slot].used = 0; return 0; }
-
-    env_table[slot].pid  = pid;
-    env_table[slot].used = 1;
-    kstrcpy(env_table[slot].key, name, ENV_KEY_MAX);
-    kstrcpy(env_table[slot].val, val,  ENV_VAL_MAX);
+    // Add new
+    if (!val || !val[0]) return 0;
+    if (g_count >= MAX_ENV) return -1;
+    kcopy(g_keys[g_count], name, KEY_MAX);
+    kcopy(g_vals[g_count], val,  VAL_MAX);
+    g_count++;
     return 0;
 }
-

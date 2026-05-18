@@ -83,24 +83,16 @@ gdt_base:
 section .bootdata
 align 4096
 global boot_pgdir
-boot_pgdir:     times 1024 dd 0
-
-align 4096
-global boot_pgtab_lo
-boot_pgtab_lo:  times 1024 dd 0
-
-align 4096
-global boot_pgtab_hi
-boot_pgtab_hi:  times 1024 dd 0
-
-align 4096
-global boot_pgtab_hi2
-boot_pgtab_hi2: times 1024 dd 0
+boot_pgdir: times 1024 dd 0
+; No page tables needed — PSE maps 4MB per PDE entry directly.
 
 ; ── Entry point (in .boot) ────────────────────────────────────────────────────
 section .boot exec alloc
 global start
 extern stack_top
+
+; PSE page entry flags: Present + Writable + PageSize(4MB)
+PSE_ENTRY equ 0x83
 
 start:
     ; eax = multiboot magic, ebx = multiboot info (physical)
@@ -108,65 +100,35 @@ start:
     push eax                ; save magic
     push ebx                ; save mb_info_addr
 
-    ; Zero the page tables (NOLOAD section — may contain garbage)
+    ; Zero just the page directory (1 page = 4KB)
     cld
     mov edi, boot_pgdir
     xor eax, eax
-    mov ecx, (4 * 1024)     ; 4 pages × 1024 dwords (pgdir + lo + hi + hi2)
+    mov ecx, 1024
     rep stosd
 
     pop esi                 ; mb_info_addr
     pop edi                 ; magic
 
-    ; Fill boot_pgtab_lo: identity map VA 0x000xxxxx -> PA 0x000xxxxx
-    mov edx, boot_pgtab_lo
+    ; Enable PSE (4MB pages) in CR4
+    mov eax, cr4
+    or  eax, 0x10           ; CR4.PSE = bit 4
+    mov cr4, eax
+
+    ; Identity map PDE 0: VA 0x00000000 -> PA 0x00000000 (4MB PSE)
+    mov dword [boot_pgdir + 0*4], (0x00000000 | PSE_ENTRY)
+
+    ; High-half map PDEs 768–783: VA 0xC0000000–0xC0FFFFFF -> PA 0x00000000–0x0FFFFFFF
+    ; 16 × 4MB = 64MB — plenty of headroom for any kernel size
     xor ecx, ecx
-.fill_lo:
+.fill_high:
     mov eax, ecx
-    shl eax, 12
-    or  eax, (PAGE_PRESENT | PAGE_WRITABLE)
-    mov [edx + ecx*4], eax
+    shl eax, 22             ; PA = ecx * 4MB
+    or  eax, PSE_ENTRY
+    mov [boot_pgdir + (768 + ecx)*4], eax
     inc ecx
-    cmp ecx, 1024
-    jl  .fill_lo
-
-    ; Fill boot_pgtab_hi: map PA 0x000xxxxx -> VA 0xC00xxxxx (first 4MB)
-    mov edx, boot_pgtab_hi
-    xor ecx, ecx
-.fill_hi:
-    mov eax, ecx
-    shl eax, 12
-    or  eax, (PAGE_PRESENT | PAGE_WRITABLE)
-    mov [edx + ecx*4], eax
-    inc ecx
-    cmp ecx, 1024
-    jl  .fill_hi
-
-    ; Fill boot_pgtab_hi2: map PA 0x400xxxxx -> VA 0xC04xxxxx (next 4MB)
-    mov edx, boot_pgtab_hi2
-    xor ecx, ecx
-.fill_hi2:
-    mov eax, ecx
-    add eax, 1024               ; start at physical page 1024 = PA 0x400000
-    shl eax, 12
-    or  eax, (PAGE_PRESENT | PAGE_WRITABLE)
-    mov [edx + ecx*4], eax
-    inc ecx
-    cmp ecx, 1024
-    jl  .fill_hi2
-
-    ; Install tables into directory
-    mov eax, boot_pgtab_lo
-    or  eax, (PAGE_PRESENT | PAGE_WRITABLE)
-    mov [boot_pgdir + 0*4], eax         ; entry 0: identity (PA 0–4MB)
-
-    mov eax, boot_pgtab_hi
-    or  eax, (PAGE_PRESENT | PAGE_WRITABLE)
-    mov [boot_pgdir + 768*4], eax       ; entry 768: VA 0xC0000000 (PA 0–4MB)
-
-    mov eax, boot_pgtab_hi2
-    or  eax, (PAGE_PRESENT | PAGE_WRITABLE)
-    mov [boot_pgdir + 769*4], eax       ; entry 769: VA 0xC0400000 (PA 4–8MB)
+    cmp ecx, 16
+    jl  .fill_high
 
     ; Enable paging
     mov eax, boot_pgdir

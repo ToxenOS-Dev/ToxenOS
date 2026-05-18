@@ -22,7 +22,7 @@ extern uint8_t _binary_build_user_shell_elf_end[];
 
 // Returns 1 if path is inside /BSM/SystemT/ (write-protected from all user processes)
 static int path_is_system_protected(const char* path) {
-    const char* guard = "/BSM/SystemT/";
+    const char* guard = "/C:/BSM/SystemT/";
     int i = 0;
     while (guard[i] && path[i] == guard[i]) i++;
     return guard[i] == 0;

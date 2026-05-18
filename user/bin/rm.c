@@ -11,7 +11,7 @@ void _start() {
     if (!args[0]) { print("Usage: rm <file>\n"); tox_exit(); }
     if (tox_remove(args) < 0) {
         set_color(0x0C);
-        if (starts_with(args, "/BSM/SystemT/")) {
+        if (starts_with(args, "/C:/BSM/SystemT/")) {
             print("rm: permission denied -- /BSM/SystemT/ is a protected system directory.\n");
             print("    Only the ToxenOS system installer or update manager can modify it.\n");
         } else {

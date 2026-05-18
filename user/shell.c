@@ -281,13 +281,20 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
         int looks_like_path = 1;
         if (args[0] == '/') looks_like_path = 0;  // already absolute
         if (args[0] >= '0' && args[0] <= '9') looks_like_path = 0;  // IP or number
-        // Check for hostname (contains dot but no slash) — don't prepend
+        // Hostnames (google.com) have dots but no slash — don't prepend cwd.
+        // Exception: .elf files are always local paths, not hostnames.
         int has_dot = 0, has_slash = 0;
+        const char* first_space = args;
+        while (*first_space && *first_space != ' ') first_space++;
+        int tlen = (int)(first_space - args);
+        int ends_elf = (tlen > 4 &&
+                        args[tlen-4] == '.' && args[tlen-3] == 'e' &&
+                        args[tlen-2] == 'l' && args[tlen-1] == 'f');
         for (const char* q = args; *q && *q != ' '; q++) {
             if (*q == '.') has_dot = 1;
             if (*q == '/') has_slash = 1;
         }
-        if (has_dot && !has_slash) looks_like_path = 0;
+        if (has_dot && !has_slash && !ends_elf) looks_like_path = 0;
 
         if (looks_like_path && args[0] != '/') {
             str_copy(full_args, cwd);

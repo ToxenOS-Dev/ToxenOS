@@ -12,7 +12,7 @@ void _start() {
     int fd = tox_open(args, 1 | 4);
     if (fd < 0) {
         set_color(0x0C);
-        if (starts_with(args, "/BSM/SystemT/")) {
+        if (starts_with(args, "/C:/BSM/SystemT/")) {
             print("mkef: permission denied -- /BSM/SystemT/ is a protected system directory.\n");
             print("      Only the ToxenOS system installer or update manager can modify it.\n");
         } else {

@@ -1,5 +1,16 @@
 #include "../tox.h"
 
+static int starts_with(const char* s, const char* p) {
+    int i = 0; while (p[i] && s[i] == p[i]) i++; return p[i] == 0;
+}
+
+static void protected_err(void) {
+    set_color(0x0C);
+    print("rname: permission denied -- /BSM/SystemT/ is a protected system directory.\n");
+    print("       Only the ToxenOS system installer or update manager can modify it.\n");
+    set_color(0x07);
+}
+
 void _start() {
     char args[512];
     tox_get_args(args);
@@ -19,13 +30,15 @@ void _start() {
         set_color(0x07); tox_exit();
     }
 
-    // Check source exists
+    if (starts_with(src, "/C:/BSM/SystemT/") || starts_with(dst, "/C:/BSM/SystemT/")) {
+        protected_err(); tox_exit();
+    }
+
     if (tox_stat(src) < 0) {
         set_color(0x0C); print("rname: not found: "); print(src); print("\n");
         set_color(0x07); tox_exit();
     }
 
-    // Read source
     int size = tox_stat(src);
     uint8_t* buf = malloc((uint32_t)size);
     if (!buf) {
@@ -37,7 +50,6 @@ void _start() {
     tox_read(fd, buf, (uint32_t)size);
     tox_close(fd);
 
-    // Write to new name
     fd = tox_open(dst, 2 | 4);
     if (fd < 0) {
         set_color(0x0C); print("rname: cannot create: "); print(dst); print("\n");
@@ -46,7 +58,6 @@ void _start() {
     tox_write(fd, buf, (uint32_t)size);
     tox_close(fd);
 
-    // Remove old
     tox_remove(src);
     free(buf);
     tox_exit();

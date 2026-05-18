@@ -42,7 +42,7 @@ void _start() {
     fd = tox_open(dst, 2 | 4);
     if (fd < 0) {
         set_color(0x0C);
-        if (starts_with(src, "/BSM/SystemT/") || starts_with(dst, "/BSM/SystemT/")) {
+        if (starts_with(src, "/C:/BSM/SystemT/") || starts_with(dst, "/C:/BSM/SystemT/")) {
             print("mv: permission denied -- /BSM/SystemT/ is a protected system directory.\n");
             print("    Only the ToxenOS system installer or update manager can modify it.\n");
         } else {

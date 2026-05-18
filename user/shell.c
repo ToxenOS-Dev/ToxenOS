@@ -60,6 +60,19 @@ static const char* history_get(int offset) {
 
 static char cwd[256] = "/C:";
 
+// ── Background jobs ──────────────────────────────────────────────────────────
+#define JOBS_MAX 8
+static int job_pids[JOBS_MAX];
+static int job_count = 0;
+
+static void shell_print_int(int n) {
+    if (n < 0) { print("-"); n = -n; }
+    char buf[12]; int i = 10; buf[11] = 0;
+    if (!n) { buf[i--] = '0'; }
+    while (n) { buf[i--] = '0' + n % 10; n /= 10; }
+    print(buf + i + 1);
+}
+
 // ── Shell-local environment table ────────────────────────────────────────────
 // Stored entirely in user space — no kernel syscalls needed.
 
@@ -321,6 +334,17 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
 #define MAX_STAGES 4
 
 static void run_pipeline(char* line) {
+    // Check for background execution (&) at end of line
+    int bg = 0;
+    int llen = str_len(line);
+    int last = llen - 1;
+    while (last >= 0 && line[last] == ' ') last--;
+    if (last >= 0 && line[last] == '&') {
+        bg = 1;
+        line[last] = 0;
+        while (last > 0 && line[last-1] == ' ') line[--last] = 0;
+    }
+
     // Split on |
     char* stages[MAX_STAGES];
     int   nstages = 0;
@@ -414,6 +438,14 @@ static void run_pipeline(char* line) {
         pids[s] = pid;
     }
 
+    if (bg) {
+        int last_pid = pids[nstages-1];
+        if (last_pid >= 0 && job_count < JOBS_MAX)
+            job_pids[job_count++] = last_pid;
+        set_color(0x08); print("[bg] pid "); shell_print_int(last_pid); print("\n"); set_color(0x07);
+        goto cleanup;
+    }
+
     if (pids[nstages-1] >= 0) sys_sigint_target(pids[nstages-1]);
     for (int s = 0; s < nstages; s++) if (pids[s] >= 0) sys_wait(pids[s]);
     sys_sigint_target(-1);
@@ -441,6 +473,18 @@ static void run_command(char* input) {
     if (str_equal(cmd_buf,"clear"))    { tox_clear(); return; }
     if (str_equal(cmd_buf,"reboot"))   { tox_reboot();   return; }
     if (str_equal(cmd_buf,"shutdown")) { tox_shutdown(); return; }
+    if (str_equal(cmd_buf,"jobs")) {
+        int found = 0;
+        for (int i = 0; i < job_count; i++) {
+            if (tox_is_alive(job_pids[i])) {
+                set_color(0x0B); print("["); shell_print_int(i+1); print("] ");
+                set_color(0x07); print("running  pid "); shell_print_int(job_pids[i]); print("\n");
+                found = 1;
+            }
+        }
+        if (!found) { set_color(0x08); print("no background jobs\n"); set_color(0x07); }
+        return;
+    }
     if (str_equal(cmd_buf,"export")) {
         if (!args || !args[0]) return;
         char name[ENV_KEY_MAX]; int ni = 0;

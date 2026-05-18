@@ -16,6 +16,7 @@
 #include "../include/tls.h"
 #include "../include/tty.h"
 #include "../include/fbterm.h"
+#include "../include/timer.h"
 
 extern uint8_t _binary_build_user_shell_elf_start[];
 extern uint8_t _binary_build_user_shell_elf_end[];
@@ -433,6 +434,42 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             uint32_t   pte = tbl[page_idx];
             if (!(pte & PAGE_PRESENT)) return 0;
             return pte & 0x7;  // present + writable + user bits
+        }
+
+        case SYS_SYSCTL:
+        {
+            if (!ebx || !ecx || !edx) return (uint32_t)-1;
+            CHECK_USER_STR(ebx);
+            CHECK_USER_PTR(ecx, edx);
+            const char* key = (const char*)ebx;
+            char*       out = (char*)ecx;
+            uint32_t    maxl = (uint32_t)edx;
+
+            // copy string into user buffer, return length
+            #define SC_STR(s) do { \
+                const char* _s=(s); uint32_t _i=0; \
+                while(_s[_i]&&_i<maxl-1){out[_i]=_s[_i];_i++;} \
+                out[_i]=0; return (int)_i; } while(0)
+
+            // write uint32 as decimal into user buffer
+            #define SC_NUM(v) do { \
+                char _t[12]; int _i=11; _t[11]=0; uint32_t _v=(v); \
+                if(!_v){_t[--_i]='0';}else{while(_v){_t[--_i]='0'+_v%10;_v/=10;}} \
+                SC_STR(_t+_i); } while(0)
+
+            if (kstreq(key, "version"))  SC_STR("ToxenOS 1.0 (i386)");
+            if (kstreq(key, "hostname")) SC_STR("toxenos");
+            if (kstreq(key, "uptime"))   SC_NUM(timer_getticks() / 100);
+            if (kstreq(key, "procs")) {
+                int n = 0;
+                for (int i = 0; i < MAX_PROCESSES; i++)
+                    if (processes[i].state != PROCESS_DEAD) n++;
+                SC_NUM((uint32_t)n);
+            }
+
+            #undef SC_STR
+            #undef SC_NUM
+            return (uint32_t)-1;
         }
 
         default:

@@ -69,3 +69,4 @@ int  sys_getpid();
 #define SYS_PAGE_FLAGS     53  // query page table flags for a virtual address
 #define SYS_GETENV         54  // get environment variable
 #define SYS_SETENV         55  // set environment variable
+#define SYS_SYSCTL         56  // query kernel parameter

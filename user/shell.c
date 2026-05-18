@@ -126,11 +126,10 @@ static int find_in_path(const char* cmd, char* out) {
         return 0;
     }
 
-    // Try kernel global env first, then shell-local, then hardcoded fallback.
+    // Use shell-local PATH env var; fall back to well-known dirs.
     char path_env[256];
-    if (tox_getenv("PATH", path_env, sizeof(path_env)) < 0)
-        if (env_get("PATH", path_env, sizeof(path_env)) < 0)
-            str_copy(path_env, "/C:/BSM/SystemT:/C:/BSM/usr/lst");
+    if (env_get("PATH", path_env, sizeof(path_env)) < 0)
+        str_copy(path_env, "/C:/BSM/SystemT:/C:/BSM/usr/lst");
 
     char dir[128];
     const char* p = path_env;
@@ -505,8 +504,7 @@ static void run_command(char* input) {
         while (args[ni] && args[ni] != '=' && ni < ENV_KEY_MAX - 1) { name[ni] = args[ni]; ni++; }
         name[ni] = 0;
         const char* val = (args[ni] == '=') ? args + ni + 1 : "";
-        env_set(name, val);       // shell-local
-        tox_setenv(name, val);    // kernel global (inherited by all programs)
+        env_set(name, val);
         return;
     }
     if (str_equal(cmd_buf,"env")) {

@@ -141,13 +141,19 @@ void _start() {
         set_color(0x0B); print("[ToxenOS]"); set_color(0x07);
         print(" tox is requesting elevated privileges\n");
         set_color(0x08); print("  Action : "); set_color(0x07); print(reason); print("\n");
-        set_color(0x08); print("  Allow? "); set_color(0x0A); print("(Y"); set_color(0x07);
-        print("/"); set_color(0x0C); print("n"); set_color(0x07); print("): ");
+        set_color(0x08); print("  Allow? ("); set_color(0x0A); print("Y");
+        set_color(0x08); print("/"); set_color(0x0C); print("n");
+        set_color(0x08); print("): "); set_color(0x07);
 
-        // Drain any leftover keys from previous input before reading response
+        // Yield a bit to let key-up scan codes arrive, then drain the buffer
+        for (int _i = 0; _i < 200; _i++) tox_yield();
         while (tox_keyavail()) tox_getchar();
 
-        char c = tox_getchar();
+        // Read response — ignore garbage/scan-code bytes, only accept real keys
+        char c;
+        do { c = tox_getchar(); }
+        while (c == 0 || (c > 0 && c < ' ' && c != '\n' && c != '\r'));
+
         if (c == '\n' || c == '\r' || c == 'y' || c == 'Y' || c == ' ') c = 'y';
         else c = 'n';
 

@@ -169,9 +169,16 @@ int vfs_open(const char* path, int flags)
     fds[fd].type      = FD_TYPE_FILE;
     fds[fd].pipe_idx  = -1;
     fds[fd].mount_idx = mount_idx;
-    fds[fd].position  = 0;
     fds[fd].driver_fd = driver_fd;
     string_copy(fds[fd].path, path, VFS_NAME_MAX);
+    // For append mode, start position at end of file
+    if ((flags & VFS_O_APPEND) && mounts[mount_idx].driver->stat) {
+        uint32_t fsize = 0;
+        mounts[mount_idx].driver->stat(path, &fsize);
+        fds[fd].position = fsize;
+    } else {
+        fds[fd].position = 0;
+    }
 
     return fd;
 }

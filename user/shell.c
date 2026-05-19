@@ -400,6 +400,8 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
         if (args[0] == '/') looks_like_path = 0;  // already absolute
         if (args[0] == '-') looks_like_path = 0;  // flag/option argument
         if (args[0] >= '0' && args[0] <= '9') looks_like_path = 0;  // IP or number
+        // Text-output commands take literal text, not file paths
+        if (str_equal(cmd, "echo")) looks_like_path = 0;
         // Hostnames (google.com) have dots but no slash — don't prepend cwd.
         // Exception: .elf files are always local paths, not hostnames.
         int has_dot = 0, has_slash = 0;
@@ -498,11 +500,12 @@ static void run_pipeline(char* line) {
 
         static char cmd[64], redir_in[128], redir_out[128];
         cmd[0]=redir_in[0]=redir_out[0]=0;
+        int redir_append = 0;
 
         // Extract cmd and redirects from tokens (limit needed for redirect parsing only)
         for (int ti = 0; ti < ntok; ti++) {
-            if (str_equal(tokens[ti],">") && ti+1<ntok) { str_copy(redir_out, tokens[++ti]); }
-            else if (str_equal(tokens[ti],">>") && ti+1<ntok) { str_copy(redir_out, tokens[++ti]); }
+            if (str_equal(tokens[ti],">>") && ti+1<ntok) { redir_append=1; str_copy(redir_out, tokens[++ti]); }
+            else if (str_equal(tokens[ti],">") && ti+1<ntok) { redir_append=0; str_copy(redir_out, tokens[++ti]); }
             else if (str_equal(tokens[ti],"<") && ti+1<ntok) { str_copy(redir_in,  tokens[++ti]); }
             else if (!cmd[0]) { str_copy(cmd, tokens[ti]); }
         }
@@ -559,7 +562,8 @@ static void run_pipeline(char* line) {
             stdin_fd = redir_in_fd;
         }
         if (redir_out[0]) {
-            redir_out_fd = sys_open(redir_out_full, 0x6);
+            int out_flags = redir_append ? (0x2 | 0x4 | 0x8) : 0x6;
+            redir_out_fd = sys_open(redir_out_full, out_flags);
             if (redir_out_fd < 0) {
                 set_color(0x0C); print("cannot open: "); print(redir_out_full); print("\n");
                 set_color(0x07);

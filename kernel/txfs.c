@@ -491,8 +491,9 @@ static int txfs_open_fn(const char* path, int flags)
         if (!open_files[i].used) {
             open_files[i].used      = 1;
             open_files[i].inode_num = (uint32_t)inode_num;
-            open_files[i].position  = 0;
             txfs_read_inode((uint32_t)inode_num, &open_files[i].inode);
+            // For append mode, start writing at end of existing data
+            open_files[i].position = (flags & VFS_O_APPEND) ? open_files[i].inode.size : 0;
             return i;
         }
     }

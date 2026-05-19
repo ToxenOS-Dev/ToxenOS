@@ -84,5 +84,6 @@ void fd_table_close_all(fd_table_t* t);
 #define VFS_O_READ   0x1
 #define VFS_O_WRITE  0x2
 #define VFS_O_CREATE 0x4
+#define VFS_O_APPEND 0x8  // write from end of file
 
 #endif

@@ -141,7 +141,7 @@ static int glob_expand_word(const char* word, char* out, int maxout) {
 }
 
 // Expand wildcards in an entire segment string
-static char glob_seg[2048];
+static char glob_seg[4096];
 static void glob_expand_seg(const char* seg) {
     int ei = 0;
     const char* p = seg;
@@ -157,8 +157,8 @@ static void glob_expand_seg(const char* seg) {
         } else {
             char word[256]; int wl = wlen < 255 ? wlen : 255;
             for (int i = 0; i < wl; i++) word[i] = ws[i]; word[wl] = 0;
-            char expanded[1024];
-            glob_expand_word(word, expanded, 1024);
+            static char expanded[4096];
+            glob_expand_word(word, expanded, 4096);
             for (int i = 0; expanded[i] && ei < 2047; i++) glob_seg[ei++] = expanded[i];
         }
     }

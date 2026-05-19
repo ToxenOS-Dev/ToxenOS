@@ -59,13 +59,15 @@ void _start() {
     tox_strcpy(trash_path, "/C:/Trash/");
     tox_strcat(trash_path, name);
 
-    // Copy file to Trash
-    uint8_t* buf = malloc((uint32_t)size);
-    if (!buf) { set_color(0x0C); print("rm: out of memory\n"); set_color(0x07); tox_exit(); }
-
-    int fd = tox_open(args, 1);
-    tox_read(fd, buf, (uint32_t)size);
-    tox_close(fd);
+    // Copy file to Trash (handle 0-byte files without malloc)
+    uint8_t* buf = 0;
+    if (size > 0) {
+        buf = malloc((uint32_t)size);
+        if (!buf) { set_color(0x0C); print("rm: out of memory\n"); set_color(0x07); tox_exit(); }
+        int fd = tox_open(args, 1);
+        tox_read(fd, buf, (uint32_t)size);
+        tox_close(fd);
+    }
 
     fd = tox_open(trash_path, 2 | 4);
     if (fd < 0) {
@@ -78,9 +80,9 @@ void _start() {
         }
         tox_exit();
     }
-    tox_write(fd, buf, (uint32_t)size);
+    if (buf && size > 0) tox_write(fd, buf, (uint32_t)size);
     tox_close(fd);
-    free(buf);
+    if (buf) free(buf);
 
     // Save original path so restore knows where to put it back
     char origin_path[256];

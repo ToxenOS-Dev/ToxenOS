@@ -25,7 +25,7 @@ void _start() {
     row("pcd",   "",             "rm",     "<path>");
     row("shw",   "<file>",       "mkef",   "<file>");
     row("hex",   "<file>",       "mkd",    "<dir>");
-    row("file",  "<file>",       "rmdir",  "<dir>");
+    row("file",  "<file>",       "rmkd",  "<dir>");
     row("find",  "[dir] <pat>",  "tree",   "[dir]");
     row("sif",   "<pat> <file>", "wc",     "<file>");
 

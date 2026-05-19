@@ -651,11 +651,15 @@ static void run_command(char* input) {
     }
     if (str_equal(cmd_buf,"source") || (cmd_buf[0]=='.' && !cmd_buf[1])) {
         if (!args || !args[0]) { print("Usage: source <script.sh>\n"); return; }
-        int size = sys_stat(args);
-        if (size < 0) { set_color(0x0C); print("source: not found: "); print(args); print("\n"); set_color(0x07); return; }
+        // Resolve relative path against cwd (built-ins don't go through spawn_cmd)
+        static char src_path[256];
+        if (args[0] == '/') { str_copy(src_path, args); }
+        else { str_copy(src_path, cwd); str_cat(src_path, "/"); str_cat(src_path, args); }
+        int size = sys_stat(src_path);
+        if (size < 0) { set_color(0x0C); print("source: not found: "); print(src_path); print("\n"); set_color(0x07); return; }
         // Read file and execute line by line
-        int fd = sys_open(args, 1);
-        if (fd < 0) { set_color(0x0C); print("source: cannot open: "); print(args); print("\n"); set_color(0x07); return; }
+        int fd = sys_open(src_path, 1);
+        if (fd < 0) { set_color(0x0C); print("source: cannot open: "); print(src_path); print("\n"); set_color(0x07); return; }
         static char script_buf[4096];
         int n = tox_read(fd, (uint8_t*)script_buf, 4095);
         tox_close(fd);

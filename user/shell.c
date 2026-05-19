@@ -60,6 +60,111 @@ static const char* history_get(int offset) {
 
 static char cwd[256] = "/C:";
 
+// ── Aliases ───────────────────────────────────────────────────────────────────
+#define ALIAS_MAX     16
+#define ALIAS_KEY_MAX 32
+#define ALIAS_VAL_MAX 128
+static char alias_keys[ALIAS_MAX][ALIAS_KEY_MAX];
+static char alias_vals[ALIAS_MAX][ALIAS_VAL_MAX];
+static int  alias_count = 0;
+
+static const char* alias_find(const char* name) {
+    for (int i = 0; i < alias_count; i++)
+        if (str_equal(alias_keys[i], name)) return alias_vals[i];
+    return 0;
+}
+static void alias_set(const char* name, const char* val) {
+    for (int i = 0; i < alias_count; i++) {
+        if (str_equal(alias_keys[i], name)) { str_copy(alias_vals[i], val); return; }
+    }
+    if (alias_count >= ALIAS_MAX) return;
+    str_copy(alias_keys[alias_count], name);
+    str_copy(alias_vals[alias_count], val);
+    alias_count++;
+}
+static void alias_remove(const char* name) {
+    for (int i = 0; i < alias_count; i++) {
+        if (str_equal(alias_keys[i], name)) {
+            for (int j = i; j < alias_count-1; j++) {
+                str_copy(alias_keys[j], alias_keys[j+1]);
+                str_copy(alias_vals[j], alias_vals[j+1]);
+            }
+            alias_count--; return;
+        }
+    }
+}
+
+// ── Wildcard/glob ─────────────────────────────────────────────────────────────
+static int glob_match(const char* pat, const char* name) {
+    while (*pat) {
+        if (*pat == '*') {
+            while (*pat == '*') pat++;
+            if (!*pat) return 1;
+            while (*name) { if (glob_match(pat, name)) return 1; name++; }
+            return 0;
+        }
+        if (*pat == '?') { if (!*name) return 0; }
+        else if (*pat != *name) return 0;
+        pat++; name++;
+    }
+    return *name == 0;
+}
+
+// Expand one wildcard word into out (space-separated matches). Returns match count.
+static int glob_expand_word(const char* word, char* out, int maxout) {
+    int last_slash = -1;
+    for (int i = 0; word[i]; i++) if (word[i] == '/') last_slash = i;
+
+    char dir[256], pattern[128];
+    if (last_slash < 0) { str_copy(dir, cwd); str_copy(pattern, word); }
+    else {
+        int i = 0;
+        for (; i < last_slash; i++) dir[i] = word[i]; dir[i] = 0;
+        str_copy(pattern, word + last_slash + 1);
+    }
+
+    char entry[256]; int idx = 0, matched = 0, oi = 0;
+    while (sys_readdir(dir, entry, idx++) == 0) {
+        if (entry[0] == '.') continue;
+        if (!glob_match(pattern, entry)) continue;
+        if (matched > 0 && oi < maxout-1) out[oi++] = ' ';
+        char full[256]; str_copy(full, dir);
+        int dl = str_len(full);
+        if (dl > 0 && full[dl-1] != '/') { full[dl] = '/'; full[dl+1] = 0; }
+        str_cat(full, entry);
+        for (int i = 0; full[i] && oi < maxout-1; i++) out[oi++] = full[i];
+        matched++;
+    }
+    if (!matched) { str_copy(out, word); return 0; }
+    out[oi] = 0;
+    return matched;
+}
+
+// Expand wildcards in an entire segment string
+static char glob_seg[2048];
+static void glob_expand_seg(const char* seg) {
+    int ei = 0;
+    const char* p = seg;
+    while (*p) {
+        while (*p == ' ' && ei < 2047) glob_seg[ei++] = *p++;
+        if (!*p) break;
+        const char* ws = p;
+        int has_wild = 0;
+        while (*p && *p != ' ') { if (*p=='*'||*p=='?') has_wild=1; p++; }
+        int wlen = (int)(p - ws);
+        if (!has_wild) {
+            for (int i = 0; i < wlen && ei < 2047; i++) glob_seg[ei++] = ws[i];
+        } else {
+            char word[256]; int wl = wlen < 255 ? wlen : 255;
+            for (int i = 0; i < wl; i++) word[i] = ws[i]; word[wl] = 0;
+            char expanded[1024];
+            glob_expand_word(word, expanded, 1024);
+            for (int i = 0; expanded[i] && ei < 2047; i++) glob_seg[ei++] = expanded[i];
+        }
+    }
+    glob_seg[ei] = 0;
+}
+
 // ── Background jobs ──────────────────────────────────────────────────────────
 #define JOBS_MAX 8
 static int job_pids[JOBS_MAX];
@@ -375,10 +480,14 @@ static void run_pipeline(char* line) {
         char* seg = stages[s];
         while (*seg == ' ') seg++;
 
+        // Expand wildcards before tokenizing
+        glob_expand_seg(seg);
+        char* gseg = glob_seg;
+
         // Tokenise the segment
         static char tokens[8][128]; int ntok = 0;
         for (int ti=0;ti<8;ti++) tokens[ti][0]=0;
-        char* t = seg;
+        char* t = gseg;
         while (*t && ntok < 8) {
             while (*t == ' ') t++;
             if (!*t) break;
@@ -472,11 +581,71 @@ static void run_command(char* input) {
     cmd_buf[ci] = 0;
     const char* args = input[ci] ? input+ci+1 : "";
 
+    // Alias substitution — expand alias then re-run
+    {
+        const char* av = alias_find(cmd_buf);
+        if (av) {
+            static char alias_line[512];
+            str_copy(alias_line, av);
+            if (args && args[0]) { str_cat(alias_line, " "); str_cat(alias_line, args); }
+            run_command(alias_line);
+            return;
+        }
+    }
+
     if (str_equal(cmd_buf,"cd"))       { cmd_cd(args); return; }
     if (str_equal(cmd_buf,"cdb"))      { cmd_cd(".."); return; }
     if (str_equal(cmd_buf,"clear"))    { tox_clear(); return; }
     if (str_equal(cmd_buf,"reboot"))   { tox_reboot();   return; }
     if (str_equal(cmd_buf,"shutdown")) { tox_shutdown(); return; }
+
+    if (str_equal(cmd_buf,"alias")) {
+        if (!args || !args[0]) {
+            for (int i = 0; i < alias_count; i++) {
+                set_color(0x0B); print(alias_keys[i]); set_color(0x08); print("=");
+                set_color(0x07); print(alias_vals[i]); print("\n");
+            }
+            if (!alias_count) { set_color(0x08); print("no aliases\n"); set_color(0x07); }
+            return;
+        }
+        // Parse name=value
+        char name[ALIAS_KEY_MAX]; int ni = 0;
+        while (args[ni] && args[ni] != '=' && ni < ALIAS_KEY_MAX-1) { name[ni]=args[ni]; ni++; }
+        name[ni] = 0;
+        const char* val = (args[ni] == '=') ? args+ni+1 : "";
+        alias_set(name, val);
+        return;
+    }
+    if (str_equal(cmd_buf,"unalias")) {
+        if (args && args[0]) alias_remove(args);
+        return;
+    }
+    if (str_equal(cmd_buf,"source") || (cmd_buf[0]=='.' && !cmd_buf[1])) {
+        if (!args || !args[0]) { print("Usage: source <script.sh>\n"); return; }
+        int size = sys_stat(args);
+        if (size < 0) { set_color(0x0C); print("source: not found: "); print(args); print("\n"); set_color(0x07); return; }
+        // Read file and execute line by line
+        int fd = sys_open(args, 1);
+        if (fd < 0) { set_color(0x0C); print("source: cannot open: "); print(args); print("\n"); set_color(0x07); return; }
+        static char script_buf[4096];
+        int n = tox_read(fd, (uint8_t*)script_buf, 4095);
+        tox_close(fd);
+        if (n < 0) n = 0;
+        script_buf[n] = 0;
+        // Execute line by line
+        char line[256]; int li = 0;
+        for (int i = 0; i <= n; i++) {
+            char c = script_buf[i];
+            if (c == '\n' || c == '\r' || c == 0) {
+                line[li] = 0;
+                if (li > 0 && line[0] != '#') run_command(line);
+                li = 0;
+            } else if (li < 255) {
+                line[li++] = c;
+            }
+        }
+        return;
+    }
     if (str_equal(cmd_buf,"sysctl")) {
         if (args && args[0]) {
             set_color(0x0C); print("sysctl: no arguments — just run: sysctl\n");

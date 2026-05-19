@@ -496,17 +496,46 @@ static void run_pipeline(char* line) {
             tokens[ntok][k] = 0; ntok++;
         }
 
-        static char cmd[64], args[192], redir_in[128], redir_out[128];
-        cmd[0]=args[0]=redir_in[0]=redir_out[0]=0;
-        int args_started = 0;
+        static char cmd[64], redir_in[128], redir_out[128];
+        cmd[0]=redir_in[0]=redir_out[0]=0;
+
+        // Extract cmd and redirects from tokens (limit needed for redirect parsing only)
         for (int ti = 0; ti < ntok; ti++) {
             if (str_equal(tokens[ti],">") && ti+1<ntok) { str_copy(redir_out, tokens[++ti]); }
             else if (str_equal(tokens[ti],">>") && ti+1<ntok) { str_copy(redir_out, tokens[++ti]); }
             else if (str_equal(tokens[ti],"<") && ti+1<ntok) { str_copy(redir_in,  tokens[++ti]); }
             else if (!cmd[0]) { str_copy(cmd, tokens[ti]); }
-            else { if (args_started) str_cat(args," "); str_cat(args,tokens[ti]); args_started=1; }
         }
         if (!cmd[0]) continue;
+
+        // Build args from full expanded segment (not limited token array)
+        // Skip past the command name in gseg to get all args including wildcard matches
+        static char args[2048];
+        args[0] = 0;
+        {
+            const char* p2 = gseg;
+            while (*p2 == ' ') p2++;
+            // skip command name
+            while (*p2 && *p2 != ' ') p2++;
+            while (*p2 == ' ') p2++;
+            // Strip redirect tokens from end: find >/< and cut there
+            int alen = 0;
+            while (p2[alen]) alen++;
+            // Simple copy — redirects already handled via tokens above
+            int ai = 0;
+            while (*p2 && ai < 2047) args[ai++] = *p2++;
+            args[ai] = 0;
+            // Remove any trailing redirect tokens (> file or < file)
+            // Find first unquoted > or < and truncate there
+            for (int i = 0; i < ai - 1; i++) {
+                if ((args[i] == '>' || args[i] == '<') &&
+                    (i == 0 || args[i-1] == ' ')) {
+                    // trim trailing space before redirect
+                    int j = i; while (j > 0 && args[j-1] == ' ') j--;
+                    args[j] = 0; break;
+                }
+            }
+        }
 
         int stdin_fd  = (s > 0)         ? pipe_r[s-1] : -1;
         int stdout_fd = (s+1 < nstages) ? pipe_w[s]   : -1;

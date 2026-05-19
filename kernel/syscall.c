@@ -468,7 +468,11 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
                 SC_STR(_t+_i); } while(0)
 
             if (kstreq(key, "version"))  SC_STR("ToxenOS 1.0 (i386)");
-            if (kstreq(key, "hostname")) SC_STR("toxenos");
+            if (kstreq(key, "hostname")) {
+                char _hn[64];
+                if (env_get("hostname", _hn, 64) >= 0) SC_STR(_hn);
+                SC_STR("toxenos");
+            }
             if (kstreq(key, "uptime"))   SC_NUM(timer_getticks() / 100);
             if (kstreq(key, "procs")) {
                 int n = 0;

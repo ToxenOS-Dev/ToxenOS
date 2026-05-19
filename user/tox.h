@@ -85,6 +85,8 @@
 #define SYS_GETTIME       59   // read CMOS RTC → formatted date/time string
 #define SYS_CHMOD         60   // set file permission bits
 #define SYS_GETMODE       61   // get file permission bits
+#define SYS_ELEVATE       62   // request elevated privileges (UAC-style prompt)
+#define SYS_IS_ADMIN      63   // returns 1 if current process is elevated
 
 // ── Output ────────────────────────────────────────────────────────────────────
 static inline void print(const char* s)   { SYSCALL1(SYS_PRINT, s); }
@@ -405,6 +407,15 @@ static inline int tox_sysctl(const char* key, char* buf, uint32_t maxlen)
 // Read CMOS RTC. Writes "YYYY-MM-DD HH:MM:SS" into buf. Returns length or -1.
 static inline int tox_gettime(char* buf, uint32_t maxlen)
     { return SYSCALL2(SYS_GETTIME, buf, maxlen); }
+
+// ── Elevation / UAC ──────────────────────────────────────────────────────────
+// Request elevated privileges. Kernel shows (Y/n) prompt, logs result.
+// Returns 0 if granted, -1 if denied.
+static inline int tox_elevate(const char* reason)
+    { return SYSCALL1(SYS_ELEVATE, reason); }
+// Returns 1 if the current process has been elevated.
+static inline int tox_is_admin(void)
+    { return SYSCALL0(SYS_IS_ADMIN); }
 
 // ── File permissions ─────────────────────────────────────────────────────────
 // Set permission bits (Unix-style octal: 0644, 0755, etc.)

@@ -37,6 +37,7 @@ typedef struct {
     uint32_t*       page_directory;
     char            name[32];
     char            args[256];
+    uint8_t         is_admin;        // 1 = elevated (can write to protected dirs)
 } process_t;
 
 extern process_t processes[MAX_PROCESSES];

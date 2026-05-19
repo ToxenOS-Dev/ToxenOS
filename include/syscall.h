@@ -73,3 +73,5 @@ int  sys_getpid();
 #define SYS_GETTIME        59  // read CMOS RTC → formatted date/time string
 #define SYS_CHMOD          60  // set file permission bits
 #define SYS_GETMODE        61  // get file permission bits
+#define SYS_ELEVATE        62  // request elevated privileges (shows UAC prompt)
+#define SYS_IS_ADMIN       63  // returns 1 if current process is elevated

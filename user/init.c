@@ -5,7 +5,7 @@
 void _start()
 {
     // Set default environment variables inherited by all child processes
-    tox_setenv("PATH",  "/C:/BSM/SystemT:/C:/BSM/usr/lst");
+    tox_setenv("PATH",  "/C:/BSM/SystemT:/C:/BSM/usr/lst");  // usr/lst auto-included
     tox_setenv("HOME",  "/");
     tox_setenv("SHELL", "/shell.elf");
     tox_setenv("TERM",  "toxterm");

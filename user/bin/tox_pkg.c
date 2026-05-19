@@ -43,6 +43,17 @@ void _start() {
 
     if (str_eq(cmd, "install")) {
         if (!param[0]) { set_color(0x0C); print("tox: usage: tox install <path>\n"); set_color(0x07); tox_exit(); }
+        // System install (--system flag) goes to BSM/SystemT and needs elevation
+        int system_install = 0;
+        if (param[0] == '-' && param[1] == '-') {
+            if (param[2]=='s'&&param[3]=='y'&&param[4]=='s'&&param[5]=='t'&&
+                param[6]=='e'&&param[7]=='m') {
+                system_install = 1;
+                while (*param && *param != ' ') param++;
+                while (*param == ' ') param++;
+            }
+        }
+        if (system_install && tox_elevate("install to /BSM/SystemT/") < 0) tox_exit();
 
         int size = tox_stat(param);
         if (size < 0) {

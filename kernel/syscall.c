@@ -24,6 +24,7 @@
 extern uint8_t _binary_build_user_shell_elf_start[];
 extern uint8_t _binary_build_user_shell_elf_end[];
 
+static uint32_t kstrlen(const char* s) { uint32_t i=0; while(s[i]) i++; return i; }
 static int kstreq(const char* a, const char* b) {
     int i = 0; while (a[i] && b[i] && a[i]==b[i]) i++; return a[i]==b[i];
 }
@@ -31,9 +32,10 @@ static int kstarts(const char* s, const char* p) {
     int i = 0; while (p[i] && s[i]==p[i]) i++; return p[i]==0;
 }
 
-// Returns 1 if path is inside /BSM/SystemT/ (write-protected from all user processes)
+// Returns 1 if path is inside /BSM/SystemT/ and process is NOT admin
 static int path_is_system_protected(const char* path) {
-    return kstarts(path, "/C:/BSM/SystemT/");
+    if (!kstarts(path, "/C:/BSM/SystemT/")) return 0;
+    return !process_current()->is_admin;  // elevated processes can write
 }
 
 // Returns 1 if path IS a core system directory that cannot be deleted
@@ -481,6 +483,54 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             #undef SC_STR
             #undef SC_NUM
             return (uint32_t)-1;
+        }
+
+        case SYS_IS_ADMIN:
+            return process_current()->is_admin;
+
+        case SYS_ELEVATE:
+        {
+            if (ebx) { CHECK_USER_STR(ebx); }
+            process_t* cur = process_current();
+            const char* reason = ebx ? (const char*)ebx : "perform a privileged action";
+
+            // Show UAC-style prompt on TTY
+            print("\n");
+            print("[ToxenOS] "); print(cur->name);
+            print(" is requesting elevated privileges\n");
+            print("  Action : "); print(reason); print("\n");
+            print("  Allow? (Y/n): ");
+
+            // Read one key — Enter/Y = allow (default), N = deny
+            char c = keyboard_getchar();
+            if (c == '\n' || c == '\r' || c == 'y' || c == 'Y') c = 'y';
+            else if (c == 'n' || c == 'N') c = 'n';
+            else c = 'y';  // any other key = default yes
+
+            // Echo response
+            if (c == 'y') print("y\n"); else print("n\n");
+
+            // Log to /C:/etc/priv.log
+            {
+                int lfd = vfs_open("/C:/etc/priv.log", VFS_O_WRITE | VFS_O_CREATE | VFS_O_APPEND);
+                if (lfd >= 0) {
+                    const char* verdict = (c == 'y') ? "ALLOW" : "DENY ";
+                    vfs_write(lfd, (const uint8_t*)"[", 1);
+                    vfs_write(lfd, (const uint8_t*)verdict, 5);
+                    vfs_write(lfd, (const uint8_t*)"] ", 2);
+                    vfs_write(lfd, (const uint8_t*)cur->name, kstrlen(cur->name));
+                    vfs_write(lfd, (const uint8_t*)" -> ", 4);
+                    vfs_write(lfd, (const uint8_t*)reason, kstrlen(reason));
+                    vfs_write(lfd, (const uint8_t*)"\n", 1);
+                    vfs_close(lfd);
+                }
+            }
+
+            if (c == 'n') { print("[DENIED]\n\n"); return (uint32_t)-1; }
+
+            cur->is_admin = 1;
+            print("[ELEVATED]\n\n");
+            return 0;
         }
 
         case SYS_CHMOD:

@@ -71,3 +71,5 @@ int  sys_getpid();
 #define SYS_SETENV         55  // set environment variable
 #define SYS_SYSCTL         56  // query kernel parameter
 #define SYS_GETTIME        59  // read CMOS RTC → formatted date/time string
+#define SYS_CHMOD          60  // set file permission bits
+#define SYS_GETMODE        61  // get file permission bits

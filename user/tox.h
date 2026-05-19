@@ -83,6 +83,8 @@
 #define SYS_SYMLINK       57   // create symbolic link
 #define SYS_READLINK      58   // read symlink target
 #define SYS_GETTIME       59   // read CMOS RTC → formatted date/time string
+#define SYS_CHMOD         60   // set file permission bits
+#define SYS_GETMODE       61   // get file permission bits
 
 // ── Output ────────────────────────────────────────────────────────────────────
 static inline void print(const char* s)   { SYSCALL1(SYS_PRINT, s); }
@@ -403,6 +405,14 @@ static inline int tox_sysctl(const char* key, char* buf, uint32_t maxlen)
 // Read CMOS RTC. Writes "YYYY-MM-DD HH:MM:SS" into buf. Returns length or -1.
 static inline int tox_gettime(char* buf, uint32_t maxlen)
     { return SYSCALL2(SYS_GETTIME, buf, maxlen); }
+
+// ── File permissions ─────────────────────────────────────────────────────────
+// Set permission bits (Unix-style octal: 0644, 0755, etc.)
+static inline int tox_chmod(const char* path, uint32_t mode)
+    { return SYSCALL2(SYS_CHMOD, path, mode); }
+// Get permission bits. Returns mode or -1.
+static inline int tox_getmode(const char* path)
+    { return SYSCALL1(SYS_GETMODE, path); }
 
 // ── Symlinks ──────────────────────────────────────────────────────────────────
 // Create a symbolic link at 'path' pointing to 'target'.

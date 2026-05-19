@@ -21,6 +21,8 @@ typedef struct
     int (*mkdir)(const char* path);      
     int (*remove)(const char* path); 
     int (*isdir)(const char* path);
+    int (*chmod)(const char* path, uint32_t mode);   // set permission bits
+    int (*getmode)(const char* path);                // return mode field
 } fs_driver_t;
 
 typedef struct
@@ -58,6 +60,8 @@ int  vfs_mkdir(const char* path);
 int  vfs_remove(const char* path);
 int  vfs_isdir(const char* path);
 int  vfs_pipe(int* rfd, int* wfd);
+int  vfs_chmod(const char* path, uint32_t mode);
+int  vfs_getmode(const char* path);
 
 // Per-process FD table — maps local fd numbers to global pool slots.
 // local_fds[i] = -1 means slot i is closed.

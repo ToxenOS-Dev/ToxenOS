@@ -449,6 +449,15 @@ static int txfs_open_fn(const char* path, int flags)
     const char* local = txfs_strip_mount(path);
     int inode_num = txfs_lookup(local);
 
+    if (inode_num >= 0) {
+        // File exists — check permissions
+        txfs_inode_t existing;
+        txfs_read_inode((uint32_t)inode_num, &existing);
+        uint32_t perm = existing.mode & 0x1FF;
+        if ((flags & VFS_O_READ)  && !(perm & TXFS_PERM_OWNER_R)) return -1;
+        if ((flags & VFS_O_WRITE) && !(perm & TXFS_PERM_OWNER_W)) return -1;
+    }
+
     if (inode_num < 0) {
         if (!(flags & VFS_O_CREATE)) return -1;
 
@@ -720,6 +729,29 @@ static int txfs_stat_fn(const char* path, uint32_t* size)
     return 0;
 }
 
+static int txfs_chmod_fn(const char* path, uint32_t new_perm)
+{
+    const char* local = txfs_strip_mount(path);
+    int inode_num = txfs_lookup(local);
+    if (inode_num < 0) return -1;
+    txfs_inode_t inode;
+    txfs_read_inode((uint32_t)inode_num, &inode);
+    // Keep type bits (upper 4 bits of high nibble), replace permission bits
+    inode.mode = (inode.mode & 0xFFFFF000u) | (new_perm & 0x1FF);
+    txfs_write_inode((uint32_t)inode_num, &inode);
+    return 0;
+}
+
+static int txfs_getmode_fn(const char* path)
+{
+    const char* local = txfs_strip_mount(path);
+    int inode_num = txfs_lookup(local);
+    if (inode_num < 0) return -1;
+    txfs_inode_t inode;
+    txfs_read_inode((uint32_t)inode_num, &inode);
+    return (int)(inode.mode & 0x1FF);  // return permission bits only
+}
+
 // --- driver registration -----------------------------------------------------
 
 static fs_driver_t txfs_driver = {
@@ -734,6 +766,8 @@ static fs_driver_t txfs_driver = {
     .mkdir   = txfs_mkdir_fn,
     .remove  = txfs_remove_fn,
     .isdir   = txfs_isdir_fn,
+    .chmod   = txfs_chmod_fn,
+    .getmode = txfs_getmode_fn,
 };
 
 fs_driver_t* txfs_init()

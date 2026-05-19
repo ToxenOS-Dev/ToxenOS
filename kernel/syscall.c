@@ -473,6 +473,14 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return (uint32_t)-1;
         }
 
+        case SYS_CHMOD:
+            CHECK_USER_STR(ebx);
+            return vfs_chmod((const char*)ebx, (uint32_t)ecx);
+
+        case SYS_GETMODE:
+            CHECK_USER_STR(ebx);
+            return vfs_getmode((const char*)ebx);
+
         case SYS_GETENV:
         {
             if (!ebx || !ecx || !edx) return (uint32_t)-1;

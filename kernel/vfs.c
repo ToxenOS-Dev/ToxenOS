@@ -296,3 +296,19 @@ int vfs_stat(const char* path, uint32_t* size)
 
     return mounts[mount_idx].driver->stat(path, size);
 }
+
+int vfs_chmod(const char* path, uint32_t mode)
+{
+    int mount_idx = vfs_find_mount(path);
+    if (mount_idx == -1) return -1;
+    if (!mounts[mount_idx].driver->chmod) return -1;
+    return mounts[mount_idx].driver->chmod(path, mode);
+}
+
+int vfs_getmode(const char* path)
+{
+    int mount_idx = vfs_find_mount(path);
+    if (mount_idx == -1) return -1;
+    if (!mounts[mount_idx].driver->getmode) return -1;
+    return mounts[mount_idx].driver->getmode(path);
+}

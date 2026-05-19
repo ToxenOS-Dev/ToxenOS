@@ -468,6 +468,9 @@ static void run_pipeline(char* line) {
 
     // Create inter-stage pipes
     int pipe_r[MAX_STAGES], pipe_w[MAX_STAGES];
+    // Track redirect fds per stage — close AFTER wait (not before)
+    int stage_redir_in[MAX_STAGES], stage_redir_out[MAX_STAGES];
+    for (int i = 0; i < MAX_STAGES; i++) stage_redir_in[i] = stage_redir_out[i] = -1;
     for (int i = 0; i < MAX_STAGES; i++) pipe_r[i] = pipe_w[i] = -1;
     for (int i = 0; i+1 < nstages; i++) {
         if (sys_pipe(&pipe_r[i], &pipe_w[i]) < 0) {
@@ -575,11 +578,12 @@ static void run_pipeline(char* line) {
 
         int pid = spawn_cmd(cmd, args[0]?args:0, stdin_fd, stdout_fd);
 
-        // Close our copies of the pipe ends — child has them now
+        // Close pipe ends immediately (signals EOF to next stage)
         if (s > 0 && pipe_r[s-1] >= 0)      { sys_close(pipe_r[s-1]); pipe_r[s-1]=-1; }
         if (s+1<nstages && pipe_w[s] >= 0)   { sys_close(pipe_w[s]);   pipe_w[s]=-1;   }
-        if (redir_in_fd  >= 0) sys_close(redir_in_fd);
-        if (redir_out_fd >= 0) sys_close(redir_out_fd);
+        // Save redirect fds — close AFTER waiting (child needs them open while running)
+        stage_redir_in[s]  = redir_in_fd;
+        stage_redir_out[s] = redir_out_fd;
 
         if (pid == -2) {
             set_color(0x0C); print("Unknown command: "); print(cmd); print("\n");
@@ -604,6 +608,12 @@ static void run_pipeline(char* line) {
     if (pids[nstages-1] >= 0) sys_sigint_target(pids[nstages-1]);
     for (int s = 0; s < nstages; s++) if (pids[s] >= 0) sys_wait(pids[s]);
     sys_sigint_target(-1);
+
+    // Close redirect fds after children finish (not before — they need them open)
+    for (int s = 0; s < MAX_STAGES; s++) {
+        if (stage_redir_in[s]  >= 0) sys_close(stage_redir_in[s]);
+        if (stage_redir_out[s] >= 0) sys_close(stage_redir_out[s]);
+    }
 
 cleanup:
     for (int i = 0; i < MAX_STAGES; i++) {

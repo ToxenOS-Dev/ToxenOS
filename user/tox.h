@@ -226,10 +226,10 @@ static inline file_type_t get_file_type(const char* name) {
     const char* e = name + last + 1;
     if (_exteq(e,"txt")||_exteq(e,"md")||_exteq(e,"c")||_exteq(e,"h")||
         _exteq(e,"cpp")||_exteq(e,"cfg")||_exteq(e,"ini")||_exteq(e,"log")||
-        _exteq(e,"csv")||_exteq(e,"sh")||_exteq(e,"py")||_exteq(e,"json")||
+        _exteq(e,"csv")||_exteq(e,"py")||_exteq(e,"json")||
         _exteq(e,"xml")||_exteq(e,"conf")||_exteq(e,"toml")||_exteq(e,"yaml"))
         return FTYPE_TEXT;
-    if (_exteq(e,"txs")||_exteq(e,"tui")) return FTYPE_SCRIPT;
+    if (_exteq(e,"sh")||_exteq(e,"txs")||_exteq(e,"tui")) return FTYPE_SCRIPT;
     if (_exteq(e,"png")||_exteq(e,"jpg")||_exteq(e,"bmp")||_exteq(e,"gif")) return FTYPE_IMAGE;
     if (_exteq(e,"mp3")||_exteq(e,"wav")||_exteq(e,"ogg")||_exteq(e,"flac")) return FTYPE_AUDIO;
     if (_exteq(e,"mp4")||_exteq(e,"mkv")||_exteq(e,"avi")) return FTYPE_VIDEO;

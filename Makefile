@@ -200,7 +200,7 @@ populate: tools/txfs_write
 	tools/txfs_write build/disk.img build/user/bin/df.elf /BSM/SystemT/df.elf
 	tools/txfs_write build/disk.img build/user/bin/free.elf /BSM/SystemT/free.elf
 	tools/txfs_write build/disk.img build/user/bin/hostname.elf /BSM/SystemT/hostname.elf
-	@printf "admin:\n" | tools/txfs_write build/disk.img /dev/stdin /etc/users 2>/dev/null || true
+	tools/txfs_write build/disk.img user/system/users /etc/users
 	tools/txfs_write build/disk.img build/user/bin/trash.elf /BSM/SystemT/trash.elf
 	tools/txfs_write build/disk.img build/user/bin/tox.elf /BSM/SystemT/tox.elf
 	@tools/txfs_write build/disk.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true

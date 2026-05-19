@@ -16,6 +16,8 @@ static int read_line(char* buf, int max, int hide) {
             if (i > 0) { i--; tox_erase(); }
             continue;
         }
+        // Ignore non-printable chars (scan codes, garbage from boot)
+        if (c < 0x20 || c > 0x7E) continue;
         buf[i++] = c;
         if (hide) print("*");
         else { char s[2] = {c, 0}; print(s); }
@@ -99,6 +101,10 @@ void _start() {
             }
         }
     }
+
+    // Drain keyboard buffer — boot process leaves garbage scan codes
+    for (int _d = 0; _d < 500; _d++) yield();
+    while (tox_keyavail()) tox_getchar();
 
     // Login prompt
     char username[64], password[64];

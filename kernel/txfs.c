@@ -467,7 +467,7 @@ static int txfs_open_fn(const char* path, int flags)
         txfs_inode_t inode;
         uint8_t* p = (uint8_t*)&inode;
         for (uint32_t i = 0; i < sizeof(inode); i++) p[i] = 0;
-        inode.mode     = (TXFS_TYPE_FILE << 12) | TXFS_PERM_OWNER_R | TXFS_PERM_OWNER_W;
+        inode.mode     = (TXFS_TYPE_FILE << 12) | TXFS_PERM_OWNER_R | TXFS_PERM_OWNER_W | TXFS_PERM_OWNER_X;
         inode.links    = 1;
         inode.size     = 0;
         inode.created  = timer_getticks();

@@ -180,17 +180,21 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             CHECK_USER_STR(ebx);
             return sys_exec((const char*)ebx);
 
+        /* Helper: propagate is_admin from parent to child on every spawn */
+        #define INHERIT_ADMIN(pid) do { \
+            process_t* _ch = process_get_by_pid(pid); \
+            if (_ch) _ch->is_admin = process_current()->is_admin; \
+        } while(0)
+
         case SYS_SPAWN:
-            CHECK_USER_STR(ebx);
-            return sys_spawn((const char*)ebx);
+        { CHECK_USER_STR(ebx); int _p=sys_spawn((const char*)ebx); if(_p>=0) INHERIT_ADMIN(_p); return _p; }
 
         case SYS_WAIT:
             sys_wait((int)ebx);
             return 0;
 
         case SYS_SPAWN_TTY:
-            CHECK_USER_STR(ebx);
-            return sys_spawn_tty((const char*)ebx, (int)ecx);
+        { CHECK_USER_STR(ebx); int _p=sys_spawn_tty((const char*)ebx,(int)ecx); if(_p>=0) INHERIT_ADMIN(_p); return _p; }
 
         case SYS_GET_ARGS:
         {
@@ -204,9 +208,7 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         }
 
         case SYS_SPAWN_ARGS:
-            CHECK_USER_STR(ebx);
-            if (edx) { CHECK_USER_STR(edx); }
-            return sys_spawn_tty_args((const char*)ebx, (int)ecx, edx ? (const char*)edx : "");
+        { CHECK_USER_STR(ebx); if(edx){CHECK_USER_STR(edx);} int _p=sys_spawn_tty_args((const char*)ebx,(int)ecx,edx?(const char*)edx:""); if(_p>=0) INHERIT_ADMIN(_p); return _p; }
 
         case SYS_IS_ALIVE:
             return process_is_alive((int)ebx);
@@ -223,6 +225,7 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             int pid = process_create_elf("shell", buf, size);
             if (pid < 0) return (uint32_t)-1;
             tty_assign_pid(pid, tty);
+            INHERIT_ADMIN(pid);
             return pid;
         }
 
@@ -313,6 +316,7 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
                 child->stdin_fd  = stdin_f;
                 child->stdout_fd = stdout_f;
             }
+            INHERIT_ADMIN(pid);
             return pid;
         }
 
@@ -346,6 +350,7 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
                         child->fds.local_fds[child_local] = parent_gfd;
                 }
             }
+            INHERIT_ADMIN(pid);
             return pid;
         }
 

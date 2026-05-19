@@ -12,10 +12,24 @@ static const char* basename(const char* path) {
 }
 
 static void usage(void) {
-    set_color(0x0B); print("tox - ToxenOS Package Manager\n"); set_color(0x07);
+    set_color(0x0B); print("tox - ToxenOS Elevated Runner & Package Manager\n"); set_color(0x07);
+    print("  tox <cmd> [args]     run command with elevated privileges (like sudo)\n");
     print("  tox install <path>   install program to /BSM/usr/lst/\n");
     print("  tox remove  <name>   remove program from /BSM/usr/lst/\n");
     print("  tox list             list installed packages\n");
+}
+
+// Find a command in BSM paths, return full path in out. Returns 1 if found.
+static int tox_find(const char* cmd, char* out) {
+    const char* dirs[] = { "/C:/BSM/SystemT", "/C:/BSM/usr/lst", 0 };
+    for (int i = 0; dirs[i]; i++) {
+        tox_strcpy(out, dirs[i]); tox_strcat(out, "/"); tox_strcat(out, cmd);
+        if (tox_stat(out) >= 0) return 1;
+        tox_strcpy(out, dirs[i]); tox_strcat(out, "/"); tox_strcat(out, cmd);
+        tox_strcat(out, ".elf");
+        if (tox_stat(out) >= 0) return 1;
+    }
+    return 0;
 }
 
 void _start() {
@@ -107,6 +121,32 @@ void _start() {
         tox_exit();
     }
 
-    usage();
-    tox_exit();
+    // sudo-mode: unknown subcommand = elevate and run as a command
+    {
+        char full_path[256];
+        // cmd might be absolute path already
+        if (cmd[0] == '/') {
+            tox_strcpy(full_path, cmd);
+        } else if (!tox_find(cmd, full_path)) {
+            set_color(0x0C); print("tox: not found: "); print(cmd); print("\n");
+            set_color(0x07); tox_exit();
+        }
+
+        // Request elevation
+        char reason[128];
+        tox_strcpy(reason, "run ");
+        tox_strcat(reason, cmd);
+        tox_strcat(reason, " with elevated privileges");
+        if (tox_elevate(reason) < 0) tox_exit();
+
+        // Spawn the command — is_admin inherited from elevated tox
+        int tty = tox_my_tty();
+        int pid = tox_spawn_args(full_path, tty, param[0] ? param : "");
+        if (pid < 0) {
+            set_color(0x0C); print("tox: failed to run: "); print(full_path); print("\n");
+            set_color(0x07); tox_exit();
+        }
+        tox_wait(pid);
+        tox_exit();
+    }
 }

@@ -495,34 +495,19 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
 
         case SYS_ELEVATE:
         {
+            // Prompt is handled in USER SPACE (tox_pkg.c) to avoid
+            // blocking with interrupts disabled in the syscall handler.
+            // This syscall just grants elevation and logs it.
             if (ebx) { CHECK_USER_STR(ebx); }
             process_t* cur = process_current();
-            const char* reason = ebx ? (const char*)ebx : "perform a privileged action";
-
-            // Show UAC-style prompt on TTY
-            print("\n");
-            print("[ToxenOS] "); print(cur->name);
-            print(" is requesting elevated privileges\n");
-            print("  Action : "); print(reason); print("\n");
-            print("  Allow? (Y/n): ");
-
-            // Read one key — Enter/Y = allow (default), N = deny
-            char c = keyboard_getchar();
-            if (c == '\n' || c == '\r' || c == 'y' || c == 'Y') c = 'y';
-            else if (c == 'n' || c == 'N') c = 'n';
-            else c = 'y';  // any other key = default yes
-
-            // Echo response
-            if (c == 'y') print("y\n"); else print("n\n");
-
+            const char* reason = ebx ? (const char*)ebx : "privileged action";
+            cur->is_admin = 1;
             // Log to /C:/etc/priv.log
             {
-                int lfd = vfs_open("/C:/etc/priv.log", VFS_O_WRITE | VFS_O_CREATE | VFS_O_APPEND);
+                int lfd = vfs_open("/C:/etc/priv.log",
+                                   VFS_O_WRITE | VFS_O_CREATE | VFS_O_APPEND);
                 if (lfd >= 0) {
-                    const char* verdict = (c == 'y') ? "ALLOW" : "DENY ";
-                    vfs_write(lfd, (const uint8_t*)"[", 1);
-                    vfs_write(lfd, (const uint8_t*)verdict, 5);
-                    vfs_write(lfd, (const uint8_t*)"] ", 2);
+                    vfs_write(lfd, (const uint8_t*)"[ALLOW] ", 8);
                     vfs_write(lfd, (const uint8_t*)cur->name, kstrlen(cur->name));
                     vfs_write(lfd, (const uint8_t*)" -> ", 4);
                     vfs_write(lfd, (const uint8_t*)reason, kstrlen(reason));
@@ -530,11 +515,6 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
                     vfs_close(lfd);
                 }
             }
-
-            if (c == 'n') { print("[DENIED]\n\n"); return (uint32_t)-1; }
-
-            cur->is_admin = 1;
-            print("[ELEVATED]\n\n");
             return 0;
         }
 

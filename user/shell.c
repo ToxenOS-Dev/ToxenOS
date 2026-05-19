@@ -400,8 +400,11 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
         if (args[0] == '/') looks_like_path = 0;  // already absolute
         if (args[0] == '-') looks_like_path = 0;  // flag/option argument
         if (args[0] >= '0' && args[0] <= '9') looks_like_path = 0;  // IP or number
-        // Text-output commands take literal text, not file paths
+        // Commands that take subcommands/keywords, not file paths
         if (str_equal(cmd, "echo")) looks_like_path = 0;
+        if (str_equal(cmd, "tox"))  looks_like_path = 0;
+        if (str_equal(cmd, "reg"))  looks_like_path = 0;
+        if (str_equal(cmd, "kill")) looks_like_path = 0;
         // Hostnames (google.com) have dots but no slash — don't prepend cwd.
         // Exception: .elf files are always local paths, not hostnames.
         int has_dot = 0, has_slash = 0;

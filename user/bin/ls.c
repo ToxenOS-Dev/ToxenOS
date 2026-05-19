@@ -11,6 +11,8 @@ void _start() {
 
     char entry[256]; uint32_t i=0; int found=0;
     while(tox_readdir(path,entry,i)==0) {
+        // Hide dotfiles (.keep, .origin metadata, etc.)
+        if(entry[0] == '.') { i++; continue; }
         char full[256]; tox_strcpy(full,path);
         int l=tox_strlen(full); full[l]='/'; tox_strcpy(full+l+1,entry);
         if(tox_isdir(full)==1){set_color(0x09);print(entry);print("/\n");}

@@ -38,6 +38,20 @@ void _start() {
         set_color(0x07); tox_exit();
     }
 
+    // Files already in Trash are permanently deleted (not re-trashed)
+    if (starts_with(args, "/C:/Trash/")) {
+        if (tox_remove(args) < 0) {
+            set_color(0x0C); print("rm: failed: "); print(args); print("\n"); set_color(0x07);
+        } else {
+            // Also clean up .origin file if present
+            char origin[256]; tox_strcpy(origin, args); tox_strcat(origin, ".origin");
+            tox_remove(origin);
+            set_color(0x0A); print("permanently deleted: "); print(basename(args)); print("\n");
+            set_color(0x07);
+        }
+        tox_exit();
+    }
+
     if (tox_isdir(args) == 1) {
         if (tox_remove(args) < 0) {
             set_color(0x0C); print("rm: failed to remove directory: "); print(args); print("\n");

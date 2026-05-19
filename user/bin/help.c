@@ -42,7 +42,8 @@ void _start() {
 
     set_color(0x0B); print("\n  System\n"); set_color(0x07);
     row("sysctl",   "",              "syslog",    "");
-    row("date",     "",              "",          "");
+    row("date",     "",              "df",        "");
+    row("free",     "",              "where",     "<cmd>");
     row("reg set",  "<key> <val>",   "reg get",   "<key>");
     row("reg del",  "<key>",         "reg list",  "");
     row("reboot",   "",              "shutdown",  "");

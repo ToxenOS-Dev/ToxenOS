@@ -80,5 +80,6 @@ typedef struct
 
 fs_driver_t* txfs_init();
 int          txfs_format(uint32_t total_blocks);
+void         txfs_diskstats(uint32_t* total_kb, uint32_t* free_kb);
 
 #endif

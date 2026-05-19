@@ -18,6 +18,8 @@
 #include "../include/fbterm.h"
 #include "../include/timer.h"
 #include "../include/env.h"
+#include "../include/pmm.h"
+#include "../include/txfs.h"
 
 extern uint8_t _binary_build_user_shell_elf_start[];
 extern uint8_t _binary_build_user_shell_elf_end[];
@@ -466,6 +468,14 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
                 for (int i = 0; i < MAX_PROCESSES; i++)
                     if (processes[i].state != PROCESS_DEAD) n++;
                 SC_NUM((uint32_t)n);
+            }
+            if (kstreq(key, "mem.total")) SC_NUM(pmm_total_frames() * 4);
+            if (kstreq(key, "mem.free"))  SC_NUM(pmm_free_frames()  * 4);
+            if (kstreq(key, "disk.total")) {
+                uint32_t t = 0, f = 0; txfs_diskstats(&t, &f); SC_NUM(t);
+            }
+            if (kstreq(key, "disk.free")) {
+                uint32_t t = 0, f = 0; txfs_diskstats(&t, &f); SC_NUM(f);
             }
 
             #undef SC_STR

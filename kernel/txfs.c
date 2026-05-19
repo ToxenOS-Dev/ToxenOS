@@ -770,6 +770,12 @@ static fs_driver_t txfs_driver = {
     .getmode = txfs_getmode_fn,
 };
 
+void txfs_diskstats(uint32_t* total_kb, uint32_t* free_kb)
+{
+    *total_kb = (sb.total_blocks * TXFS_BLOCK_SIZE) / 1024;
+    *free_kb  = (sb.free_blocks  * TXFS_BLOCK_SIZE) / 1024;
+}
+
 fs_driver_t* txfs_init()
 {
     return &txfs_driver;

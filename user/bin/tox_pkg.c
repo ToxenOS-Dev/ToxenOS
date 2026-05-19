@@ -146,7 +146,7 @@ void _start() {
         set_color(0x08); print("): "); set_color(0x07);
 
         // Yield a bit to let key-up scan codes arrive, then drain the buffer
-        for (int _i = 0; _i < 200; _i++) tox_yield();
+        for (int _i = 0; _i < 200; _i++) yield();
         while (tox_keyavail()) tox_getchar();
 
         // Read response — ignore garbage/scan-code bytes, only accept real keys

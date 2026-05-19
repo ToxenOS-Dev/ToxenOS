@@ -540,19 +540,28 @@ static void run_pipeline(char* line) {
         int stdin_fd  = (s > 0)         ? pipe_r[s-1] : -1;
         int stdout_fd = (s+1 < nstages) ? pipe_w[s]   : -1;
 
+        // Resolve redirect paths relative to cwd if not absolute
+        static char redir_in_full[256], redir_out_full[256];
+        if (redir_in[0] && redir_in[0] != '/') {
+            str_copy(redir_in_full, cwd); str_cat(redir_in_full, "/"); str_cat(redir_in_full, redir_in);
+        } else { str_copy(redir_in_full, redir_in); }
+        if (redir_out[0] && redir_out[0] != '/') {
+            str_copy(redir_out_full, cwd); str_cat(redir_out_full, "/"); str_cat(redir_out_full, redir_out);
+        } else { str_copy(redir_out_full, redir_out); }
+
         int redir_in_fd = -1, redir_out_fd = -1;
         if (redir_in[0]) {
-            redir_in_fd = sys_open(redir_in, 0x1);
+            redir_in_fd = sys_open(redir_in_full, 0x1);
             if (redir_in_fd < 0) {
-                set_color(0x0C); print("cannot open: "); print(redir_in); print("\n");
+                set_color(0x0C); print("cannot open: "); print(redir_in_full); print("\n");
                 set_color(0x07); goto cleanup;
             }
             stdin_fd = redir_in_fd;
         }
         if (redir_out[0]) {
-            redir_out_fd = sys_open(redir_out, 0x6);
+            redir_out_fd = sys_open(redir_out_full, 0x6);
             if (redir_out_fd < 0) {
-                set_color(0x0C); print("cannot open: "); print(redir_out); print("\n");
+                set_color(0x0C); print("cannot open: "); print(redir_out_full); print("\n");
                 set_color(0x07);
                 if (redir_in_fd >= 0) sys_close(redir_in_fd);
                 goto cleanup;

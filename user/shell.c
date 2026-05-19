@@ -301,14 +301,18 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
         const char* first_space = args;
         while (*first_space && *first_space != ' ') first_space++;
         int tlen = (int)(first_space - args);
-        int ends_elf = (tlen > 4 &&
-                        args[tlen-4] == '.' && args[tlen-3] == 'e' &&
-                        args[tlen-2] == 'l' && args[tlen-1] == 'f');
+        // Find last dot position — extension is chars after it
+        int last_dot = -1;
+        for (int k = 0; k < tlen; k++) if (args[k] == '.') last_dot = k;
+        int ext_len = (last_dot >= 0) ? tlen - last_dot - 1 : 0;
+        // Has a file-like extension (1–5 chars): .txt .c .sh .elf .log etc.
+        int has_file_ext = (ext_len >= 1 && ext_len <= 5);
         for (const char* q = args; *q && *q != ' '; q++) {
             if (*q == '.') has_dot = 1;
             if (*q == '/') has_slash = 1;
         }
-        if (has_dot && !has_slash && !ends_elf) looks_like_path = 0;
+        // Dot with no slash and no recognised extension = likely hostname (google.com)
+        if (has_dot && !has_slash && !has_file_ext) looks_like_path = 0;
 
         if (looks_like_path && args[0] != '/') {
             str_copy(full_args, cwd);

@@ -9,7 +9,7 @@ static int starts_with(const char* s, const char* p) {
 void _start() {
     char args[256]; tox_get_args(args);
     if (!args[0]) { print("Usage: mkef <file>\n"); tox_exit(); }
-    int fd = tox_open(args, 1 | 4);
+    int fd = tox_open(args, 2 | 4);
     if (fd < 0) {
         set_color(0x0C);
         if (starts_with(args, "/C:/BSM/SystemT/")) {

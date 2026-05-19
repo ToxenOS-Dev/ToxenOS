@@ -61,10 +61,11 @@ void _start() {
 
     // Copy file to Trash (handle 0-byte files without malloc)
     uint8_t* buf = 0;
+    int fd;
     if (size > 0) {
         buf = malloc((uint32_t)size);
         if (!buf) { set_color(0x0C); print("rm: out of memory\n"); set_color(0x07); tox_exit(); }
-        int fd = tox_open(args, 1);
+        fd = tox_open(args, 1);
         tox_read(fd, buf, (uint32_t)size);
         tox_close(fd);
     }

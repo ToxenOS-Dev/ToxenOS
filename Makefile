@@ -131,7 +131,7 @@ user:
 	objcopy -I binary -O elf32-i386 -B i386 \
 		build/user/init.elf build/user/init_blob.o
 	gcc $(UFLAGS) user/hello.c -o build/user/hello.elf
-	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns http ping https isolation_test stresstest restore trash rmkd sysctl kill reg syslog wc date chmod where df free hostname; do \
+	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns http ping https isolation_test stresstest restore trash rmkd sysctl kill reg syslog wc date chmod where df free hostname adduser passwd; do \
 		gcc $(UFLAGS) user/bin/$$cmd.c -o build/user/bin/$$cmd.elf || exit 1; \
 	done
 	gcc $(UFLAGS) user/bin/tox_pkg.c -o build/user/bin/tox.elf
@@ -200,6 +200,8 @@ populate: tools/txfs_write
 	tools/txfs_write build/disk.img build/user/bin/df.elf /BSM/SystemT/df.elf
 	tools/txfs_write build/disk.img build/user/bin/free.elf /BSM/SystemT/free.elf
 	tools/txfs_write build/disk.img build/user/bin/hostname.elf /BSM/SystemT/hostname.elf
+	tools/txfs_write build/disk.img build/user/bin/adduser.elf /BSM/SystemT/adduser.elf
+	tools/txfs_write build/disk.img build/user/bin/passwd.elf /BSM/SystemT/passwd.elf
 	tools/txfs_write build/disk.img user/system/users /etc/users
 	tools/txfs_write build/disk.img build/user/bin/trash.elf /BSM/SystemT/trash.elf
 	tools/txfs_write build/disk.img build/user/bin/tox.elf /BSM/SystemT/tox.elf

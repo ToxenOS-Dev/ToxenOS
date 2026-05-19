@@ -44,7 +44,8 @@ void _start() {
     row("sysctl",   "",              "syslog",    "");
     row("date",     "",              "df",        "");
     row("free",     "",              "where",     "<cmd>");
-    row("hostname", "[name]",        "",          "");
+    row("hostname", "[name]",        "adduser",  "<name>");
+    row("passwd",   "[user]",        "",          "");
     row("reg set",  "<key> <val>",   "reg get",   "<key>");
     row("reg del",  "<key>",         "reg list",  "");
     row("reboot",   "",              "shutdown",  "");

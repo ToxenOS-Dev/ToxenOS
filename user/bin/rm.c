@@ -21,21 +21,38 @@ static const char* basename(const char* path) {
     return last;
 }
 
+static void rm_one(const char* args);
+
 void _start() {
-    char args[256]; tox_get_args(args);
-    if (!args[0]) { print("Usage: rm <file>\n"); tox_exit(); }
+    char args[512]; tox_get_args(args);
+    if (!args[0]) { print("Usage: rm <file> [file2 ...]\n"); tox_exit(); }
+
+    // Support multiple space-separated paths (wildcard expansion)
+    const char* p = args;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        char path[256]; int pi = 0;
+        while (*p && *p != ' ' && pi < 255) path[pi++] = *p++;
+        path[pi] = 0;
+        rm_one(path);
+    }
+    tox_exit();
+}
+
+static void rm_one(const char* args) {
 
     if (starts_with(args, "/C:/BSM/SystemT/")) {
         set_color(0x0C);
         print("rm: permission denied -- /BSM/SystemT/ is a protected system directory.\n");
         print("    Only the ToxenOS system installer or update manager can modify it.\n");
-        set_color(0x07); tox_exit();
+        set_color(0x07); return;
     }
 
     if (is_protected_dir(args)) {
         set_color(0x0C);
         print("rm: cannot remove system directory: "); print(args); print("\n");
-        set_color(0x07); tox_exit();
+        set_color(0x07); return;
     }
 
     // Files already in Trash are permanently deleted (not re-trashed)
@@ -49,7 +66,7 @@ void _start() {
             set_color(0x0A); print("permanently deleted: "); print(basename(args)); print("\n");
             set_color(0x07);
         }
-        tox_exit();
+        return;
     }
 
     if (tox_isdir(args) == 1) {
@@ -59,13 +76,13 @@ void _start() {
         } else {
             set_color(0x0A); print("removed: "); print(args); print("\n"); set_color(0x07);
         }
-        tox_exit();
+        return;
     }
 
     int size = tox_stat(args);
     if (size < 0) {
         set_color(0x0C); print("rm: not found: "); print(args); print("\n");
-        set_color(0x07); tox_exit();
+        set_color(0x07); return;
     }
 
     const char* name = basename(args);
@@ -78,7 +95,7 @@ void _start() {
     int fd;
     if (size > 0) {
         buf = malloc((uint32_t)size);
-        if (!buf) { set_color(0x0C); print("rm: out of memory\n"); set_color(0x07); tox_exit(); }
+        if (!buf) { set_color(0x0C); print("rm: out of memory\n"); set_color(0x07); return; }
         fd = tox_open(args, 1);
         tox_read(fd, buf, (uint32_t)size);
         tox_close(fd);
@@ -93,7 +110,7 @@ void _start() {
         } else {
             set_color(0x0A); print("removed (permanent): "); print(name); print("\n"); set_color(0x07);
         }
-        tox_exit();
+        return;
     }
     if (buf && size > 0) tox_write(fd, buf, (uint32_t)size);
     tox_close(fd);
@@ -108,5 +125,5 @@ void _start() {
 
     tox_remove(args);
     set_color(0x0E); print("moved to Trash: "); print(name); print("\n"); set_color(0x07);
-    tox_exit();
+    return;
 }

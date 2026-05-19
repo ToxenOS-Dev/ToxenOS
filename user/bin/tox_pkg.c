@@ -144,6 +144,9 @@ void _start() {
         set_color(0x08); print("  Allow? "); set_color(0x0A); print("(Y"); set_color(0x07);
         print("/"); set_color(0x0C); print("n"); set_color(0x07); print("): ");
 
+        // Drain any leftover keys from previous input before reading response
+        while (tox_keyavail()) tox_getchar();
+
         char c = tox_getchar();
         if (c == '\n' || c == '\r' || c == 'y' || c == 'Y' || c == ' ') c = 'y';
         else c = 'n';

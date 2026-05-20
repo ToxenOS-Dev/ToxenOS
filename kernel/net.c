@@ -269,7 +269,8 @@ int net_udp_recv(uint16_t port, uint8_t* buf, uint16_t maxlen,
     net_udp_open(port);
     udp_rxslot_t* slot=udp_slot_for(port);
     if(!slot) return -1;
-    slot->ready=0;
+    // NOTE: do NOT clear ready=0 here — packet may already be buffered
+    // (e.g. DHCP OFFER arrives before we call recv)
     uint32_t deadline=timer_getticks()+(timeout_ms+9)/10;
     while(!slot->ready) {
         net_poll();

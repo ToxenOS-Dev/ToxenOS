@@ -153,8 +153,11 @@ static uint16_t dhcp_build(uint8_t msg_type, uint32_t xid,
 // Run DHCP. Returns 1 if successful (net_ip/net_gateway/net_mask updated), 0 on failure.
 int dhcp_run(void) {
     uint32_t xid = timer_getticks() ^ 0xDEAD1234;
-    klog("DHCP: sending DISCOVER...\n");
 
+    // Open port 68 BEFORE sending — so response is buffered even if it arrives instantly
+    net_udp_open(68);
+
+    klog("DHCP: sending DISCOVER...\n");
     // DISCOVER
     uint16_t len = dhcp_build(DHCP_DISCOVER, xid, 0, 0);
     dhcp_send_raw(&dhcp_tx, len, 0x00000000, 0xFFFFFFFF);

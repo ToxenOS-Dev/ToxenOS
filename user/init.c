@@ -127,6 +127,12 @@ void _start() {
         set_color(0x0C); print("Login incorrect.\n"); set_color(0x07);
     }
 
-    tox_spawn_embedded(0);
-    while (1) yield();
+    // Spawn shell — when it exits (logout), loop back to login prompt
+    while (1) {
+        int shell_pid = tox_spawn_embedded(0);
+        tox_wait(shell_pid);
+        // Shell exited — drain keyboard and show login again
+        for (int _d = 0; _d < 300; _d++) yield();
+        while (tox_keyavail()) tox_getchar();
+    }
 }

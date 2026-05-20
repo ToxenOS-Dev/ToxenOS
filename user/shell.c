@@ -656,6 +656,9 @@ static void run_command(char* input) {
     if (str_equal(cmd_buf,"clear"))    { tox_clear(); return; }
     if (str_equal(cmd_buf,"reboot"))   { tox_reboot();   return; }
     if (str_equal(cmd_buf,"shutdown")) { tox_shutdown(); return; }
+    if (str_equal(cmd_buf,"logout") || str_equal(cmd_buf,"exit")) {
+        tox_exit(); return;
+    }
 
     if (str_equal(cmd_buf,"alias")) {
         if (!args || !args[0]) {

@@ -116,7 +116,7 @@ void _start() {
         set_color(0x07); print("Password: ");
         read_line(password, sizeof(password), 1);
 
-        if (check_login(username, password)) {
+        if (username[0] && check_login(username, password)) {
             tox_setenv("USER", username);
             set_color(0x0A);
             print("\nWelcome, "); print(username); print("!\n");
@@ -131,9 +131,11 @@ void _start() {
     while (1) {
         int shell_pid = tox_spawn_embedded(0);
         tox_wait(shell_pid);
-        // Shell exited — clear screen, drain keyboard, show login again
+        // Shell exited — clear screen, drain keyboard thoroughly, show login again
         tox_clear();
-        for (int _d = 0; _d < 500; _d++) yield();
+        for (int _d = 0; _d < 1000; _d++) yield();  // let all key-up events arrive
+        while (tox_keyavail()) tox_getchar();         // drain them
+        for (int _d = 0; _d < 200; _d++) yield();    // one more pass
         while (tox_keyavail()) tox_getchar();
         set_color(0x0E); print("==== Welcome to ToxenOS ====\n\n"); set_color(0x07);
     }

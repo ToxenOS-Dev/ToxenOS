@@ -72,27 +72,37 @@ static void load_users(void) {
     }
 }
 
+// Print n spaces
+static void spaces(int n) { while (n-- > 0) print(" "); }
+
 static void show_user_screen(void) {
     tox_clear();
-    print("\n\n");
-    // Centered "==== Welcome to ToxenOS ====" in orange
-    // 28 chars wide, centered for ~80 col terminal = 26 spaces
-    set_color(0x06);
-    print("                          ==== ");
+
+    // Terminal: 128 cols x 48 rows (1024x768, 8x16 font)
+    // Vertical: top padding to center content (~10 lines) = ~19 newlines
+    for (int i = 0; i < 17; i++) print("\n");
+
+    // "==== Welcome to ToxenOS ====" = 30 chars, center in 128: pad 49
+    spaces(49);
+    set_color(0x06); print("==== ");
     set_color(0x0C); print("Welcome to ToxenOS");
     set_color(0x06); print(" ====");
     set_color(0x07); print("\n\n\n");
 
     load_users();
 
-    set_color(0x0B); print("  Users:\n\n"); set_color(0x07);
+    // Center user list (approx col 55)
     for (int i = 0; i < user_count; i++) {
-        set_color(0x08); print("    [");
-        set_color(0x0A);
-        char n[3]; n[0]='0'+(char)(i+1); n[1]=']'; n[2]=0; print(n);
-        set_color(0x07); print("  "); print(user_names[i]); print("\n");
+        spaces(55);
+        set_color(0x08); print("[");
+        set_color(0x0A); char n[2]={'0'+(char)(i+1),0}; print(n);
+        set_color(0x08); print("]  ");
+        set_color(0x07); print(user_names[i]); print("\n");
     }
-    print("\n");
+    print("\n\n");
+
+    // Center "Login as:" prompt (col 52)
+    spaces(52);
     set_color(0x07);
 }
 
@@ -147,7 +157,7 @@ void _start() {
         char username[64], password[64];
 
         // User selection: accept number or direct username
-        set_color(0x07); print("  Login as: ");
+        print("Login as: ");
         read_visible(username, sizeof(username));
         if (!username[0]) continue;
 
@@ -158,7 +168,7 @@ void _start() {
             else { set_color(0x0C); print("  Invalid selection.\n"); set_color(0x07); continue; }
         }
 
-        set_color(0x07); print("  Password: ");
+        spaces(52); print("Password: ");
         read_pass(password, sizeof(password));
 
         // Check credentials
@@ -170,13 +180,15 @@ void _start() {
         }
 
         if (!ok) {
-            set_color(0x0C); print("\n  Login incorrect.\n"); set_color(0x07);
-            for (int _d = 0; _d < 300; _d++) yield();  // brief pause before retry
+            spaces(52);
+            set_color(0x0C); print("Login incorrect.\n"); set_color(0x07);
+            for (int _d = 0; _d < 300; _d++) yield();
             continue;
         }
 
         tox_setenv("USER", username);
-        set_color(0x0A); print("\n  Welcome, "); print(username); print("!\n\n");
+        spaces(52);
+        set_color(0x0A); print("Welcome, "); print(username); print("!\n\n");
         set_color(0x07);
 
         // Spawn shell — when it exits (logout), show user screen again

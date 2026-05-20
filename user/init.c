@@ -74,20 +74,25 @@ static void load_users(void) {
 
 static void show_user_screen(void) {
     tox_clear();
-    set_color(0x0E); print("  ==== Welcome to ToxenOS ====\n\n"); set_color(0x07);
+    print("\n\n");
+    // Centered "==== Welcome to ToxenOS ====" in orange
+    // 28 chars wide, centered for ~80 col terminal = 26 spaces
+    set_color(0x06);
+    print("                          ==== ");
+    set_color(0x0C); print("Welcome to ToxenOS");
+    set_color(0x06); print(" ====");
+    set_color(0x07); print("\n\n\n");
 
     load_users();
 
-    set_color(0x0B); print("  Users:\n"); set_color(0x08);
-    print("  "); for(int i=0;i<28;i++) print("\xc4"); print("\n");
-    set_color(0x07);
+    set_color(0x0B); print("  Users:\n\n"); set_color(0x07);
     for (int i = 0; i < user_count; i++) {
-        set_color(0x08); print("  [");
-        set_color(0x0B); char n[4]={'0'+(char)(i+1),']',0,0}; print(n);
-        set_color(0x07); print(" "); print(user_names[i]); print("\n");
+        set_color(0x08); print("    [");
+        set_color(0x0A);
+        char n[3]; n[0]='0'+(char)(i+1); n[1]=']'; n[2]=0; print(n);
+        set_color(0x07); print("  "); print(user_names[i]); print("\n");
     }
-    set_color(0x08);
-    print("  "); for(int i=0;i<28;i++) print("\xc4"); print("\n\n");
+    print("\n");
     set_color(0x07);
 }
 

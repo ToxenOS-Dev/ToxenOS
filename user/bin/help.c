@@ -56,7 +56,7 @@ void _start() {
     row("tox remove",  "<name>", "",            "");
 
     set_color(0x0B); print("\n  Network\n"); set_color(0x07);
-    row("ipconfig", "",            "dns",   "<host>");
+    row("ipsa", "",            "dns",   "<host>");
     row("ping",     "<host>",      "http",  "<ip> [path]");
     row("https",    "<ip> <host>", "",      "");
 

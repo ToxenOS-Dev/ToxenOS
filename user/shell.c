@@ -392,6 +392,13 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
     if (!find_in_path(cmd, path)) return -2;
 
     static char full_args[256];
+    // Keyword commands take subcommands/text, not file paths — don't use cwd as default arg
+    int is_keyword = str_equal(cmd,"echo")||str_equal(cmd,"tox")||str_equal(cmd,"reg")||
+                     str_equal(cmd,"kill")||str_equal(cmd,"hostname")||str_equal(cmd,"adduser")||
+                     str_equal(cmd,"passwd")||str_equal(cmd,"usermod")||str_equal(cmd,"sysctl")||
+                     str_equal(cmd,"where")||str_equal(cmd,"date")||str_equal(cmd,"free")||
+                     str_equal(cmd,"df")||str_equal(cmd,"wc")||str_equal(cmd,"syslog")||
+                     str_equal(cmd,"trash");
     if (args && args[0]) {
         // Only prepend cwd for args that look like relative file paths
         // Don't prepend for IPs (start with digit), hostnames with dots,
@@ -437,10 +444,8 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
             str_copy(full_args, args);
         }
     } else {
-        // For path-type commands, default arg is cwd (e.g. ls with no arg)
-        // For keyword commands (tox, reg, etc.), no arg = empty string
-        if (looks_like_path) str_copy(full_args, cwd);
-        else full_args[0] = 0;
+        if (is_keyword) full_args[0] = 0;
+        else str_copy(full_args, cwd);
     }
 
     if (stdin_fd == -1 && stdout_fd == -1) {

@@ -481,6 +481,9 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
                     if (processes[i].state != PROCESS_DEAD) n++;
                 SC_NUM((uint32_t)n);
             }
+            if (kstreq(key, "net.ip"))   SC_NUM(net_ip);
+            if (kstreq(key, "net.gw"))   SC_NUM(net_gateway);
+            if (kstreq(key, "net.mask")) SC_NUM(net_mask);
             if (kstreq(key, "mem.total")) SC_NUM(pmm_total_frames() * 4);
             if (kstreq(key, "mem.free"))  SC_NUM(pmm_free_frames()  * 4);
             if (kstreq(key, "disk.total")) {

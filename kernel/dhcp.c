@@ -96,32 +96,27 @@ static int dhcp_send_raw(dhcp_pkt_t* pkt, uint16_t pkt_len, uint32_t src_ip, uin
 
 // Try to receive a DHCP reply on port 68; returns msg_type or -1
 static int dhcp_recv(uint32_t xid, uint32_t* offered_ip, uint32_t* server_id, uint32_t timeout_ms) {
-    uint32_t deadline = timer_getticks() + timeout_ms/10;
-    while (timer_getticks() < deadline) {
-        net_poll();
-        uint32_t from_ip = 0;
-        int n = net_udp_recv(68, (uint8_t*)&dhcp_rx, sizeof(dhcp_rx), &from_ip, 0);
-        if (n < 236) continue;  // minimum DHCP packet before options
-        if (dhcp_rx.xid != HTONL(xid)) continue;
-        if (HTONL(dhcp_rx.magic) != DHCP_MAGIC) continue;
+    // Use net_udp_recv's built-in timeout — it polls internally
+    uint32_t from_ip = 0;
+    int n = net_udp_recv(68, (uint8_t*)&dhcp_rx, sizeof(dhcp_rx), &from_ip, timeout_ms);
+    if (n < 236) return -1;
+    if (dhcp_rx.xid != HTONL(xid)) return -1;
+    if (HTONL(dhcp_rx.magic) != DHCP_MAGIC) return -1;
 
-        // Parse options
-        uint8_t* opt = dhcp_rx.options;
-        uint8_t msg_type = 0;
-        while (*opt != OPT_END && opt < dhcp_rx.options + 308) {
-            if (*opt == OPT_PAD) { opt++; continue; }
-            uint8_t tag = *opt++; uint8_t len = *opt++;
-            if (tag == OPT_MSG_TYPE && len >= 1) msg_type = opt[0];
-            if (tag == OPT_SERVER_ID && len >= 4 && server_id)
-                *server_id = ((uint32_t)opt[0]<<24)|((uint32_t)opt[1]<<16)|
-                             ((uint32_t)opt[2]<<8)|opt[3];
-            opt += len;
-        }
-        if (!msg_type) continue;
-        if (offered_ip) *offered_ip = HTONL(dhcp_rx.yiaddr);
-        return msg_type;
+    uint8_t* opt = dhcp_rx.options;
+    uint8_t msg_type = 0;
+    while (*opt != OPT_END && opt < dhcp_rx.options + 308) {
+        if (*opt == OPT_PAD) { opt++; continue; }
+        uint8_t tag = *opt++; uint8_t len = *opt++;
+        if (tag == OPT_MSG_TYPE && len >= 1) msg_type = opt[0];
+        if (tag == OPT_SERVER_ID && len >= 4 && server_id)
+            *server_id = ((uint32_t)opt[0]<<24)|((uint32_t)opt[1]<<16)|
+                         ((uint32_t)opt[2]<<8)|opt[3];
+        opt += len;
     }
-    return -1;
+    if (!msg_type) return -1;
+    if (offered_ip) *offered_ip = HTONL(dhcp_rx.yiaddr);
+    return msg_type;
 }
 
 // Build a DHCP DISCOVER or REQUEST packet

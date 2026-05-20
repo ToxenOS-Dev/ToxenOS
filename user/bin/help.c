@@ -56,8 +56,9 @@ void _start() {
     row("tox remove",  "<name>", "",            "");
 
     set_color(0x0B); print("\n  Network\n"); set_color(0x07);
-    row("dns",  "<host>",       "ping",  "<host>");
-    row("http", "<ip> [path]",  "https", "<ip> <host> [path]");
+    row("ipconfig", "",            "dns",   "<host>");
+    row("ping",     "<host>",      "http",  "<ip> [path]");
+    row("https",    "<ip> <host>", "",      "");
 
     set_color(0x0B); print("\n  Shell\n"); set_color(0x07);
     row("export", "<k>=<v>",   "env",     "");

@@ -129,23 +129,26 @@ static void first_boot_setup(void) {
     for (int _d=0;_d<500;_d++) yield();
 }
 
+// All content left-aligned from col 49 (center of 128-col terminal)
+#define LOGIN_COL 49
+
 static void show_user_screen(void) {
     tox_clear();
     for (int i=0;i<16;i++) print("\n");
 
-    // Welcome banner centered (30 chars in 128 cols = pad 49)
-    spaces(49);
+    // Welcome banner: "==== Welcome to ToxenOS ====" = 30 chars, starts at col 49
+    spaces(LOGIN_COL);
     set_color(0x07); print("==== Welcome to ");
     set_color(0x06); print("ToxenOS");
     set_color(0x07); print(" ====\n\n");
 
-    // "Select a user:" label centered
-    spaces(55);
+    // "Select a user:" — same left edge
+    spaces(LOGIN_COL);
     set_color(0x08); print("Select a user:\n\n"); set_color(0x07);
 
-    // User list
+    // User list — indent 2 extra spaces from left edge
     for (int i=0;i<u_count;i++) {
-        spaces(57);
+        spaces(LOGIN_COL + 2);
         set_color(0x08); print("[");
         set_color(0x0A); char n[2]={'0'+(char)(i+1),0}; print(n);
         set_color(0x08); print("]  ");
@@ -157,8 +160,8 @@ static void show_user_screen(void) {
     }
     print("\n");
 
-    // Login prompt centered
-    spaces(52);
+    // Login prompt — same left edge
+    spaces(LOGIN_COL);
 }
 
 void _start() {
@@ -222,7 +225,7 @@ void _start() {
             else { set_color(0x0C); print("  Invalid selection.\n"); set_color(0x07); continue; }
         }
 
-        spaces(52); print("Password: ");
+        spaces(LOGIN_COL); print("Password: ");
         read_pass(password, sizeof(password));
 
         // Find user and verify
@@ -234,7 +237,7 @@ void _start() {
         }
 
         if (found<0) {
-            spaces(52); set_color(0x0C); print("Login incorrect.\n"); set_color(0x07);
+            spaces(LOGIN_COL); set_color(0x0C); print("Login incorrect.\n"); set_color(0x07);
             for (int _d=0;_d<300;_d++) yield();
             continue;
         }
@@ -248,7 +251,7 @@ void _start() {
             tox_set_admin(1);
         }
 
-        spaces(52);
+        spaces(LOGIN_COL);
         set_color(0x0A); print("Welcome, "); print(username);
         if (str_eq(u_role[found],"admin")) {
             set_color(0x06); print("  [admin]");

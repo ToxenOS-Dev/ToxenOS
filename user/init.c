@@ -191,6 +191,8 @@ void _start() {
         spaces(52);
         set_color(0x0A); print("Welcome, "); print(username); print("!\n\n");
         set_color(0x07);
+        for (int _d = 0; _d < 200; _d++) yield();  // brief pause to show welcome
+        tox_clear();
 
         // Spawn shell — when it exits (logout), show user screen again
         int shell_pid = tox_spawn_embedded(0);

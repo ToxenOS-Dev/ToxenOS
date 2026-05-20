@@ -26,6 +26,7 @@
 #define MBEDTLS_HMAC_DRBG_C
 
 /* Crypto */
+#define MBEDTLS_PKCS5_C         // PBKDF2 password hashing
 #define MBEDTLS_AES_C
 #define MBEDTLS_SHA256_C
 #define MBEDTLS_SHA1_C

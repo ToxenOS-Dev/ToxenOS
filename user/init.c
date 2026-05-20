@@ -36,7 +36,7 @@ static void spaces(int n) { while (n-- > 0) print(" "); }
 
 #define MAX_USERS 16
 static char u_name[MAX_USERS][64];
-static char u_pwd [MAX_USERS][64];
+static char u_pwd [MAX_USERS][128]; // PBKDF2 hashes are ~112 chars
 static char u_role[MAX_USERS][16];  // "admin" or "user"
 static int  u_count = 0;
 
@@ -58,7 +58,7 @@ static void load_users(void) {
         while (*p&&*p!=':'&&*p!='\n'&&ni<63) u_name[u_count][ni++]=*p++;
         u_name[u_count][ni]=0;
         if (*p==':') { p++;
-            while (*p&&*p!=':'&&*p!='\n'&&pi<63) u_pwd[u_count][pi++]=*p++;
+            while (*p&&*p!=':'&&*p!='\n'&&pi<127) u_pwd[u_count][pi++]=*p++;
         }
         u_pwd[u_count][pi]=0;
         if (*p==':') { p++;

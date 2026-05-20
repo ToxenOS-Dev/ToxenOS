@@ -132,6 +132,14 @@ void _start() {
             set_color(0x07); tox_exit();
         }
 
+        // Only admin users can use tox for elevation
+        if (!tox_is_admin()) {
+            set_color(0x0C);
+            print("[ToxenOS] Access denied: your account does not have admin privileges.\n");
+            print("          Ask an admin to run this for you.\n");
+            set_color(0x07); tox_exit();
+        }
+
         // UAC prompt in user space (kernel can't block for keyboard input)
         char reason[128];
         tox_strcpy(reason, "run "); tox_strcat(reason, cmd);

@@ -87,6 +87,7 @@
 #define SYS_GETMODE       61   // get file permission bits
 #define SYS_ELEVATE       62   // request elevated privileges (UAC-style prompt)
 #define SYS_IS_ADMIN      63   // returns 1 if current process is elevated
+#define SYS_SET_ADMIN     64   // trusted: set is_admin flag (login use only)
 
 // ── Output ────────────────────────────────────────────────────────────────────
 static inline void print(const char* s)   { SYSCALL1(SYS_PRINT, s); }
@@ -416,6 +417,9 @@ static inline int tox_elevate(const char* reason)
 // Returns 1 if the current process has been elevated.
 static inline int tox_is_admin(void)
     { return SYSCALL0(SYS_IS_ADMIN); }
+// Set admin flag directly — only call from trusted login code
+static inline void tox_set_admin(int val)
+    { SYSCALL1(SYS_SET_ADMIN, val); }
 
 // ── File permissions ─────────────────────────────────────────────────────────
 // Set permission bits (Unix-style octal: 0644, 0755, etc.)

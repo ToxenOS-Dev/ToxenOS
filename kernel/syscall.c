@@ -497,6 +497,11 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_IS_ADMIN:
             return process_current()->is_admin;
 
+        case SYS_SET_ADMIN:
+            // Trusted: called by login system to elevate admin users at login
+            process_current()->is_admin = (uint8_t)ebx;
+            return 0;
+
         case SYS_ELEVATE:
         {
             // Prompt is handled in USER SPACE (tox_pkg.c) to avoid

@@ -408,6 +408,7 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
         if (str_equal(cmd, "hostname")) looks_like_path = 0;
         if (str_equal(cmd, "adduser"))  looks_like_path = 0;
         if (str_equal(cmd, "passwd"))   looks_like_path = 0;
+        if (str_equal(cmd, "usermod"))  looks_like_path = 0;
         // Hostnames (google.com) have dots but no slash — don't prepend cwd.
         // Exception: .elf files are always local paths, not hostnames.
         int has_dot = 0, has_slash = 0;

@@ -437,7 +437,10 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
             str_copy(full_args, args);
         }
     } else {
-        str_copy(full_args, cwd);
+        // For path-type commands, default arg is cwd (e.g. ls with no arg)
+        // For keyword commands (tox, reg, etc.), no arg = empty string
+        if (looks_like_path) str_copy(full_args, cwd);
+        else full_args[0] = 0;
     }
 
     if (stdin_fd == -1 && stdout_fd == -1) {

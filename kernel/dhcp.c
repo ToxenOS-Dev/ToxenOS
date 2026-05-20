@@ -161,22 +161,14 @@ int dhcp_run(void) {
     klog("DHCP: sending DISCOVER...\n");
     // DISCOVER
     uint16_t len = dhcp_build(DHCP_DISCOVER, xid, 0, 0);
-    int send_ret = dhcp_send_raw(&dhcp_tx, len, 0x00000000, 0xFFFFFFFF);
-    klog(send_ret >= 0 ? "DHCP: DISCOVER sent ok\n" : "DHCP: DISCOVER send FAILED\n");
+    dhcp_send_raw(&dhcp_tx, len, 0x00000000, 0xFFFFFFFF);
 
     // Wait for OFFER
     uint32_t offered_ip = 0, server_id = 0;
-    int offer_type = dhcp_recv(xid, &offered_ip, &server_id, 4000);
-    klog("DHCP: recv returned ");
-    if (offer_type == DHCP_OFFER) klog("OFFER\n");
-    else if (offer_type == -1) klog("-1 (timeout/error)\n");
-    else klog("unexpected type\n");
-
-    if (offer_type != DHCP_OFFER) {
-        klog("DHCP: no OFFER received, using static IP\n");
+    if (dhcp_recv(xid, &offered_ip, &server_id, 2000) != DHCP_OFFER) {
+        klog("DHCP: no OFFER, using static IP\n");
         return 0;
     }
-    klog("DHCP: got OFFER, sending REQUEST\n");
 
     // REQUEST
     len = dhcp_build(DHCP_REQUEST, xid, offered_ip, server_id);

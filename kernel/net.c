@@ -163,10 +163,7 @@ static void handle_ip(const uint8_t* d, uint16_t len) {
     const ip_hdr_t* ip=(const ip_hdr_t*)d;
     uint32_t dst=NTOHL(ip->dst_ip);
     // During DHCP, also accept packets to 0.0.0.0 (some servers send there)
-    // Temporarily log what IPs we receive (remove after DHCP debugging)
-    static int dhcp_dbg = 8;
-    if(dhcp_dbg>0) { klog("net: IP pkt dst="); dhcp_dbg--; }
-    if(dst!=net_ip && dst!=0xFFFFFFFF && dst!=0) return;
+    if(dst!=net_ip && dst!=0xFFFFFFFF) return;
     uint8_t ihl=(ip->ver_ihl&0xF)*4;
     uint32_t src_ip=NTOHL(ip->src_ip);
     const uint8_t* pay=d+ihl;
@@ -179,8 +176,6 @@ static void handle_ip(const uint8_t* d, uint16_t len) {
         uint16_t sport=NTOHS(udp->src_port);
         const uint8_t* udata=pay+sizeof(udp_hdr_t);
         uint16_t ulen=(uint16_t)(NTOHS(udp->length)-sizeof(udp_hdr_t));
-        // Debug: log any UDP on port 67/68
-        if(dport==68||sport==67) klog("net: UDP 67->68 received!\n");
         // Deliver to rx slot
         udp_rxslot_t* slot=udp_slot_for(dport);
         if(slot) {

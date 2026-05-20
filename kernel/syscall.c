@@ -18,6 +18,7 @@
 #include "../include/fbterm.h"
 #include "../include/timer.h"
 #include "../include/env.h"
+#include "../include/crypto.h"
 #include "../include/pmm.h"
 #include "../include/txfs.h"
 
@@ -498,9 +499,29 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return process_current()->is_admin;
 
         case SYS_SET_ADMIN:
-            // Trusted: called by login system to elevate admin users at login
             process_current()->is_admin = (uint8_t)ebx;
             return 0;
+
+        case SYS_PBKDF2:
+        {
+            // ebx = ptr to: [pwd_ptr(4) pwd_len(4) salt_ptr(4) salt_len(4)
+            //                iterations(4) out_ptr(4) out_len(4)]  = 28 bytes
+            if (!ebx) return (uint32_t)-1;
+            CHECK_USER_PTR(ebx, 28);
+            uint32_t* p       = (uint32_t*)ebx;
+            const uint8_t* pwd  = (const uint8_t*)p[0];
+            uint32_t       plen = p[1];
+            const uint8_t* salt = (const uint8_t*)p[2];
+            uint32_t       slen = p[3];
+            uint32_t       iter = p[4];
+            uint8_t*       out  = (uint8_t*)p[5];
+            uint32_t       olen = p[6];
+            if (plen > 256 || slen > 64 || olen > 64 || iter > 500000) return (uint32_t)-1;
+            if (plen) { CHECK_USER_PTR(pwd,  plen); }
+            if (slen) { CHECK_USER_PTR(salt, slen); }
+            CHECK_USER_PTR(out, olen);
+            return (uint32_t)kernel_pbkdf2_sha256(pwd, plen, salt, slen, iter, out, olen);
+        }
 
         case SYS_ELEVATE:
         {

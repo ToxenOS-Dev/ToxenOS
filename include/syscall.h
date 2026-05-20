@@ -76,3 +76,4 @@ int  sys_getpid();
 #define SYS_ELEVATE        62  // request elevated privileges (shows UAC prompt)
 #define SYS_IS_ADMIN       63  // returns 1 if current process is elevated
 #define SYS_SET_ADMIN      64  // trusted: set is_admin=1 without prompt (login use only)
+#define SYS_PBKDF2         65  // PBKDF2-SHA256 password hashing via mbedTLS

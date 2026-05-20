@@ -25,7 +25,7 @@ KOBJS := \
 	build/kernel.o build/keyboard.o build/idt.o build/pic.o build/irq.o \
 	build/timer.o build/mm.o build/klog.o build/pmm.o build/process.o build/syscall.o \
 	build/paging.o build/tss.o build/ring3.o \
-	build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/fat.o build/env.o \
+	build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/fat.o build/env.o build/crypto.o \
 	build/ext2.o build/elf.o build/tty.o build/pipe.o build/waitqueue.o \
 	build/pci.o build/e1000.o build/net.o build/tcp.o build/tls.o \
 	build/framebuffer.o build/font.o build/fbterm.o \
@@ -98,6 +98,8 @@ all: user
 		-c mbedtls/toxenos_platform.c -o build/mbedtls/toxenos_platform.o
 	gcc $(MBEDFLAGS) -MMD -MP -I include \
 		-c kernel/tls.c -o build/tls.o
+	gcc $(MBEDFLAGS) -MMD -MP -I include \
+		-c kernel/crypto.c -o build/crypto.o
 	@if [ $$(ls build/mbedtls/*.o 2>/dev/null | wc -l) -lt 10 ]; then \
 		echo "ERROR: mbedTLS build produced too few objects — check 32-bit headers."; \
 		exit 1; \

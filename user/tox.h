@@ -88,6 +88,7 @@
 #define SYS_ELEVATE       62   // request elevated privileges (UAC-style prompt)
 #define SYS_IS_ADMIN      63   // returns 1 if current process is elevated
 #define SYS_SET_ADMIN     64   // trusted: set is_admin flag (login use only)
+#define SYS_PBKDF2        65   // PBKDF2-SHA256 password hashing
 
 // ── Output ────────────────────────────────────────────────────────────────────
 static inline void print(const char* s)   { SYSCALL1(SYS_PRINT, s); }
@@ -420,6 +421,100 @@ static inline int tox_is_admin(void)
 // Set admin flag directly — only call from trusted login code
 static inline void tox_set_admin(int val)
     { SYSCALL1(SYS_SET_ADMIN, val); }
+
+// ── PBKDF2-SHA256 password hashing ───────────────────────────────────────────
+// Returns 0 on success. out must be 32 bytes.
+static inline int tox_pbkdf2(const uint8_t* pwd, uint32_t plen,
+                              const uint8_t* salt, uint32_t slen,
+                              uint32_t iter, uint8_t* out, uint32_t olen) {
+    uint32_t params[7];
+    params[0]=(uint32_t)pwd;  params[1]=plen;
+    params[2]=(uint32_t)salt; params[3]=slen;
+    params[4]=iter;
+    params[5]=(uint32_t)out;  params[6]=olen;
+    return SYSCALL1(SYS_PBKDF2, params);
+}
+
+#define PBKDF2_ITERATIONS 50000
+#define PBKDF2_HASH_LEN   32
+#define PBKDF2_SALT_LEN   16
+
+// Hex helpers
+static inline char _nibble(uint8_t v) { return v<10?'0'+v:'a'+v-10; }
+static inline uint8_t _unhex(char c) {
+    if(c>='0'&&c<='9') return (uint8_t)(c-'0');
+    if(c>='a'&&c<='f') return (uint8_t)(c-'a'+10);
+    if(c>='A'&&c<='F') return (uint8_t)(c-'A'+10);
+    return 0;
+}
+static inline void bin2hex(const uint8_t* b, int n, char* out) {
+    for(int i=0;i<n;i++){out[i*2]=_nibble(b[i]>>4);out[i*2+1]=_nibble(b[i]&0xF);}
+    out[n*2]=0;
+}
+static inline void hex2bin(const char* h, int n, uint8_t* out) {
+    for(int i=0;i<n;i++) out[i]=(uint8_t)((_unhex(h[i*2])<<4)|_unhex(h[i*2+1]));
+}
+
+// Generate a salt using timer + pid as entropy
+static inline void gen_salt(uint8_t* salt, uint32_t len) {
+    char tbuf[32]; tox_gettime(tbuf, sizeof(tbuf));
+    uint32_t t = 0;
+    for(int i=0;tbuf[i];i++) t = t*31 + (uint8_t)tbuf[i];
+    uint32_t p = (uint32_t)tox_getpid();
+    uint32_t x = t ^ (p<<16) ^ (p>>3) ^ 0xDEADBEEFu;
+    for(uint32_t i=0;i<len;i++){x=x*1664525u+1013904223u;salt[i]=(uint8_t)(x>>13);}
+}
+
+// Hash a password → "$pbkdf2$ITER$SALT_HEX$HASH_HEX"
+// out must be at least 128 bytes
+static inline int hash_password(const char* password, char* out) {
+    uint8_t salt[PBKDF2_SALT_LEN], hash[PBKDF2_HASH_LEN];
+    gen_salt(salt, PBKDF2_SALT_LEN);
+    if (tox_pbkdf2((const uint8_t*)password, (uint32_t)tox_strlen(password),
+                    salt, PBKDF2_SALT_LEN, PBKDF2_ITERATIONS, hash, PBKDF2_HASH_LEN) != 0)
+        return -1;
+    char salt_hex[PBKDF2_SALT_LEN*2+1], hash_hex[PBKDF2_HASH_LEN*2+1];
+    bin2hex(salt, PBKDF2_SALT_LEN, salt_hex);
+    bin2hex(hash, PBKDF2_HASH_LEN, hash_hex);
+    // format: $pbkdf2$ITER$SALTHEX$HASHHEX
+    tox_strcpy(out, "$pbkdf2$");
+    // append iterations as decimal
+    char ibuf[16]; int ii=14; ibuf[15]=0;
+    uint32_t iv=PBKDF2_ITERATIONS;
+    do { ibuf[ii--]='0'+(int)(iv%10); iv/=10; } while(iv);
+    tox_strcat(out, ibuf+ii+1);
+    tox_strcat(out, "$"); tox_strcat(out, salt_hex);
+    tox_strcat(out, "$"); tox_strcat(out, hash_hex);
+    return 0;
+}
+
+// Verify a password against a stored hash. Returns 1 if match.
+static inline int verify_password(const char* password, const char* stored) {
+    // Plain text password (migration / no hash prefix)
+    if (stored[0] != '$') return tox_strcmp(password, stored) == 0;
+    // Parse $pbkdf2$ITER$SALTHEX$HASHHEX
+    if (stored[0]!='$'||stored[1]!='p'||stored[2]!='b') return 0;
+    const char* p = stored + 8; // skip "$pbkdf2$"
+    uint32_t iter = 0;
+    while (*p && *p != '$') { iter = iter*10 + (uint32_t)(*p-'0'); p++; }
+    if (*p == '$') p++;
+    const char* salt_hex = p;
+    while (*p && *p != '$') p++;
+    if (*p != '$') return 0;
+    int salt_hex_len = (int)(p - salt_hex);
+    p++;
+    const char* hash_hex = p;
+    uint8_t salt[PBKDF2_SALT_LEN], expected[PBKDF2_HASH_LEN], computed[PBKDF2_HASH_LEN];
+    hex2bin(salt_hex, salt_hex_len/2, salt);
+    hex2bin(hash_hex, PBKDF2_HASH_LEN, expected);
+    if (tox_pbkdf2((const uint8_t*)password, (uint32_t)tox_strlen(password),
+                    salt, (uint32_t)(salt_hex_len/2), iter,
+                    computed, PBKDF2_HASH_LEN) != 0) return 0;
+    // Constant-time comparison
+    uint8_t diff = 0;
+    for (int i=0;i<PBKDF2_HASH_LEN;i++) diff |= computed[i]^expected[i];
+    return diff == 0;
+}
 
 // ── File permissions ─────────────────────────────────────────────────────────
 // Set permission bits (Unix-style octal: 0644, 0755, etc.)

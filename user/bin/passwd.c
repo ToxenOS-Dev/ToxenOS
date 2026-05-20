@@ -35,6 +35,13 @@ void _start() {
         set_color(0x0C); print("passwd: passwords do not match\n"); set_color(0x07); tox_exit();
     }
 
+    // Hash with PBKDF2-SHA256
+    set_color(0x08); print("Hashing password...\n"); set_color(0x07);
+    char hashed[128];
+    if (hash_password(pass1, hashed) < 0) {
+        set_color(0x0C); print("passwd: failed to hash password\n"); set_color(0x07); tox_exit();
+    }
+
     // Rewrite /etc/users replacing the matching line
     int size = tox_stat("/C:/etc/users");
     if (size <= 0) { set_color(0x0C); print("passwd: /etc/users not found\n"); set_color(0x07); tox_exit(); }
@@ -56,10 +63,10 @@ void _start() {
         if (*p == '\n') p++;
 
         if (str_eq(uname, args)) {
-            // Replace with new password
+            // Replace with new hashed password
             for (int i = 0; uname[i] && oi < 2046; i++) out[oi++] = uname[i];
             out[oi++] = ':';
-            for (int i = 0; pass1[i] && oi < 2046; i++) out[oi++] = pass1[i];
+            for (int i = 0; hashed[i] && oi < 2046; i++) out[oi++] = hashed[i];
             out[oi++] = '\n';
             found = 1;
         } else {

@@ -69,12 +69,19 @@ void _start() {
         set_color(0x0C); print("adduser: passwords do not match\n"); set_color(0x07); tox_exit();
     }
 
+    // Hash password with PBKDF2-SHA256
+    set_color(0x08); print("Hashing password...\n"); set_color(0x07);
+    char hashed[128];
+    if (hash_password(pass1, hashed) < 0) {
+        set_color(0x0C); print("adduser: failed to hash password\n"); set_color(0x07); tox_exit();
+    }
+
     int fd = tox_open("/C:/etc/users", 2 | 4 | 8);
     if (fd < 0) { set_color(0x0C); print("adduser: cannot write /etc/users\n"); set_color(0x07); tox_exit(); }
     tox_write(fd, (uint8_t*)username, (uint32_t)tox_strlen(username));
     tox_write(fd, (uint8_t*)":", 1);
-    tox_write(fd, (uint8_t*)pass1, (uint32_t)tox_strlen(pass1));
-    tox_write(fd, (uint8_t*)":user\n", 6);  // new users start as regular user
+    tox_write(fd, (uint8_t*)hashed, (uint32_t)tox_strlen(hashed));
+    tox_write(fd, (uint8_t*)":user\n", 6);
     tox_close(fd);
 
     set_color(0x0A); print("User created: "); print(username); print("\n"); set_color(0x07);

@@ -73,7 +73,7 @@ void _start() {
         if(*p==':'){p++; while(*p&&*p!='\n'&&ri<15) urole[ri++]=*p++;}urole[ri]=0;
         while(*p&&*p!='\n') p++; if(*p=='\n') p++;
 
-        if (str_eq(uname,admin_name)&&str_eq(pwd,confirm_pass)) admin_ok=1;
+        if (str_eq(uname,admin_name) && verify_password(confirm_pass,pwd)) admin_ok=1;
 
         // Build output line
         const char* wr = str_eq(uname,target) ? role : urole;

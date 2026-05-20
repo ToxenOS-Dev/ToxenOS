@@ -116,12 +116,15 @@ static void first_boot_setup(void) {
         spaces(40); set_color(0x0C); print("Passwords do not match.\n\n"); set_color(0x07);
     }
 
-    // Update admin password in memory and save
+    // Hash and store admin password
+    char hashed[128];
+    spaces(40); set_color(0x08); print("Hashing password...\n"); set_color(0x07);
+    if (hash_password(p1, hashed) < 0) {
+        spaces(40); set_color(0x0C); print("Hashing failed, storing plaintext.\n"); set_color(0x07);
+        tox_strcpy(hashed, p1);
+    }
     for (int i=0;i<u_count;i++) {
-        if (str_eq(u_name[i],"admin")) {
-            tox_strcpy(u_pwd[i], p1);
-            break;
-        }
+        if (str_eq(u_name[i],"admin")) { tox_strcpy(u_pwd[i], hashed); break; }
     }
     save_users();
 
@@ -229,10 +232,10 @@ void _start() {
         spaces(LOGIN_COL); print("Password: ");
         read_pass(password, sizeof(password));
 
-        // Find user and verify
+        // Find user and verify (supports both plaintext and PBKDF2 hashes)
         int found=-1;
         for (int i=0;i<u_count;i++) {
-            if (str_eq(u_name[i],username)&&str_eq(u_pwd[i],password)) {
+            if (str_eq(u_name[i],username) && verify_password(password, u_pwd[i])) {
                 found=i; break;
             }
         }

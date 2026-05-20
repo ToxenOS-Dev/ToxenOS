@@ -106,24 +106,7 @@ static void fb_setup(const fb_info_t* fb)
     fb_init(fb->addr, fb->width, fb->height, fb->pitch, fb->bpp);
     fbterm_init();
 
-    // Print welcome banner with "ToxenOS" highlighted
-    const char* title = "==== Welcome to ToxenOS ====";
-    const char* mark  = "ToxenOS";
-    int len = 0; while (title[len]) len++;
-    int pad = (fbterm_cols() - len) / 2; if (pad < 0) pad = 0;
-    for (int i = 0; i < pad; i++) fbterm_putchar(' ');
-    int ms = -1;
-    for (int i = 0; title[i]; i++) {
-        int m = 1;
-        for (int j = 0; mark[j]; j++) if (title[i+j] != mark[j]) { m = 0; break; }
-        if (m) { ms = i; break; }
-    }
-    for (int i = 0; i < len; i++) {
-        fbterm_set_color((ms >= 0 && i >= ms && i < ms + 7) ? 0x06 : 0x07);
-        fbterm_putchar(title[i]);
-    }
-    fbterm_set_color(0x07);
-    fbterm_putchar('\n'); fbterm_putchar('\n');
+    // Welcome banner removed — shown only on login screen (user/init.c)
     fbterm_draw_indicator();
 }
 

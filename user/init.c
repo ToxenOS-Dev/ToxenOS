@@ -82,12 +82,13 @@ static void show_user_screen(void) {
     // Vertical: top padding to center content (~10 lines) = ~19 newlines
     for (int i = 0; i < 17; i++) print("\n");
 
-    // "==== Welcome to ToxenOS ====" = 30 chars, center in 128: pad 49
+    // "==== Welcome to ToxenOS ====" — same style as kernel banner
+    // White ==== with orange ToxenOS, centered (30 chars in 128 cols = pad 49)
     spaces(49);
-    set_color(0x06); print("==== ");
-    set_color(0x0C); print("Welcome to ToxenOS");
-    set_color(0x06); print(" ====");
-    set_color(0x07); print("\n\n\n");
+    set_color(0x07); print("==== Welcome to ");
+    set_color(0x06); print("ToxenOS");
+    set_color(0x07); print(" ====");
+    print("\n\n\n");
 
     load_users();
 

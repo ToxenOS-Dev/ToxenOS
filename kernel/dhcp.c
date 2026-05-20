@@ -147,7 +147,8 @@ static uint16_t dhcp_build(uint8_t msg_type, uint32_t xid,
         *opt++=(uint8_t)(req_ip>>8);  *opt++=(uint8_t)(req_ip);
     }
     *opt++=OPT_END;
-    return (uint16_t)((opt - (uint8_t*)&dhcp_tx) + 1);
+    // Always send full 548-byte BOOTP structure — QEMU SLIRP requires it
+    return (uint16_t)sizeof(dhcp_pkt_t);
 }
 
 // Run DHCP. Returns 1 if successful (net_ip/net_gateway/net_mask updated), 0 on failure.

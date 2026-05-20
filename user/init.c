@@ -131,8 +131,10 @@ void _start() {
     while (1) {
         int shell_pid = tox_spawn_embedded(0);
         tox_wait(shell_pid);
-        // Shell exited — drain keyboard and show login again
-        for (int _d = 0; _d < 300; _d++) yield();
+        // Shell exited — clear screen, drain keyboard, show login again
+        tox_clear();
+        for (int _d = 0; _d < 500; _d++) yield();
         while (tox_keyavail()) tox_getchar();
+        set_color(0x0E); print("==== Welcome to ToxenOS ====\n\n"); set_color(0x07);
     }
 }

@@ -72,6 +72,7 @@ void _start() {
 
     if (!found) {
         set_color(0x0C); print("passwd: user not found: "); print(args); print("\n");
+        print("  Tip: use 'adduser' to create a new user\n");
         set_color(0x07); tox_exit();
     }
 

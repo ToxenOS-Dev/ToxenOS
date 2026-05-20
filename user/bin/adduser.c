@@ -74,7 +74,7 @@ void _start() {
     tox_write(fd, (uint8_t*)username, (uint32_t)tox_strlen(username));
     tox_write(fd, (uint8_t*)":", 1);
     tox_write(fd, (uint8_t*)pass1, (uint32_t)tox_strlen(pass1));
-    tox_write(fd, (uint8_t*)"\n", 1);
+    tox_write(fd, (uint8_t*)":user\n", 6);  // new users start as regular user
     tox_close(fd);
 
     set_color(0x0A); print("User created: "); print(username); print("\n"); set_color(0x07);

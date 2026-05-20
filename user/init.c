@@ -211,6 +211,7 @@ void _start() {
 
     // Main login loop
     while (1) {
+        load_users();  // reload every time so new users (adduser) appear immediately
         show_user_screen();
 
         char username[64], password[64];

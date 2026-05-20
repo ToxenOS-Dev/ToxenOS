@@ -11,12 +11,57 @@ static const char* basename(const char* path) {
     return last;
 }
 
+// Package server IP (QEMU host = 10.0.2.2, but packages served on port 8080)
+// User can override with: reg set tox.server 10.0.2.2
+#define TOX_PKG_SERVER_IP  ((uint32_t)(10<<24|0<<16|2<<8|2))
+#define TOX_PKG_PORT       8080
+
 static void usage(void) {
     set_color(0x0B); print("tox - ToxenOS Elevated Runner & Package Manager\n"); set_color(0x07);
-    print("  tox <cmd> [args]     run command with elevated privileges (like sudo)\n");
-    print("  tox install <path>   install program to /BSM/usr/lst/\n");
-    print("  tox remove  <name>   remove program from /BSM/usr/lst/\n");
-    print("  tox list             list installed packages\n");
+    print("  tox <cmd> [args]       run with elevated privileges (like sudo)\n");
+    print("  tox install <path>     install local file to /BSM/usr/lst/\n");
+    print("  tox get <name>         download & install from package server\n");
+    print("  tox remove  <name>     remove from /BSM/usr/lst/\n");
+    print("  tox list               list installed packages\n");
+}
+
+// Download body of http://<ip>:<port>/<path> into dst file. Returns bytes or -1.
+static int http_download(uint32_t ip, uint16_t port, const char* path, const char* dst_file) {
+    int sock = tox_tcp_connect(ip, port);
+    if (sock < 0) return -1;
+
+    char req[256];
+    tox_strcpy(req, "GET "); tox_strcat(req, path);
+    tox_strcat(req, " HTTP/1.0\r\nHost: 10.0.2.2\r\nConnection: close\r\n\r\n");
+    tox_tcp_send(sock, (const uint8_t*)req, (uint32_t)tox_strlen(req));
+
+    int fd = tox_open(dst_file, 2|4);
+    if (fd < 0) { tox_tcp_close(sock); return -1; }
+
+    static uint8_t buf[4096];
+    static uint8_t hbuf[2048];
+    int hlen=0, header_done=0, total=0, n;
+
+    while ((n = tox_tcp_recv(sock, buf, 4095, 10000)) > 0) {
+        if (!header_done) {
+            int copy = n < (2047-hlen) ? n : (2047-hlen);
+            for (int k=0;k<copy;k++) hbuf[hlen+k]=buf[k]; hlen+=copy;
+            // Find \r\n\r\n
+            for (int k=0; k<hlen-3; k++) {
+                if(hbuf[k]=='\r'&&hbuf[k+1]=='\n'&&hbuf[k+2]=='\r'&&hbuf[k+3]=='\n') {
+                    header_done=1;
+                    int body=hlen-(k+4);
+                    if(body>0){ tox_write(fd,(uint8_t*)(hbuf+k+4),(uint32_t)body); total+=body; }
+                    break;
+                }
+            }
+        } else {
+            tox_write(fd, buf, (uint32_t)n); total+=n;
+        }
+    }
+    tox_close(fd);
+    tox_tcp_close(sock);
+    return total > 0 ? total : -1;
 }
 
 // Find a command in BSM paths, return full path in out. Returns 1 if found.
@@ -52,6 +97,28 @@ void _start() {
             count++;
         }
         if (count == 0) { set_color(0x08); print("  (none installed)\n"); set_color(0x07); }
+        tox_exit();
+    }
+
+    if (str_eq(cmd, "get")) {
+        // Download and install from package server
+        if (!param[0]) { set_color(0x0C); print("tox: usage: tox get <name>\n"); set_color(0x07); tox_exit(); }
+        // Strip .elf if user typed it
+        char name[64]; int ni=0;
+        while (param[ni] && param[ni] != '.' && ni < 63) name[ni] = param[ni++];
+        name[ni] = 0;
+
+        char path[128]; tox_strcpy(path, "/"); tox_strcat(path, name); tox_strcat(path, ".elf");
+        char dst[256]; tox_strcpy(dst, "/C:/BSM/usr/lst/"); tox_strcat(dst, name); tox_strcat(dst, ".elf");
+
+        set_color(0x0B); print("tox: downloading "); print(name); print(".elf...\n"); set_color(0x07);
+        int bytes = http_download(TOX_PKG_SERVER_IP, TOX_PKG_PORT, path, dst);
+        if (bytes < 0) {
+            set_color(0x0C); print("tox: download failed (is package server running?)\n"); set_color(0x07);
+            tox_exit();
+        }
+        set_color(0x0A); print("installed: "); print(name); print(".elf (");
+        print_int(bytes); print(" bytes)\n"); set_color(0x07);
         tox_exit();
     }
 

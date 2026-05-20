@@ -131,25 +131,33 @@ static void first_boot_setup(void) {
 
 static void show_user_screen(void) {
     tox_clear();
-    for (int i=0;i<17;i++) print("\n");
+    for (int i=0;i<16;i++) print("\n");
+
+    // Welcome banner centered (30 chars in 128 cols = pad 49)
     spaces(49);
     set_color(0x07); print("==== Welcome to ");
     set_color(0x06); print("ToxenOS");
-    set_color(0x07); print(" ====\n\n\n");
+    set_color(0x07); print(" ====\n\n");
 
+    // "Select a user:" label centered
+    spaces(55);
+    set_color(0x08); print("Select a user:\n\n"); set_color(0x07);
+
+    // User list
     for (int i=0;i<u_count;i++) {
-        spaces(55);
+        spaces(57);
         set_color(0x08); print("[");
         set_color(0x0A); char n[2]={'0'+(char)(i+1),0}; print(n);
         set_color(0x08); print("]  ");
         set_color(0x07); print(u_name[i]);
-        // Show role badge
         if (str_eq(u_role[i],"admin")) {
             set_color(0x06); print("  [admin]");
         }
         set_color(0x07); print("\n");
     }
-    print("\n\n");
+    print("\n");
+
+    // Login prompt centered
     spaces(52);
 }
 

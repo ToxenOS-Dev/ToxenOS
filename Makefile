@@ -25,7 +25,7 @@ KOBJS := \
 	build/kernel.o build/keyboard.o build/idt.o build/pic.o build/irq.o \
 	build/timer.o build/mm.o build/klog.o build/pmm.o build/process.o build/syscall.o \
 	build/paging.o build/tss.o build/ring3.o \
-	build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/fat.o build/env.o build/crypto.o \
+	build/vfs.o build/tmpfs.o build/ata.o build/txfs.o build/fat.o build/env.o build/crypto.o build/dhcp.o \
 	build/ext2.o build/elf.o build/tty.o build/pipe.o build/waitqueue.o \
 	build/pci.o build/e1000.o build/net.o build/tcp.o build/tls.o \
 	build/framebuffer.o build/font.o build/fbterm.o \
@@ -59,6 +59,7 @@ all: user
 	gcc $(KFLAGS) -c kernel/ring3.c      -o build/ring3.o
 	gcc $(KFLAGS) -c kernel/vfs.c        -o build/vfs.o
 	gcc $(KFLAGS) -c kernel/env.c        -o build/env.o
+	gcc $(KFLAGS) -c kernel/dhcp.c       -o build/dhcp.o
 	gcc $(KFLAGS) -c kernel/tmpfs.c      -o build/tmpfs.o
 	gcc $(KFLAGS) -c kernel/ata.c        -o build/ata.o
 	gcc $(KFLAGS) -c kernel/txfs.c       -o build/txfs.o

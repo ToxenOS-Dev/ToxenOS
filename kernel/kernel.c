@@ -28,6 +28,7 @@
 #include "../include/e1000.h"
 #include "../include/pmm.h"
 #include "../include/net.h"
+#include "../include/dhcp.h"
 
 // ── VGA legacy state (referenced by fbterm layer) ────────────────────────────
 uint16_t* const VGA_MEMORY = (uint16_t*)0xB8000;
@@ -305,6 +306,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     pci_init();
     e1000_init();
     net_init();
+    if (!dhcp_run()) klog("DHCP failed — using static IP\n");
 
     // ── Phase 7: launch userspace ────────────────────────────────────────────
     klog("Launching init\n");

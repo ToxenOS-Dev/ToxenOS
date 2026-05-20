@@ -1,5 +1,5 @@
 // ToxenOS/user/init.c — PID 1
-// Sets up environment, shows login prompt, spawns shell on success.
+// Sets up environment, shows user picker + login prompt, spawns shell.
 #include "tox.h"
 
 static int str_eq(const char* a, const char* b) {
@@ -7,60 +7,95 @@ static int str_eq(const char* a, const char* b) {
     return *a == *b;
 }
 
-static int read_line(char* buf, int max, int hide) {
+static int read_visible(char* buf, int max) {
     int i = 0;
     while (i < max - 1) {
         char c = tox_getchar();
         if (c == '\n' || c == '\r') { buf[i] = 0; print("\n"); return i; }
-        if (c == '\b' || c == 127) {
-            if (i > 0) { i--; tox_erase(); }
-            continue;
-        }
-        // Ignore non-printable chars (scan codes, garbage from boot)
+        if ((c == '\b' || c == 127) && i > 0) { i--; tox_erase(); continue; }
         if (c < 0x20 || c > 0x7E) continue;
-        buf[i++] = c;
-        if (hide) print("*");
-        else { char s[2] = {c, 0}; print(s); }
+        buf[i++] = c; char s[2]={c,0}; print(s);
     }
-    buf[i] = 0;
-    return i;
+    buf[i] = 0; return i;
 }
 
-// Check /etc/users for username:password match. Returns 1 if ok.
-// File format: username:password\n  (one per line)
-// If file missing, any username with empty password is accepted (default admin).
-static int check_login(const char* user, const char* pass) {
-    int size = tox_stat("/C:/etc/users");
-    if (size <= 0) {
-        // No users file: accept "admin" with empty password
-        return str_eq(user, "admin") && pass[0] == 0;
+static int read_pass(char* buf, int max) {
+    int i = 0;
+    while (i < max - 1) {
+        char c = tox_getchar();
+        if (c == '\n' || c == '\r') { buf[i] = 0; print("\n"); return i; }
+        if ((c == '\b' || c == 127) && i > 0) { i--; tox_erase(); continue; }
+        if (c < 0x20 || c > 0x7E) continue;
+        buf[i++] = c; print("*");
     }
+    buf[i] = 0; return i;
+}
 
+// Parse /etc/users, store usernames in names[]. Returns count.
+#define MAX_USERS 16
+static char user_names[MAX_USERS][64];
+static char user_pwds[MAX_USERS][64];
+static int  user_count = 0;
+
+static void load_users(void) {
+    user_count = 0;
+    int size = tox_stat("/C:/etc/users");
+    if (size <= 0 || size > 4095) {
+        tox_strcpy(user_names[0], "admin");
+        tox_strcpy(user_pwds[0], "");
+        user_count = 1;
+        return;
+    }
     char* buf = malloc((uint32_t)size + 1);
-    if (!buf) return 0;
+    if (!buf) return;
     int fd = tox_open("/C:/etc/users", 1);
     int n = tox_read(fd, (uint8_t*)buf, (uint32_t)size);
-    tox_close(fd);
-    if (n < 0) n = 0;
-    buf[n] = 0;
-
+    tox_close(fd); if (n < 0) n = 0; buf[n] = 0;
     const char* p = buf;
-    while (*p) {
-        char uname[64], pwd[64];
+    while (*p && user_count < MAX_USERS) {
         int ui = 0, pi = 0;
-        while (*p && *p != ':' && *p != '\n' && ui < 63) uname[ui++] = *p++;
-        uname[ui] = 0;
+        while (*p && *p != ':' && *p != '\n' && ui < 63) user_names[user_count][ui++] = *p++;
+        user_names[user_count][ui] = 0;
         if (*p == ':') { p++;
-            while (*p && *p != '\n' && pi < 63) pwd[pi++] = *p++;
+            while (*p && *p != '\n' && pi < 63) user_pwds[user_count][pi++] = *p++;
         }
-        pwd[pi] = 0;
+        user_pwds[user_count][pi] = 0;
         while (*p && *p != '\n') p++;
         if (*p == '\n') p++;
-
-        if (str_eq(uname, user) && str_eq(pwd, pass)) { free(buf); return 1; }
+        if (ui > 0) user_count++;
     }
     free(buf);
-    return 0;
+    if (user_count == 0) {
+        tox_strcpy(user_names[0], "admin");
+        tox_strcpy(user_pwds[0], "");
+        user_count = 1;
+    }
+}
+
+static void show_user_screen(void) {
+    tox_clear();
+    set_color(0x0E); print("  ==== Welcome to ToxenOS ====\n\n"); set_color(0x07);
+
+    load_users();
+
+    set_color(0x0B); print("  Users:\n"); set_color(0x08);
+    print("  "); for(int i=0;i<28;i++) print("\xc4"); print("\n");
+    set_color(0x07);
+    for (int i = 0; i < user_count; i++) {
+        set_color(0x08); print("  [");
+        set_color(0x0B); char n[4]={'0'+(char)(i+1),']',0,0}; print(n);
+        set_color(0x07); print(" "); print(user_names[i]); print("\n");
+    }
+    set_color(0x08);
+    print("  "); for(int i=0;i<28;i++) print("\xc4"); print("\n\n");
+    set_color(0x07);
+}
+
+static void drain_keyboard(void) {
+    for (int _d = 0; _d < 1000; _d++) yield();
+    while (tox_keyavail()) tox_getchar();
+    for (int _d = 0; _d < 200; _d++) yield();
+    while (tox_keyavail()) tox_getchar();
 }
 
 void _start() {
@@ -71,7 +106,7 @@ void _start() {
     tox_setenv("TERM",  "toxterm");
     tox_setenv("OS",    "ToxenOS");
 
-    // Load persisted hostname from /etc/reg if present
+    // Load persisted hostname from /etc/reg
     {
         int sz = tox_stat("/C:/etc/reg");
         if (sz > 0 && sz < 4096) {
@@ -79,16 +114,12 @@ void _start() {
             if (rb) {
                 int fd = tox_open("/C:/etc/reg", 1);
                 int nn = tox_read(fd, (uint8_t*)rb, (uint32_t)sz);
-                tox_close(fd);
-                if (nn < 0) nn = 0;
-                rb[nn] = 0;
-                // Find hostname= line
+                tox_close(fd); if (nn < 0) nn = 0; rb[nn] = 0;
                 const char* p = rb;
                 while (*p) {
                     if (p[0]=='h'&&p[1]=='o'&&p[2]=='s'&&p[3]=='t'&&
                         p[4]=='n'&&p[5]=='a'&&p[6]=='m'&&p[7]=='e'&&p[8]=='=') {
-                        p += 9;
-                        char hn[64]; int hi = 0;
+                        p += 9; char hn[64]; int hi = 0;
                         while (*p && *p != '\n' && hi < 63) hn[hi++] = *p++;
                         hn[hi] = 0;
                         if (hi > 0) tox_setenv("hostname", hn);
@@ -102,41 +133,50 @@ void _start() {
         }
     }
 
-    // Drain keyboard buffer — boot process leaves garbage scan codes
-    for (int _d = 0; _d < 500; _d++) yield();
-    while (tox_keyavail()) tox_getchar();
+    drain_keyboard();
 
-    // Login prompt
-    char username[64], password[64];
+    // Login loop
     while (1) {
-        set_color(0x07); print("\n");
-        set_color(0x0B); print("ToxenOS"); set_color(0x07); print(" login: ");
-        read_line(username, sizeof(username), 0);
+        show_user_screen();
 
-        set_color(0x07); print("Password: ");
-        read_line(password, sizeof(password), 1);
+        char username[64], password[64];
 
-        if (username[0] && check_login(username, password)) {
-            tox_setenv("USER", username);
-            set_color(0x0A);
-            print("\nWelcome, "); print(username); print("!\n");
-            set_color(0x07);
-            break;
+        // User selection: accept number or direct username
+        set_color(0x07); print("  Login as: ");
+        read_visible(username, sizeof(username));
+        if (!username[0]) continue;
+
+        // If user typed a number, resolve to username
+        if (username[0] >= '1' && username[0] <= '9' && username[1] == 0) {
+            int idx = username[0] - '1';
+            if (idx < user_count) tox_strcpy(username, user_names[idx]);
+            else { set_color(0x0C); print("  Invalid selection.\n"); set_color(0x07); continue; }
         }
 
-        set_color(0x0C); print("Login incorrect.\n"); set_color(0x07);
-    }
+        set_color(0x07); print("  Password: ");
+        read_pass(password, sizeof(password));
 
-    // Spawn shell — when it exits (logout), loop back to login prompt
-    while (1) {
+        // Check credentials
+        int ok = 0;
+        for (int i = 0; i < user_count; i++) {
+            if (str_eq(user_names[i], username) && str_eq(user_pwds[i], password)) {
+                ok = 1; break;
+            }
+        }
+
+        if (!ok) {
+            set_color(0x0C); print("\n  Login incorrect.\n"); set_color(0x07);
+            for (int _d = 0; _d < 300; _d++) yield();  // brief pause before retry
+            continue;
+        }
+
+        tox_setenv("USER", username);
+        set_color(0x0A); print("\n  Welcome, "); print(username); print("!\n\n");
+        set_color(0x07);
+
+        // Spawn shell — when it exits (logout), show user screen again
         int shell_pid = tox_spawn_embedded(0);
         tox_wait(shell_pid);
-        // Shell exited — clear screen, drain keyboard thoroughly, show login again
-        tox_clear();
-        for (int _d = 0; _d < 1000; _d++) yield();  // let all key-up events arrive
-        while (tox_keyavail()) tox_getchar();         // drain them
-        for (int _d = 0; _d < 200; _d++) yield();    // one more pass
-        while (tox_keyavail()) tox_getchar();
-        set_color(0x0E); print("==== Welcome to ToxenOS ====\n\n"); set_color(0x07);
+        drain_keyboard();
     }
 }

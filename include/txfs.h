@@ -81,5 +81,9 @@ typedef struct
 fs_driver_t* txfs_init();
 int          txfs_format(uint32_t total_blocks);
 void         txfs_diskstats(uint32_t* total_kb, uint32_t* free_kb);
+int          txfs_snap_create(const char* name, uint32_t timestamp);
+int          txfs_snap_restore(const char* name);
+int          txfs_snap_delete(const char* name);
+int          txfs_snap_list(char out[][64], uint32_t* timestamps, int max);
 
 #endif

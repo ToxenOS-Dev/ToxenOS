@@ -753,6 +753,133 @@ static int txfs_getmode_fn(const char* path)
     return (int)(inode.mode & 0x1FF);  // return permission bits only
 }
 
+// --- TxFS Snapshots ----------------------------------------------------------
+// Snapshots live in a dedicated area AFTER the normal filesystem space.
+// Disk layout: blocks 0-25599 = TxFS filesystem, blocks 25600+ = snapshot area
+// Snapshot area block 0 = directory (up to 10 snapshot entries)
+// Snapshot area blocks 1..N = metadata snapshots (TXFS_META_BLOCKS each)
+
+#define SNAP_AREA_START   25600   // first block of snapshot area
+#define SNAP_MAX          10      // max snapshots
+#define TXFS_META_BLOCKS  36      // blocks 0-35 = superblock+bitmaps+inode table
+
+typedef struct {
+    char     name[64];
+    uint32_t timestamp;
+    int      used;
+    uint32_t pad[2];
+} txfs_snap_entry_t;  // 80 bytes
+
+typedef struct {
+    uint32_t          magic;                       // 0x534E4150 "SNAP"
+    txfs_snap_entry_t entries[SNAP_MAX];           // 10 * 80 = 800 bytes
+    uint8_t           pad[4096 - 4 - SNAP_MAX*80]; // pad to 1 block
+} txfs_snap_dir_t;
+
+static txfs_snap_dir_t snap_dir;
+static int snap_dir_loaded = 0;
+
+static void snap_load_dir(void) {
+    if (!snap_dir_loaded) {
+        uint8_t buf[TXFS_BLOCK_SIZE];
+        if (txfs_read_block(SNAP_AREA_START, buf) == 0) {
+            txfs_snap_dir_t* d = (txfs_snap_dir_t*)buf;
+            if (d->magic == 0x534E4150u) {
+                for (int i = 0; i < SNAP_MAX; i++) snap_dir.entries[i] = d->entries[i];
+                snap_dir.magic = d->magic;
+            } else {
+                snap_dir.magic = 0x534E4150u;
+                for (int i = 0; i < SNAP_MAX; i++) snap_dir.entries[i].used = 0;
+            }
+        }
+        snap_dir_loaded = 1;
+    }
+}
+
+static void snap_save_dir(void) {
+    uint8_t buf[TXFS_BLOCK_SIZE];
+    uint8_t* p = (uint8_t*)&snap_dir;
+    for (int i = 0; i < TXFS_BLOCK_SIZE; i++) buf[i] = p[i];
+    txfs_write_block(SNAP_AREA_START, buf);
+}
+
+static int snap_strcpy(char* d, const char* s, int max) {
+    int i = 0; while (s[i] && i < max-1) { d[i]=s[i]; i++; } d[i]=0; return i;
+}
+static int snap_streq(const char* a, const char* b) {
+    int i=0; while(a[i]&&b[i]&&a[i]==b[i])i++; return a[i]==b[i];
+}
+
+int txfs_snap_create(const char* name, uint32_t timestamp) {
+    snap_load_dir();
+    // Find free slot
+    int slot = -1;
+    for (int i = 0; i < SNAP_MAX; i++) {
+        if (!snap_dir.entries[i].used) { slot = i; break; }
+        if (snap_streq(snap_dir.entries[i].name, name)) { slot = i; break; } // overwrite same name
+    }
+    if (slot < 0) return -1; // no free slots
+
+    // Save metadata blocks (0 to TXFS_META_BLOCKS-1) to snapshot area
+    uint32_t snap_start = SNAP_AREA_START + 1 + (uint32_t)slot * TXFS_META_BLOCKS;
+    uint8_t buf[TXFS_BLOCK_SIZE];
+    for (int b = 0; b < TXFS_META_BLOCKS; b++) {
+        if (txfs_read_block((uint32_t)b, buf) < 0) return -1;
+        if (txfs_write_block(snap_start + (uint32_t)b, buf) < 0) return -1;
+    }
+
+    snap_dir.entries[slot].used = 1;
+    snap_dir.entries[slot].timestamp = timestamp;
+    snap_strcpy(snap_dir.entries[slot].name, name, 64);
+    snap_save_dir();
+    return slot;
+}
+
+int txfs_snap_restore(const char* name) {
+    snap_load_dir();
+    int slot = -1;
+    for (int i = 0; i < SNAP_MAX; i++)
+        if (snap_dir.entries[i].used && snap_streq(snap_dir.entries[i].name, name)) { slot = i; break; }
+    if (slot < 0) return -1;
+
+    uint32_t snap_start = SNAP_AREA_START + 1 + (uint32_t)slot * TXFS_META_BLOCKS;
+    uint8_t buf[TXFS_BLOCK_SIZE];
+    for (int b = 0; b < TXFS_META_BLOCKS; b++) {
+        if (txfs_read_block(snap_start + (uint32_t)b, buf) < 0) return -1;
+        if (txfs_write_block((uint32_t)b, buf) < 0) return -1;
+    }
+    // Reload superblock after restore
+    txfs_read_super();
+    snap_dir_loaded = 0;
+    return 0;
+}
+
+int txfs_snap_delete(const char* name) {
+    snap_load_dir();
+    for (int i = 0; i < SNAP_MAX; i++) {
+        if (snap_dir.entries[i].used && snap_streq(snap_dir.entries[i].name, name)) {
+            snap_dir.entries[i].used = 0;
+            snap_save_dir();
+            return 0;
+        }
+    }
+    return -1;
+}
+
+// List: copies name+timestamp of each used slot into out[]. Returns count.
+int txfs_snap_list(char out[][64], uint32_t* timestamps, int max) {
+    snap_load_dir();
+    int count = 0;
+    for (int i = 0; i < SNAP_MAX && count < max; i++) {
+        if (snap_dir.entries[i].used) {
+            snap_strcpy(out[count], snap_dir.entries[i].name, 64);
+            if (timestamps) timestamps[count] = snap_dir.entries[i].timestamp;
+            count++;
+        }
+    }
+    return count;
+}
+
 // --- driver registration -----------------------------------------------------
 
 static fs_driver_t txfs_driver = {

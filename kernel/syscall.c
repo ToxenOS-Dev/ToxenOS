@@ -505,6 +505,33 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             process_current()->is_admin = (uint8_t)ebx;
             return 0;
 
+        case SYS_SNAP_CREATE:
+        {
+            if (!ebx) return (uint32_t)-1;
+            CHECK_USER_STR(ebx);
+            return (uint32_t)txfs_snap_create((const char*)ebx, timer_getticks());
+        }
+        case SYS_SNAP_RESTORE:
+        {
+            if (!ebx) return (uint32_t)-1;
+            CHECK_USER_STR(ebx);
+            return (uint32_t)txfs_snap_restore((const char*)ebx);
+        }
+        case SYS_SNAP_DELETE:
+        {
+            if (!ebx) return (uint32_t)-1;
+            CHECK_USER_STR(ebx);
+            return (uint32_t)txfs_snap_delete((const char*)ebx);
+        }
+        case SYS_SNAP_LIST:
+        {
+            // ebx = char[10][64] buffer, ecx = uint32_t[10] timestamps, edx = max
+            if (!ebx || !edx) return 0;
+            CHECK_USER_PTR(ebx, (uint32_t)(edx * 64));
+            return (uint32_t)txfs_snap_list((char(*)[64])ebx,
+                                            ecx ? (uint32_t*)ecx : 0, (int)edx);
+        }
+
         case SYS_PBKDF2:
         {
             // ebx = ptr to: [pwd_ptr(4) pwd_len(4) salt_ptr(4) salt_len(4)

@@ -422,6 +422,20 @@ static inline int tox_is_admin(void)
 static inline void tox_set_admin(int val)
     { SYSCALL1(SYS_SET_ADMIN, val); }
 
+// ── TxFS Snapshots ────────────────────────────────────────────────────────────
+#define SYS_SNAP_CREATE    66
+#define SYS_SNAP_RESTORE   67
+#define SYS_SNAP_DELETE    68
+#define SYS_SNAP_LIST      69
+static inline int tox_snap_create(const char* name)
+    { return SYSCALL1(SYS_SNAP_CREATE, name); }
+static inline int tox_snap_restore(const char* name)
+    { return SYSCALL1(SYS_SNAP_RESTORE, name); }
+static inline int tox_snap_delete(const char* name)
+    { return SYSCALL1(SYS_SNAP_DELETE, name); }
+static inline int tox_snap_list(char names[][64], uint32_t* ts, int max)
+    { return SYSCALL3(SYS_SNAP_LIST, names, ts, max); }
+
 // ── PBKDF2-SHA256 password hashing ───────────────────────────────────────────
 // Returns 0 on success. out must be 32 bytes.
 static inline int tox_pbkdf2(const uint8_t* pwd, uint32_t plen,

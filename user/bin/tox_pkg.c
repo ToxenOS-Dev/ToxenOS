@@ -13,10 +13,9 @@ static const char* basename(const char* path) {
 
 // Package server IP (QEMU host = 10.0.2.2, but packages served on port 8080)
 // User can override with: reg set tox.server 10.0.2.2
-// Host's actual IP — reachable from guest through SLIRP NAT
-// Run: python3 -m http.server 9000 --directory ~/mypackages
-// Override with: reg set tox.server <ip>
-#define TOX_PKG_SERVER_IP  ((uint32_t)(10<<24|161<<16|15<<8|116))
+// 10.0.2.2 = host machine in QEMU user networking (SLIRP forwards to 127.0.0.1)
+// Run on host: python3 -m http.server 9000 --directory ~/mypackages
+#define TOX_PKG_SERVER_IP  ((uint32_t)(10<<24|0<<16|2<<8|2))
 #define TOX_PKG_PORT       9000
 
 static void usage(void) {
@@ -30,8 +29,13 @@ static void usage(void) {
 
 // Download body of http://<ip>:<port>/<path> into dst file. Returns bytes or -1.
 static int http_download(uint32_t ip, uint16_t port, const char* path, const char* dst_file) {
+    set_color(0x08); print("  connecting...\n"); set_color(0x07);
     int sock = tox_tcp_connect(ip, port);
-    if (sock < 0) return -1;
+    if (sock < 0) {
+        set_color(0x0C); print("  connect failed\n"); set_color(0x07);
+        return -1;
+    }
+    set_color(0x08); print("  connected, sending GET...\n"); set_color(0x07);
 
     char req[256];
     tox_strcpy(req, "GET "); tox_strcat(req, path);

@@ -261,18 +261,21 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port)
     s->tx_tail     = 0;
     s->rx_closed   = 0;
 
-    // Send SYN
+    // Send SYN (may fail if ARP not cached yet — will retry below)
     tcp_send_segment(s, TCP_SYN, 0, 0);
     s->seq++;  // SYN consumes one sequence number
 
-    // Wait for SYN-ACK (10 second timeout)
-    uint32_t deadline = timer_getticks() + 1000;
+    // Wait for SYN-ACK — retry SYN every 200ms in case ARP resolves later
+    uint32_t deadline  = timer_getticks() + 1000; // 10s total timeout
+    uint32_t next_syn  = timer_getticks() + 20;   // retry SYN in 200ms
     while (s->state == TCP_SYN_SENT) {
         extern void net_poll();
         net_poll();
-        if (timer_getticks() >= deadline) {
-            s->used = 0;
-            return -1;
+        if (timer_getticks() >= deadline) { s->used = 0; return -1; }
+        if (timer_getticks() >= next_syn) {
+            // Resend SYN — ARP may have resolved since last attempt
+            tcp_send_segment(s, TCP_SYN, 0, 0);
+            next_syn = timer_getticks() + 20;
         }
         extern void scheduler();
         scheduler();

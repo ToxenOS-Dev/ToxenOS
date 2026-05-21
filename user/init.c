@@ -99,38 +99,6 @@ static void drain_keyboard(void) {
     while (tox_keyavail()) tox_getchar();
 }
 
-// First-boot wizard: runs when admin has no password set
-static void first_boot_setup(void) {
-    tox_clear();
-    print("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
-    spaces(40);
-    set_color(0x0E); print("ToxenOS First-Time Setup\n\n"); set_color(0x07);
-    spaces(40);
-    print("Set a password for the admin account.\n\n");
-
-    char p1[64], p2[64];
-    while (1) {
-        spaces(40); print("Admin password: ");  read_pass(p1, sizeof(p1));
-        spaces(40); print("Confirm password: "); read_pass(p2, sizeof(p2));
-        if (str_eq(p1,p2)) break;
-        spaces(40); set_color(0x0C); print("Passwords do not match.\n\n"); set_color(0x07);
-    }
-
-    // Hash and store admin password
-    char hashed[128];
-    spaces(40); set_color(0x08); print("Hashing password...\n"); set_color(0x07);
-    if (hash_password(p1, hashed) < 0) {
-        spaces(40); set_color(0x0C); print("Hashing failed, storing plaintext.\n"); set_color(0x07);
-        tox_strcpy(hashed, p1);
-    }
-    for (int i=0;i<u_count;i++) {
-        if (str_eq(u_name[i],"admin")) { tox_strcpy(u_pwd[i], hashed); break; }
-    }
-    save_users();
-
-    spaces(40); set_color(0x0A); print("Setup complete!\n"); set_color(0x07);
-    for (int _d=0;_d<500;_d++) yield();
-}
 
 // All content left-aligned from col 49 (center of 128-col terminal)
 #define LOGIN_COL 49
@@ -201,16 +169,6 @@ void _start() {
 
     drain_keyboard();
     load_users();
-
-    // First-boot: if admin has empty password, run setup wizard
-    for (int i=0;i<u_count;i++) {
-        if (str_eq(u_name[i],"admin") && str_empty(u_pwd[i])) {
-            first_boot_setup();
-            load_users();  // reload after setup
-            drain_keyboard();
-            break;
-        }
-    }
 
     // Main login loop
     while (1) {

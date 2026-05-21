@@ -166,24 +166,26 @@ void _start() {
         read_visible(username, sizeof(username));
         if (!username[0]) continue;
 
-        // Drain key-up events from Enter before reading password
-        tox_sleep(150);
-        while (tox_keyavail()) tox_getchar();
-        spaces(LOGIN_COL); print("Password: ");
-        read_pass(password, sizeof(password));
-
-        // Find user and verify (supports both plaintext and PBKDF2 hashes)
+        // Find user by name first
         int found=-1;
         for (int i=0;i<u_count;i++) {
-            if (str_eq(u_name[i],username) && verify_password(password, u_pwd[i])) {
-                found=i; break;
-            }
+            if (str_eq(u_name[i],username)) { found=i; break; }
         }
-
         if (found<0) {
             spaces(LOGIN_COL); set_color(0x0C); print("Login incorrect.\n"); set_color(0x07);
-            for (int _d=0;_d<300;_d++) yield();
-            continue;
+            tox_sleep(500); continue;
+        }
+
+        // Only ask for password if one is set
+        if (u_pwd[found][0] != 0) {
+            tox_sleep(150);
+            while (tox_keyavail()) tox_getchar();
+            spaces(LOGIN_COL); print("Password: ");
+            read_pass(password, sizeof(password));
+            if (!verify_password(password, u_pwd[found])) {
+                spaces(LOGIN_COL); set_color(0x0C); print("Login incorrect.\n"); set_color(0x07);
+                tox_sleep(500); continue;
+            }
         }
 
         // Set user env and privileges

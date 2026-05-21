@@ -30,6 +30,10 @@ static void usage(void) {
 
 // Download body of http://<ip>:<port>/<path> into dst file. Returns bytes or -1.
 static int http_download(uint32_t ip, uint16_t port, const char* path, const char* dst_file) {
+    // Pre-warm ARP cache by pinging the gateway — needed if this is the first
+    // network operation after boot (ARP for 10.0.2.2 might not be cached yet)
+    tox_ping((uint32_t)(10<<24|0<<16|2<<8|2), 1, 1000);
+
     int sock = tox_tcp_connect(ip, port);
     if (sock < 0) return -1;
 

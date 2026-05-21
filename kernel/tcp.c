@@ -262,23 +262,17 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port)
     s->rx_closed   = 0;
 
     // Send SYN
-    uint32_t syn_isn = s->seq;       // save ISN for potential retransmit
     tcp_send_segment(s, TCP_SYN, 0, 0);
     s->seq++;  // SYN consumes one sequence number
 
-    // Wait for SYN-ACK — retry SYN with correct ISN every 200ms
-    // (first attempt may fail if ARP not cached yet)
-    uint32_t deadline = timer_getticks() + 1000; // 10s timeout
-    uint32_t next_syn = timer_getticks() + 20;   // retry in 200ms
+    // Wait for SYN-ACK (10 second timeout)
+    uint32_t deadline = timer_getticks() + 1000;
     while (s->state == TCP_SYN_SENT) {
         extern void net_poll();
         net_poll();
-        if (timer_getticks() >= deadline) { s->used = 0; return -1; }
-        if (timer_getticks() >= next_syn) {
-            s->seq = syn_isn;              // restore ISN for retransmit
-            tcp_send_segment(s, TCP_SYN, 0, 0);
-            s->seq = syn_isn + 1;         // restore post-SYN seq
-            next_syn = timer_getticks() + 20;
+        if (timer_getticks() >= deadline) {
+            s->used = 0;
+            return -1;
         }
         extern void scheduler();
         scheduler();

@@ -162,7 +162,6 @@ static void handle_ip(const uint8_t* d, uint16_t len) {
     if(len<sizeof(ip_hdr_t)) return;
     const ip_hdr_t* ip=(const ip_hdr_t*)d;
     uint32_t dst=NTOHL(ip->dst_ip);
-    // During DHCP, also accept packets to 0.0.0.0 (some servers send there)
     if(dst!=net_ip && dst!=0xFFFFFFFF) return;
     uint8_t ihl=(ip->ver_ihl&0xF)*4;
     uint32_t src_ip=NTOHL(ip->src_ip);
@@ -270,8 +269,7 @@ int net_udp_recv(uint16_t port, uint8_t* buf, uint16_t maxlen,
     net_udp_open(port);
     udp_rxslot_t* slot=udp_slot_for(port);
     if(!slot) return -1;
-    // NOTE: do NOT clear ready=0 here — packet may already be buffered
-    // (e.g. DHCP OFFER arrives before we call recv)
+    slot->ready=0;
     uint32_t deadline=timer_getticks()+(timeout_ms+9)/10;
     while(!slot->ready) {
         net_poll();

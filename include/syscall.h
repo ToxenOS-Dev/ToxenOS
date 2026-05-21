@@ -78,6 +78,7 @@ int  sys_getpid();
 #define SYS_SET_ADMIN      64  // trusted: set is_admin=1 without prompt (login use only)
 #define SYS_PBKDF2         65  // PBKDF2-SHA256 password hashing via mbedTLS
 #define SYS_INSTALL_DRIVE  73  // block-copy TxFS from drive 0 to target drive
+#define SYS_INSTALL_CHUNK  74  // copy one chunk (for progress reporting)
 #define SYS_DISK_SECTORS   70  // get total sectors for a drive
 #define SYS_DISK_WRITE     71  // write sectors to a specific drive
 #define SYS_DISK_READ      72  // read sectors from a specific drive

@@ -424,11 +424,19 @@ static inline void tox_set_admin(int val)
 
 // ── Disk access (for installer) ───────────────────────────────────────────────
 #define SYS_INSTALL_DRIVE  73
+#define SYS_INSTALL_CHUNK  74
 #define SYS_DISK_SECTORS   70
 #define SYS_DISK_WRITE     71
 #define SYS_DISK_READ      72
 static inline int tox_install_drive(uint8_t target)
     { return SYSCALL1(SYS_INSTALL_DRIVE, target); }
+static inline int tox_install_chunk(uint8_t drive, uint32_t start, uint32_t count)
+    { return SYSCALL3(SYS_INSTALL_CHUNK, drive, start, count); }
+static inline int tox_disk_read(uint8_t drive, uint32_t lba,
+                                 const uint8_t* buf, uint32_t sectors) {
+    uint32_t params[2]; params[0]=(uint32_t)buf; params[1]=sectors;
+    return SYSCALL3(SYS_DISK_READ, drive, lba, params);
+}
 static inline uint32_t tox_disk_sectors(uint8_t drive)
     { return SYSCALL1(SYS_DISK_SECTORS, drive); }
 static inline int tox_disk_write(uint8_t drive, uint32_t lba,

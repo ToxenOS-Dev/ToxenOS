@@ -522,19 +522,33 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return 0;
         }
 
+        case SYS_INSTALL_CHUNK:
+        {
+            // ebx=target drive, ecx=start_block, edx=num_blocks
+            uint8_t tdrv = (uint8_t)ebx;
+            if (tdrv == 0 || tdrv > 3) return (uint32_t)-1;
+            uint32_t sects = TXFS_BLOCK_SIZE / 512;
+            static uint8_t cbuf[TXFS_BLOCK_SIZE];
+            for (uint32_t b = ecx; b < ecx + edx; b++) {
+                ata_read_drive(0, b * sects, cbuf, sects);
+                ata_write_drive(tdrv, b * sects, cbuf, sects);
+            }
+            return 0;
+        }
+
         case SYS_DISK_SECTORS:
             return ata_get_sectors((uint8_t)ebx);
 
         case SYS_DISK_READ:
         {
-            if (!ecx || !edx) return (uint32_t)-1;
-            uint8_t drv = (uint8_t)ebx;
-            uint32_t lba = ecx;
-            // edx = packed: [buf_ptr(28bit) | sectors(4bit)] — use struct approach
-            // Actually: ebx=drive, ecx=lba, edx=ptr to {buf, sectors}
-            // Use: ebx=drive, ecx=lba, edx = sectors, with buf via a 5th param...
-            // Simplified: read one sector at a time via separate calls
-            return (uint32_t)-1; // use SYS_DISK_WRITE pattern
+            // ebx=drive, ecx=lba, edx=ptr to {uint8_t* buf, uint32_t sectors}
+            if (!edx) return (uint32_t)-1;
+            CHECK_USER_PTR(edx, 8);
+            uint32_t* p = (uint32_t*)edx;
+            uint8_t* buf = (uint8_t*)p[0]; uint32_t sec = p[1];
+            if (!buf || !sec || sec > 128) return (uint32_t)-1;
+            CHECK_USER_PTR(buf, sec * 512);
+            return (uint32_t)ata_read_drive((uint8_t)ebx, ecx, buf, sec);
         }
 
         case SYS_DISK_WRITE:

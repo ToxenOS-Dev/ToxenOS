@@ -105,33 +105,15 @@ static void drain_keyboard(void) {
 
 static void show_user_screen(void) {
     tox_clear();
-    for (int i=0;i<16;i++) print("\n");
+    for (int i=0;i<18;i++) print("\n");
 
-    // Welcome banner: "==== Welcome to ToxenOS ====" = 30 chars, starts at col 49
+    // Welcome banner centered
     spaces(LOGIN_COL);
     set_color(0x07); print("==== Welcome to ");
     set_color(0x06); print("ToxenOS");
-    set_color(0x07); print(" ====\n\n");
+    set_color(0x07); print(" ====\n\n\n");
 
-    // "Select a user:" — same left edge
-    spaces(LOGIN_COL);
-    set_color(0x08); print("Select a user:\n\n"); set_color(0x07);
-
-    // User list — indent 2 extra spaces from left edge
-    for (int i=0;i<u_count;i++) {
-        spaces(LOGIN_COL + 2);
-        set_color(0x08); print("[");
-        set_color(0x0A); char n[2]={'0'+(char)(i+1),0}; print(n);
-        set_color(0x08); print("]  ");
-        set_color(0x07); print(u_name[i]);
-        if (str_eq(u_role[i],"admin")) {
-            set_color(0x06); print("  [admin]");
-        }
-        set_color(0x07); print("\n");
-    }
-    print("\n");
-
-    // Login prompt — same left edge
+    // Login prompt
     spaces(LOGIN_COL);
 }
 

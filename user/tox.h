@@ -423,9 +423,12 @@ static inline void tox_set_admin(int val)
     { SYSCALL1(SYS_SET_ADMIN, val); }
 
 // ── Disk access (for installer) ───────────────────────────────────────────────
+#define SYS_INSTALL_DRIVE  73
 #define SYS_DISK_SECTORS   70
 #define SYS_DISK_WRITE     71
 #define SYS_DISK_READ      72
+static inline int tox_install_drive(uint8_t target)
+    { return SYSCALL1(SYS_INSTALL_DRIVE, target); }
 static inline uint32_t tox_disk_sectors(uint8_t drive)
     { return SYSCALL1(SYS_DISK_SECTORS, drive); }
 static inline int tox_disk_write(uint8_t drive, uint32_t lba,

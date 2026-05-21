@@ -506,6 +506,22 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             process_current()->is_admin = (uint8_t)ebx;
             return 0;
 
+        case SYS_INSTALL_DRIVE:
+        {
+            // Block-copy TxFS filesystem from drive 0 to target drive
+            // ebx = target drive number (1-3)
+            uint8_t target = (uint8_t)ebx;
+            if (target == 0 || target > 3) return (uint32_t)-1;
+            uint32_t sectors_per_block = TXFS_BLOCK_SIZE / 512;
+            uint32_t total_blocks = 25600; // standard TxFS disk size
+            static uint8_t copy_buf[TXFS_BLOCK_SIZE];
+            for (uint32_t b = 0; b < total_blocks; b++) {
+                ata_read_drive(0, b * sectors_per_block, copy_buf, sectors_per_block);
+                ata_write_drive(target, b * sectors_per_block, copy_buf, sectors_per_block);
+            }
+            return 0;
+        }
+
         case SYS_DISK_SECTORS:
             return ata_get_sectors((uint8_t)ebx);
 

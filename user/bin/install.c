@@ -84,13 +84,22 @@ void _start() {
     print("  WARNING: All data on Drive "); print_int(target);
     print(" ("); print_size(tsec); print(") will be lost!\n\n");
     set_color(0x07);
-    print("  Proceed with installation? (y/N): ");
+    print("  Proceed with installation? (Y/n): ");
 
-    drain_keys(); // wait for previous key events to clear
+    // Drain all buffered keys (including key-up events from previous inputs)
+    tox_sleep(500);
+    while (tox_keyavail()) tox_getchar();
 
-    char c = tox_getchar();
-    if (c != 'y' && c != 'Y') {
-        print("n\n\n  Installation cancelled.\n");
+    // Only accept explicit y/Y or n/N — ignore Enter and scan codes
+    char c = 0;
+    while (c != 'y' && c != 'Y' && c != 'n' && c != 'N') {
+        c = tox_getchar();
+        // ignore non-printable chars (scan codes, newlines from previous input)
+        if (c < 0x20 || c > 0x7E) c = 0;
+    }
+    if (c == 'n' || c == 'N') {
+        char s[2]={c,0}; print(s);
+        print("\n\n  Installation cancelled.\n");
         tox_exit();
     }
     print("y\n\n");
@@ -98,7 +107,8 @@ void _start() {
     // ── Step 4: Configure hostname ────────────────────────────────────────────
     char hostname[64] = "toxenos";
     print("  Hostname [toxenos]: ");
-    drain_keys();
+    tox_sleep(300);
+    while (tox_keyavail()) tox_getchar();
     char hbuf[64];
     read_line(hbuf, sizeof(hbuf));
     if (hbuf[0]) tox_strcpy(hostname, hbuf);

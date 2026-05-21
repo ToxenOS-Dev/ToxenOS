@@ -5,7 +5,7 @@
 #include "../include/vfs.h"
 
 #define TXFS_MAGIC          0x54584653  // "TXFS"
-#define TXFS_VERSION        1
+#define TXFS_VERSION        2           // v2: uint64_t size + triple indirect
 #define TXFS_BLOCK_SIZE     4096
 #define TXFS_MAX_INODES     128
 #define TXFS_DIRECT_BLOCKS  12
@@ -51,14 +51,15 @@ typedef struct
 {
     uint32_t mode;              // type + permissions
     uint32_t uid;
-    uint32_t size;
+    uint64_t size;              // v2: 64-bit size (16 exabyte max)
     uint32_t created;
     uint32_t modified;
     uint32_t links;
     uint32_t blocks[TXFS_DIRECT_BLOCKS];
     uint32_t indirect;
     uint32_t dindirect;
-    uint8_t  pad[256 - (6 + TXFS_DIRECT_BLOCKS + 2) * 4];
+    uint32_t tindirect;         // v2: triple-indirect (4TB range)
+    uint8_t  pad[256 - (4+4+8+4+4+4 + TXFS_DIRECT_BLOCKS*4 + 4+4+4)];
 } __attribute__((packed)) txfs_inode_t;
 
 typedef struct

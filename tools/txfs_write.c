@@ -31,10 +31,12 @@ typedef struct {
 } __attribute__((packed)) sb_t;
 
 typedef struct {
-    uint32_t mode, uid, size, created, modified, links;
+    uint32_t mode, uid;
+    uint64_t size;                          /* v2: 64-bit size */
+    uint32_t created, modified, links;
     uint32_t blocks[TXFS_DIRECT_BLOCKS];
-    uint32_t indirect, dindirect;
-    uint8_t  pad[256 - (6 + TXFS_DIRECT_BLOCKS + 2) * 4];
+    uint32_t indirect, dindirect, tindirect; /* v2: triple-indirect */
+    uint8_t  pad[256 - (4+4+8+4+4+4 + TXFS_DIRECT_BLOCKS*4 + 4+4+4)];
 } __attribute__((packed)) inode_t;
 
 typedef struct {

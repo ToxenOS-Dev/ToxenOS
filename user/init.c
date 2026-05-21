@@ -93,9 +93,9 @@ static void save_users(void) {
 }
 
 static void drain_keyboard(void) {
-    for (int _d=0;_d<1000;_d++) yield();
+    tox_sleep(300);
     while (tox_keyavail()) tox_getchar();
-    for (int _d=0;_d<200;_d++) yield();
+    tox_sleep(100);
     while (tox_keyavail()) tox_getchar();
 }
 
@@ -166,6 +166,9 @@ void _start() {
         read_visible(username, sizeof(username));
         if (!username[0]) continue;
 
+        // Drain key-up events from Enter before reading password
+        tox_sleep(150);
+        while (tox_keyavail()) tox_getchar();
         spaces(LOGIN_COL); print("Password: ");
         read_pass(password, sizeof(password));
 

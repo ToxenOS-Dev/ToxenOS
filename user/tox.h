@@ -422,6 +422,18 @@ static inline int tox_is_admin(void)
 static inline void tox_set_admin(int val)
     { SYSCALL1(SYS_SET_ADMIN, val); }
 
+// ── Disk access (for installer) ───────────────────────────────────────────────
+#define SYS_DISK_SECTORS   70
+#define SYS_DISK_WRITE     71
+#define SYS_DISK_READ      72
+static inline uint32_t tox_disk_sectors(uint8_t drive)
+    { return SYSCALL1(SYS_DISK_SECTORS, drive); }
+static inline int tox_disk_write(uint8_t drive, uint32_t lba,
+                                  const uint8_t* buf, uint32_t sectors) {
+    uint32_t params[2]; params[0]=(uint32_t)buf; params[1]=sectors;
+    return SYSCALL3(SYS_DISK_WRITE, drive, lba, params);
+}
+
 // ── TxFS Snapshots ────────────────────────────────────────────────────────────
 #define SYS_SNAP_CREATE    66
 #define SYS_SNAP_RESTORE   67

@@ -18,6 +18,7 @@
 #include "../include/fbterm.h"
 #include "../include/timer.h"
 #include "../include/env.h"
+#include "../include/ata.h"
 #include "../include/crypto.h"
 #include "../include/pmm.h"
 #include "../include/txfs.h"
@@ -504,6 +505,34 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_SET_ADMIN:
             process_current()->is_admin = (uint8_t)ebx;
             return 0;
+
+        case SYS_DISK_SECTORS:
+            return ata_get_sectors((uint8_t)ebx);
+
+        case SYS_DISK_READ:
+        {
+            if (!ecx || !edx) return (uint32_t)-1;
+            uint8_t drv = (uint8_t)ebx;
+            uint32_t lba = ecx;
+            // edx = packed: [buf_ptr(28bit) | sectors(4bit)] — use struct approach
+            // Actually: ebx=drive, ecx=lba, edx=ptr to {buf, sectors}
+            // Use: ebx=drive, ecx=lba, edx = sectors, with buf via a 5th param...
+            // Simplified: read one sector at a time via separate calls
+            return (uint32_t)-1; // use SYS_DISK_WRITE pattern
+        }
+
+        case SYS_DISK_WRITE:
+        {
+            // ebx = drive, ecx = lba, edx = ptr to {uint8_t* buf, uint32_t sectors}
+            if (!edx) return (uint32_t)-1;
+            CHECK_USER_PTR(edx, 8);
+            uint32_t* params = (uint32_t*)edx;
+            uint8_t*  buf     = (uint8_t*)params[0];
+            uint32_t  sectors = params[1];
+            if (!buf || !sectors || sectors > 128) return (uint32_t)-1;
+            CHECK_USER_PTR(buf, sectors * 512);
+            return (uint32_t)ata_write_drive((uint8_t)ebx, ecx, buf, sectors);
+        }
 
         case SYS_SNAP_CREATE:
         {

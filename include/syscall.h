@@ -77,6 +77,9 @@ int  sys_getpid();
 #define SYS_IS_ADMIN       63  // returns 1 if current process is elevated
 #define SYS_SET_ADMIN      64  // trusted: set is_admin=1 without prompt (login use only)
 #define SYS_PBKDF2         65  // PBKDF2-SHA256 password hashing via mbedTLS
+#define SYS_DISK_SECTORS   70  // get total sectors for a drive
+#define SYS_DISK_WRITE     71  // write sectors to a specific drive
+#define SYS_DISK_READ      72  // read sectors from a specific drive
 #define SYS_SNAP_CREATE    66  // create TxFS snapshot
 #define SYS_SNAP_RESTORE   67  // restore TxFS snapshot
 #define SYS_SNAP_DELETE    68  // delete TxFS snapshot

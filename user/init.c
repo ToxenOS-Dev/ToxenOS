@@ -158,16 +158,13 @@ void _start() {
         show_user_screen();
 
         char username[64], password[64];
-        print("Login as: ");
+        // Linux-style: "hostname login:"
+        char hn[64]; hn[0]=0;
+        tox_getenv("hostname", hn, sizeof(hn));
+        if (!hn[0]) tox_strcpy(hn, "toxenos");
+        set_color(0x0B); print(hn); set_color(0x07); print(" login: ");
         read_visible(username, sizeof(username));
         if (!username[0]) continue;
-
-        // Resolve number to username
-        if (username[0]>='1'&&username[0]<='9'&&username[1]==0) {
-            int idx=username[0]-'1';
-            if (idx<u_count) tox_strcpy(username,u_name[idx]);
-            else { set_color(0x0C); print("  Invalid selection.\n"); set_color(0x07); continue; }
-        }
 
         spaces(LOGIN_COL); print("Password: ");
         read_pass(password, sizeof(password));

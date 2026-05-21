@@ -111,11 +111,17 @@ void _start() {
     print("\n  WARNING: This will ERASE drive "); print_int(target);
     print(" ("); print_size(target_sec); print(")!\n");
     set_color(0x07);
-    print("  Type YES to continue: ");
-    read_line(input, sizeof(input));
-    if (!(input[0]=='Y'&&input[1]=='E'&&input[2]=='S'&&!input[3])) {
-        print("  Cancelled.\n"); tox_exit();
-    }
+    print("  Continue? ("); set_color(0x0A); print("Y");
+    set_color(0x07); print("/"); set_color(0x0C); print("n");
+    set_color(0x07); print("): ");
+
+    // Drain keyboard buffer
+    for (int _d = 0; _d < 200; _d++) yield();
+    while (tox_keyavail()) tox_getchar();
+
+    char c = tox_getchar();
+    if (c == 'n' || c == 'N') { print("n\n  Cancelled.\n"); tox_exit(); }
+    print("y\n");
 
     // Determine target drive letter
     char drive_letter[4];

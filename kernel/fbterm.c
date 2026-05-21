@@ -5,6 +5,33 @@
 #include "../include/font.h"
 #include "../include/process.h"
 #include "../include/timer.h"
+#include "../include/memmap.h"
+
+// ── VGA text mode helpers (fallback when no framebuffer) ─────────────────────
+#define VGA_TEXT_VIRT   (0x000B8000u + KERNEL_VIRT_BASE)
+#define VGA_TEXT_COLS   80
+#define VGA_TEXT_ROWS   25
+
+static inline void vga_putchar(int col, int row, char c, uint8_t fg, uint8_t bg) {
+    if (col >= VGA_TEXT_COLS || row >= VGA_TEXT_ROWS) return;
+    volatile uint16_t* vga = (volatile uint16_t*)VGA_TEXT_VIRT;
+    uint8_t attr = (uint8_t)((bg << 4) | (fg & 0xF));
+    vga[row * VGA_TEXT_COLS + col] = (uint16_t)((attr << 8) | (uint8_t)c);
+}
+
+static inline void vga_clear(void) {
+    volatile uint16_t* vga = (volatile uint16_t*)VGA_TEXT_VIRT;
+    for (int i = 0; i < VGA_TEXT_COLS * VGA_TEXT_ROWS; i++)
+        vga[i] = 0x0720;
+}
+
+static inline void vga_scroll(void) {
+    volatile uint16_t* vga = (volatile uint16_t*)VGA_TEXT_VIRT;
+    for (int i = 0; i < VGA_TEXT_COLS * (VGA_TEXT_ROWS-1); i++)
+        vga[i] = vga[i + VGA_TEXT_COLS];
+    for (int i = VGA_TEXT_COLS*(VGA_TEXT_ROWS-1); i < VGA_TEXT_COLS*VGA_TEXT_ROWS; i++)
+        vga[i] = 0x0720;
+}
 
 static const uint32_t vga_palette[16] = {
     0x000000,0x0000AA,0x00AA00,0x00AAAA,
@@ -42,6 +69,10 @@ static inline void put_px(uint32_t x, uint32_t y, uint32_t color)
 // Draw a full character cell (glyph + background).
 static void draw_cell(int col, int row, char c, uint8_t fg, uint8_t bg)
 {
+    if (fb_is_vga_mode()) {
+        vga_putchar(col, row, (c < 32 || c > 126) ? ' ' : c, fg, bg);
+        return;
+    }
     uint32_t fgc = vga_palette[fg & 0xF];
     uint32_t bgc = vga_palette[bg & 0xF];
     if (c < 32 || c > 126) c = ' ';
@@ -101,12 +132,24 @@ static void scroll_cells(int t) {
             cells[t][r][c] = cells[t][r+1][c];
     for (int c=0; c<term_cols; c++)
         { cells[t][term_rows-1][c].c=' '; cells[t][term_rows-1][c].fg=7; cells[t][term_rows-1][c].bg=0; }
+    if (fb_is_vga_mode()) vga_scroll();
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 void fbterm_init(void)
 {
+    if (fb_is_vga_mode()) {
+        // VGA text fallback: 80×25 terminal
+        term_cols = VGA_TEXT_COLS;
+        term_rows = VGA_TEXT_ROWS;
+        fb_w = 0; fb_h = 0; fb_pitch_bytes = 0; fb_base = 0;
+        for (int t=0;t<FBTERM_TTY_COUNT;t++){clear_cells(t);cx[t]=0;cy[t]=0;cfg[t]=7;cbg[t]=0;}
+        active_tty=0; cursor_visible=1;
+        vga_clear();
+        return;
+    }
+
     fb_w           = fb_get_width();
     fb_h           = fb_get_height();
     fb_pitch_bytes = fb_get_pitch();
@@ -194,9 +237,13 @@ void fbterm_erase(void) {
 void fbterm_clear(void) {
     int t = active_tty;
     clear_cells(t); cx[t]=0; cy[t]=0;
-    for (uint32_t y=0; y<fb_h; y++) {
-        uint32_t* row = (uint32_t*)((uint8_t*)fb_base + y * fb_pitch_bytes);
-        for (uint32_t x=0; x<fb_w; x++) row[x] = vga_palette[cbg[t]];
+    if (fb_is_vga_mode()) {
+        vga_clear();
+    } else {
+        for (uint32_t y=0; y<fb_h; y++) {
+            uint32_t* row = (uint32_t*)((uint8_t*)fb_base + y * fb_pitch_bytes);
+            for (uint32_t x=0; x<fb_w; x++) row[x] = vga_palette[cbg[t]];
+        }
     }
     cursor_visible = 1;
     draw_cursor_at(0, 0, cfg[t], 1);

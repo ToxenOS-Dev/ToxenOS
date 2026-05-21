@@ -11,5 +11,6 @@ uint32_t fb_get_width();
 uint32_t fb_get_height();
 uint32_t fb_get_pitch();
 uint32_t fb_get_addr();
+int      fb_is_vga_mode();  // 1 if using VGA text fallback
 
 #endif

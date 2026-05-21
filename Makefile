@@ -139,10 +139,14 @@ user:
 	done
 	gcc $(UFLAGS) user/bin/tox_pkg.c -o build/user/bin/tox.elf
 
-run: all populate
+build/target.img:
+	dd if=/dev/zero of=build/target.img bs=1M count=2048
+
+run: all populate build/target.img
 	qemu-system-i386 \
 		-cdrom build/ToxenOS.iso \
 		-drive file=build/disk.img,format=raw,index=0,media=disk \
+		-drive file=build/target.img,format=raw,index=1,media=disk \
 		-netdev user,id=net0 \
 		-device e1000,netdev=net0 \
 		-object filter-dump,id=f0,netdev=net0,file=/tmp/toxenos_net.pcap
@@ -219,3 +223,6 @@ populate: tools/txfs_write
 clean:
 	rm -rf build/*.o build/*.d build/*.bin build/*.iso build/mbedtls build/user
 	@mkdir -p build
+
+clean-target:
+	rm -f build/target.img

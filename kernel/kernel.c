@@ -29,6 +29,7 @@
 #include "../include/pmm.h"
 #include "../include/net.h"
 #include "../include/dhcp.h"
+#include "../include/ahci.h"
 
 // ── VGA legacy state (referenced by fbterm layer) ────────────────────────────
 uint16_t* const VGA_MEMORY = (uint16_t*)0xB8000;
@@ -297,6 +298,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     // ── Phase 5: storage ─────────────────────────────────────────────────────
     ata_init();
+    // Try AHCI — falls back to legacy ATA PIO if not found
+    if (ahci_init() == 0) ata_set_ahci(1);
     klog("ATA initialised\n");
     vfs_mount("/C:", txfs_init(), 0);
     klog("Mounted /C: (TxFS)\n");

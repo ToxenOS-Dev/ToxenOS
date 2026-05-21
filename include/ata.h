@@ -48,6 +48,7 @@
 #define ATA_DRIVE_SLAVE   ATA_DRIVE_PRIMARY_SLAVE
 
 int  ata_init();
+void ata_set_ahci(int use_ahci);  // redirect disk I/O through AHCI when available
 
 // Legacy functions — always use primary master
 int  ata_read(uint32_t lba, uint8_t* buf, uint32_t sectors);

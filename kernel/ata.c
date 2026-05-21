@@ -271,28 +271,35 @@ static int ata_do_write(const ata_channel_t* ch, uint8_t sel, uint32_t lba,
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+// AHCI fallback — if AHCI initialised, redirect disk I/O through it
+#include "../include/ahci.h"
+static int use_ahci = 0;
+void ata_set_ahci(int v) { use_ahci = v; }
+
 int ata_read(uint32_t lba, uint8_t* buf, uint32_t sectors)
 {
+    if (use_ahci) return ahci_read_drive(0, lba, buf, sectors);
     return ata_do_read(&channels[0], 0xE0, lba, buf, sectors);
 }
 
 int ata_write(uint32_t lba, const uint8_t* buf, uint32_t sectors)
 {
+    if (use_ahci) return ahci_write_drive(0, lba, buf, sectors);
     return ata_do_write(&channels[0], 0xE0, lba, buf, sectors);
 }
 
 int ata_read_drive(uint8_t drive, uint32_t lba, uint8_t* buf, uint32_t sectors)
 {
-    int ch_idx;
-    uint8_t sel;
+    if (use_ahci) return ahci_read_drive(drive, lba, buf, sectors);
+    int ch_idx; uint8_t sel;
     ata_decode_drive(drive, &ch_idx, &sel);
     return ata_do_read(&channels[ch_idx], sel, lba, buf, sectors);
 }
 
 int ata_write_drive(uint8_t drive, uint32_t lba, const uint8_t* buf, uint32_t sectors)
 {
-    int ch_idx;
-    uint8_t sel;
+    if (use_ahci) return ahci_write_drive(drive, lba, buf, sectors);
+    int ch_idx; uint8_t sel;
     ata_decode_drive(drive, &ch_idx, &sel);
     return ata_do_write(&channels[ch_idx], sel, lba, buf, sectors);
 }

@@ -14,7 +14,7 @@ static const char* basename(const char* path) {
 // Package server IP (QEMU host = 10.0.2.2, but packages served on port 8080)
 // User can override with: reg set tox.server 10.0.2.2
 #define TOX_PKG_SERVER_IP  ((uint32_t)(10<<24|0<<16|2<<8|2))
-#define TOX_PKG_PORT       8080
+#define TOX_PKG_PORT       9000
 
 static void usage(void) {
     set_color(0x0B); print("tox - ToxenOS Elevated Runner & Package Manager\n"); set_color(0x07);

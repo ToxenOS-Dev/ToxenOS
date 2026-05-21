@@ -6,7 +6,7 @@
 //   - txfs_open (create): same fix; robust parent extraction
 //   - txfs_remove: finds file in its actual parent dir, not always root
 //   - Directories: entries spread across multiple blocks (no more 15-entry cap)
-//   - Single indirect block: files up to ~4 MB (12 direct + 1024 indirect ptrs)
+//   - Single + double indirect: files up to ~4 GB (12 direct + 1024 + 1024*1024 ptrs)
 //   - free_blocks/free_inodes properly maintained on remove
 //   - txfs_alloc_block: always clears the new block on every allocation
 
@@ -214,29 +214,56 @@ static uint32_t txfs_get_block(txfs_inode_t* inode, uint32_t idx, int alloc)
         return inode->blocks[idx];
     }
 
-    uint32_t indirect_idx = idx - TXFS_DIRECT_BLOCKS;
-    if (indirect_idx >= TXFS_PTRS_PER_BLOCK)
-        return 0;  // beyond single-indirect range
-
-    if (!inode->indirect) {
-        if (!alloc) return 0;
-        int b = txfs_alloc_block();
-        if (b < 0) return 0;
-        inode->indirect = (uint32_t)b;
+    // ── Single-indirect ──────────────────────────────────────────────────────
+    uint32_t after_direct = idx - TXFS_DIRECT_BLOCKS;
+    if (after_direct < TXFS_PTRS_PER_BLOCK) {
+        if (!inode->indirect) {
+            if (!alloc) return 0;
+            int b = txfs_alloc_block(); if (b < 0) return 0;
+            inode->indirect = (uint32_t)b;
+        }
+        uint32_t ptrs[TXFS_PTRS_PER_BLOCK];
+        txfs_read_block(inode->indirect, (uint8_t*)ptrs);
+        if (!ptrs[after_direct]) {
+            if (!alloc) return 0;
+            int b = txfs_alloc_block(); if (b < 0) return 0;
+            ptrs[after_direct] = (uint32_t)b;
+            txfs_write_block(inode->indirect, (uint8_t*)ptrs);
+        }
+        return ptrs[after_direct];
     }
 
-    uint32_t ptrs[TXFS_PTRS_PER_BLOCK];
-    txfs_read_block(inode->indirect, (uint8_t*)ptrs);
+    // ── Double-indirect ───────────────────────────────────────────────────────
+    // Range: DIRECT + 1024 .. DIRECT + 1024 + 1024*1024 - 1  (~4GB from here)
+    uint32_t dbl_idx = after_direct - TXFS_PTRS_PER_BLOCK;
+    if (dbl_idx >= TXFS_PTRS_PER_BLOCK * TXFS_PTRS_PER_BLOCK)
+        return 0; // beyond double-indirect (>4GB, not supported)
 
-    if (!ptrs[indirect_idx]) {
+    uint32_t l1 = dbl_idx / TXFS_PTRS_PER_BLOCK; // index into dindirect block
+    uint32_t l2 = dbl_idx % TXFS_PTRS_PER_BLOCK; // index into l1 block
+
+    if (!inode->dindirect) {
         if (!alloc) return 0;
-        int b = txfs_alloc_block();
-        if (b < 0) return 0;
-        ptrs[indirect_idx] = (uint32_t)b;
-        txfs_write_block(inode->indirect, (uint8_t*)ptrs);
+        int b = txfs_alloc_block(); if (b < 0) return 0;
+        inode->dindirect = (uint32_t)b;
     }
-
-    return ptrs[indirect_idx];
+    uint32_t l1_ptrs[TXFS_PTRS_PER_BLOCK];
+    txfs_read_block(inode->dindirect, (uint8_t*)l1_ptrs);
+    if (!l1_ptrs[l1]) {
+        if (!alloc) return 0;
+        int b = txfs_alloc_block(); if (b < 0) return 0;
+        l1_ptrs[l1] = (uint32_t)b;
+        txfs_write_block(inode->dindirect, (uint8_t*)l1_ptrs);
+    }
+    uint32_t l2_ptrs[TXFS_PTRS_PER_BLOCK];
+    txfs_read_block(l1_ptrs[l1], (uint8_t*)l2_ptrs);
+    if (!l2_ptrs[l2]) {
+        if (!alloc) return 0;
+        int b = txfs_alloc_block(); if (b < 0) return 0;
+        l2_ptrs[l2] = (uint32_t)b;
+        txfs_write_block(l1_ptrs[l1], (uint8_t*)l2_ptrs);
+    }
+    return l2_ptrs[l2];
 }
 
 // --- format ------------------------------------------------------------------

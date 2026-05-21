@@ -277,9 +277,8 @@ int net_udp_recv(uint16_t port, uint8_t* buf, uint16_t maxlen,
         net_poll();
         if(slot->ready) break;
         if(timer_getticks()>=deadline) return 0;
-        // Yield CPU so QEMU can process network events (hlt allows QEMU event loop to run)
-        __asm__ volatile("hlt");
-        net_poll();  // poll again immediately after waking
+        extern void scheduler();
+        scheduler();
     }
     uint16_t copy=slot->len<maxlen?slot->len:maxlen;
     for(uint16_t i=0;i<copy;i++) buf[i]=slot->buf[i];

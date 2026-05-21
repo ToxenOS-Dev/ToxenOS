@@ -13,9 +13,10 @@ static const char* basename(const char* path) {
 
 // Package server IP (QEMU host = 10.0.2.2, but packages served on port 8080)
 // User can override with: reg set tox.server 10.0.2.2
-// 10.0.2.100 is forwarded by QEMU guestfwd to host's 127.0.0.1:9000
+// Host's actual IP — reachable from guest through SLIRP NAT
 // Run: python3 -m http.server 9000 --directory ~/mypackages
-#define TOX_PKG_SERVER_IP  ((uint32_t)(10<<24|0<<16|2<<8|100))
+// Override with: reg set tox.server <ip>
+#define TOX_PKG_SERVER_IP  ((uint32_t)(10<<24|161<<16|15<<8|116))
 #define TOX_PKG_PORT       9000
 
 static void usage(void) {

@@ -143,7 +143,7 @@ run: all populate
 	qemu-system-i386 \
 		-cdrom build/ToxenOS.iso \
 		-drive file=build/disk.img,format=raw,index=0,media=disk \
-		-netdev user,id=net0,guestfwd=tcp:10.0.2.100:9000-tcp:127.0.0.1:9000 \
+		-netdev user,id=net0 \
 		-device e1000,netdev=net0 \
 		-object filter-dump,id=f0,netdev=net0,file=/tmp/toxenos_net.pcap
 

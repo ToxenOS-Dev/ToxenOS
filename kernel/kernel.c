@@ -30,6 +30,7 @@
 #include "../include/net.h"
 #include "../include/dhcp.h"
 #include "../include/ahci.h"
+#include "../include/cpu.h"
 
 // ── VGA legacy state (referenced by fbterm layer) ────────────────────────────
 uint16_t* const VGA_MEMORY = (uint16_t*)0xB8000;
@@ -291,6 +292,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     klog("vfs_mount /\n");
     vfs_mount("/", tmpfs_init(), 0);
     klog("ToxenOS kernel started\n");
+    cpu_detect();
 
     // ── Phase 4: display ─────────────────────────────────────────────────────
     tty_init();

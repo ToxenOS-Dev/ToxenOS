@@ -146,6 +146,8 @@ build/target.img:
 
 run: all populate build/target.img
 	qemu-system-i386 \
+		-enable-kvm -cpu host,+cmov,+cx8 \
+		-m 256 \
 		-cdrom build/ToxenOS.iso \
 		-drive file=build/disk.img,format=raw,index=0,media=disk \
 		-drive file=build/target.img,format=raw,index=1,media=disk \

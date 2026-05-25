@@ -382,6 +382,7 @@ static void cmd_cd(const char* args) {
         set_color(0x07); return;
     }
     str_copy(cwd, newpath);
+    tox_setenv("CWD", cwd);
 }
 
 // ── Single-command spawner ────────────────────────────────────────────────────
@@ -398,7 +399,9 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
                      str_equal(cmd,"passwd")||str_equal(cmd,"usermod")||str_equal(cmd,"sysctl")||
                      str_equal(cmd,"where")||str_equal(cmd,"date")||str_equal(cmd,"free")||
                      str_equal(cmd,"df")||str_equal(cmd,"wc")||str_equal(cmd,"syslog")||
-                     str_equal(cmd,"trash");
+                     str_equal(cmd,"trash")||str_equal(cmd,"help")||str_equal(cmd,"uname")||
+                     str_equal(cmd,"proc")||str_equal(cmd,"top")||str_equal(cmd,"bmsg")||
+                     str_equal(cmd,"ts")||str_equal(cmd,"edit")||str_equal(cmd,"run");
     if (args && args[0]) {
         // Only prepend cwd for args that look like relative file paths
         // Don't prepend for IPs (start with digit), hostnames with dots,
@@ -416,6 +419,11 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
         if (str_equal(cmd, "adduser"))  looks_like_path = 0;
         if (str_equal(cmd, "passwd"))   looks_like_path = 0;
         if (str_equal(cmd, "usermod"))  looks_like_path = 0;
+        if (str_equal(cmd, "help"))     looks_like_path = 0;
+        if (str_equal(cmd, "uname"))    looks_like_path = 0;
+        if (str_equal(cmd, "proc"))     looks_like_path = 0;
+        if (str_equal(cmd, "top"))      looks_like_path = 0;
+        if (str_equal(cmd, "bmsg"))     looks_like_path = 0;
         // Hostnames (google.com) have dots but no slash — don't prepend cwd.
         // Exception: .elf files are always local paths, not hostnames.
         int has_dot = 0, has_slash = 0;
@@ -660,6 +668,51 @@ static void run_command(char* input) {
         }
     }
 
+    // .ts script: spawn ts.elf <path>
+    {
+        int clen = str_len(cmd_buf);
+        if (clen > 3 && cmd_buf[clen-3] == '.' && cmd_buf[clen-2] == 't' && cmd_buf[clen-1] == 's') {
+            static char ts_path[256], ts_args[256];
+            if (cmd_buf[0] == '/') str_copy(ts_path, cmd_buf);
+            else { str_copy(ts_path, cwd); str_cat(ts_path, "/"); str_cat(ts_path, cmd_buf); }
+            str_copy(ts_args, ts_path);
+            if (args && args[0]) { str_cat(ts_args, " "); str_cat(ts_args, args); }
+            int pid = spawn_cmd("ts", ts_args, -1, -1);
+            if (pid >= 0) sys_wait(pid);
+            return;
+        }
+    }
+
+    if (str_equal(cmd_buf,"run")) {
+        if (!args || !args[0]) { print("Usage: run <file.ts>\n"); return; }
+        static char run_file[256], run_path[256];
+        int ri = 0;
+        while (args[ri] && args[ri] != ' ' && ri < 255) { run_file[ri] = args[ri]; ri++; }
+        run_file[ri] = 0;
+        const char* run_rest = args + ri; while (*run_rest == ' ') run_rest++;
+        if (run_file[0] == '/') str_copy(run_path, run_file);
+        else { str_copy(run_path, cwd); str_cat(run_path, "/"); str_cat(run_path, run_file); }
+        int sres = sys_stat(run_path);
+        if (sres < 0) {
+            set_color(0x0C); print("run: not found: "); print(run_path); print("\n");
+            set_color(0x07); return;
+        }
+        int flen = str_len(run_file);
+        int is_ts = flen > 3 && run_file[flen-3]=='.' && run_file[flen-2]=='t' && run_file[flen-1]=='s';
+        int pid;
+        if (is_ts) {
+            int tty = sys_my_tty(); if (tty < 0) tty = 0;
+            pid = sys_spawn_tty_args("/C:/BSM/SystemT/ts.elf", tty, run_path);
+        } else {
+            pid = spawn_cmd(run_path, run_rest, -1, -1);
+        }
+        if (pid < 0) {
+            set_color(0x0C); print("run: failed to start: "); print(run_path); print("\n");
+            set_color(0x07); return;
+        }
+        sys_wait(pid);
+        return;
+    }
     if (str_equal(cmd_buf,"cd"))       { cmd_cd(args); return; }
     if (str_equal(cmd_buf,"cdb"))      { cmd_cd(".."); return; }
     if (str_equal(cmd_buf,"clear"))    { tox_clear(); return; }
@@ -771,6 +824,7 @@ static void run_command(char* input) {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 void _start() {
+    tox_setenv("CWD", cwd);
     char input[INPUT_MAX];
     int  len = 0, cur = 0;
     print_prompt();

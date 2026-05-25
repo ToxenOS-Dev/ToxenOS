@@ -517,6 +517,11 @@ static int txfs_open_fn(const char* path, int flags)
         uint32_t perm = existing.mode & 0x1FF;
         if ((flags & VFS_O_READ)  && !(perm & TXFS_PERM_OWNER_R)) return -1;
         if ((flags & VFS_O_WRITE) && !(perm & TXFS_PERM_OWNER_W)) return -1;
+        // Truncate: reset size so new writes start from 0
+        if (flags & VFS_O_TRUNC) {
+            existing.size = 0;
+            txfs_write_inode((uint32_t)inode_num, &existing);
+        }
     }
 
     if (inode_num < 0) {

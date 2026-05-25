@@ -145,6 +145,8 @@ user:
 		gcc $(UFLAGS) user/bin/$$cmd.c -o build/user/bin/$$cmd.elf || exit 1; \
 	done
 	gcc $(UFLAGS) user/bin/tox_pkg.c -o build/user/bin/tox.elf
+	gcc $(UFLAGS) user/bin/ts.c -o build/user/bin/ts.elf
+	gcc $(UFLAGS) user/bin/edit.c -o build/user/bin/edit.elf
 
 build/target.img:
 	dd if=/dev/zero of=build/target.img bs=1M count=2048
@@ -153,6 +155,7 @@ run: all build/target.img
 	qemu-system-i386 \
 		-enable-kvm -cpu host,+cmov,+cx8 \
 		-m 256 \
+		-boot order=d \
 		-cdrom build/ToxenOS.iso \
 		-drive file=build/disk.img,format=raw,if=none,id=nvme0 \
 		-device nvme,drive=nvme0,serial=toxnvme0 \
@@ -167,6 +170,7 @@ run-usb: all build/target.img
 	qemu-system-i386 \
 		-enable-kvm -cpu host,+cmov,+cx8 \
 		-m 256 \
+		-boot order=d \
 		-cdrom build/ToxenOS.iso \
 		-drive file=build/disk.img,format=raw,if=none,id=nvme0 \
 		-device nvme,drive=nvme0,serial=toxnvme0 \
@@ -258,6 +262,9 @@ populate: tools/txfs_write tools/patch_diskboot
 	tools/txfs_write build/fs.img user/system/users /etc/users
 	tools/txfs_write build/fs.img build/user/bin/trash.elf /BSM/SystemT/trash.elf
 	tools/txfs_write build/fs.img build/user/bin/tox.elf /BSM/SystemT/tox.elf
+	tools/txfs_write build/fs.img build/user/bin/ts.elf /BSM/SystemT/ts.elf
+	tools/txfs_write build/fs.img build/user/bin/edit.elf /BSM/SystemT/edit.elf
+	tools/txfs_write build/fs.img user/system/hello.ts /hello.ts
 	@tools/txfs_write build/fs.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true
 	@tools/txfs_write build/fs.img /dev/null /Trash/.keep 2>/dev/null || true
 	@tools/txfs_write build/fs.img /dev/null /etc/.keep 2>/dev/null || true

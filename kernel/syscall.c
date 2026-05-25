@@ -500,6 +500,8 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             if (kstreq(key, "disk.free")) {
                 uint32_t t = 0, f = 0; txfs_diskstats(&t, &f); SC_NUM(f);
             }
+            if (kstreq(key, "term.cols")) SC_NUM((uint32_t)fbterm_cols());
+            if (kstreq(key, "term.rows")) SC_NUM((uint32_t)fbterm_rows());
 
             #undef SC_STR
             #undef SC_NUM

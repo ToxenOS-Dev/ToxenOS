@@ -55,6 +55,7 @@ static int     cx[FBTERM_TTY_COUNT], cy[FBTERM_TTY_COUNT];
 static uint8_t cfg[FBTERM_TTY_COUNT], cbg[FBTERM_TTY_COUNT];
 static int active_tty = 0;
 static int cursor_visible = 1;
+static int cursor_enabled = 1;  // cleared by \x0F, set by \x10
 
 static const uint8_t indicator_fg[FBTERM_TTY_COUNT] = {6};
 
@@ -191,6 +192,7 @@ void fbterm_init(void)
 // Called from the timer IRQ (via timer.c) to blink the cursor.
 void fbterm_tick(void)
 {
+    if (!cursor_enabled) return;
     uint32_t t = timer_getticks();
     int should_show = ((t / CURSOR_BLINK_TICKS) & 1) == 0;
     if (should_show == cursor_visible) return;  // no change
@@ -204,7 +206,7 @@ void fbterm_putchar(char c)
     int t = active_tty;
 
     // erase cursor before moving it
-    draw_cursor_at(cx[t], cy[t], cfg[t], 0);
+    if (cursor_enabled) draw_cursor_at(cx[t], cy[t], cfg[t], 0);
 
     if (c=='\n') { cx[t]=0; cy[t]++; }
     else if (c=='\r') { cx[t]=0; }
@@ -213,6 +215,22 @@ void fbterm_putchar(char c)
     }
     else if (c=='\x0E') {  // move cursor right without drawing
         if (cx[t] < term_cols - 1) cx[t]++;
+    }
+    else if (c=='\x0C') {  // cursor home: move to (0,0) without clearing screen
+        cx[t] = 0; cy[t] = 0;
+    }
+    else if (c=='\x0F') {  // cursor off: hide and disable blinking
+        draw_cursor_at(cx[t], cy[t], cfg[t], 0);
+        cursor_visible = 0;
+        cursor_enabled = 0;
+        // erase the TTY indicator — it sits in the last 4 cols of row 0 and the
+        // editor header only covers COLS-1 chars, leaving col term_cols-1 untouched
+        { int ic = term_cols - 4; if (ic < 0) ic = 0;
+          for (int ii = 0; ii < 4; ii++) draw_cell(ic + ii, 0, ' ', 0, 0); }
+    }
+    else if (c=='\x10') {  // cursor on: re-enable blinking cursor
+        cursor_enabled = 1;
+        cursor_visible = 1;
     }
     else {
         cells[t][cy[t]][cx[t]].c  = c;
@@ -230,8 +248,10 @@ void fbterm_putchar(char c)
     }
 
     // draw cursor at new position
-    cursor_visible = 1;
-    draw_cursor_at(cx[t], cy[t], cfg[t], 1);
+    if (cursor_enabled) {
+        cursor_visible = 1;
+        draw_cursor_at(cx[t], cy[t], cfg[t], 1);
+    }
 }
 
 void fbterm_erase(void) {
@@ -261,6 +281,7 @@ void fbterm_clear(void) {
     }
     cursor_visible = 1;
     draw_cursor_at(0, 0, cfg[t], 1);
+    fbterm_draw_indicator();
 }
 
 void fbterm_set_color(uint8_t a) {
@@ -283,6 +304,7 @@ int  fbterm_cols(void)        { return term_cols; }
 int  fbterm_rows(void)        { return term_rows; }
 
 void fbterm_draw_indicator(void) {
+    if (!cursor_enabled) return;  // suppress while a full-screen app owns the display
     const char* labels[FBTERM_TTY_COUNT] = {"TTY1"};
     const char* label = labels[active_tty];
     uint8_t fg = indicator_fg[active_tty];

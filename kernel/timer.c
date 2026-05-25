@@ -5,6 +5,7 @@
 #include "../include/pic.h"
 #include "../include/fbterm.h"
 #include "../include/net.h"
+#include "../include/usb_hid.h"
 
 #define PIT_CHANNEL0    0x40
 #define PIT_COMMAND     0x43
@@ -21,6 +22,7 @@ static void timer_handler()
 {
     ticks++;
     fbterm_tick();
+    usb_hid_poll();
 
     if (ticks % 10 == 0) {
         net_poll();

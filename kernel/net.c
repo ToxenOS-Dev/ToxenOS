@@ -275,8 +275,6 @@ int net_udp_recv(uint16_t port, uint8_t* buf, uint16_t maxlen,
         net_poll();
         if(slot->ready) break;
         if(timer_getticks()>=deadline) return 0;
-        extern void scheduler();
-        scheduler();
     }
     uint16_t copy=slot->len<maxlen?slot->len:maxlen;
     for(uint16_t i=0;i<copy;i++) buf[i]=slot->buf[i];

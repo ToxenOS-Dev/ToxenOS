@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-void mm_init();
+void mm_init(uint32_t ramdisk_phys_end);
 void* kmalloc_aligned(uint32_t size, uint32_t align);
 void  kfree_aligned(void* ptr);   // counterpart to kmalloc_aligned
 void* kmalloc(uint32_t size);

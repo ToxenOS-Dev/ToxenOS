@@ -5,10 +5,10 @@ static int starts_with(const char* s, const char* p) {
 }
 
 void _start() {
-    char* buf = malloc(8192);
+    char* buf = malloc(65536);
     if (!buf) { print("syslog: out of memory\n"); tox_exit(); }
 
-    int n = tox_bmsg(buf, 8192);
+    int n = tox_bmsg(buf, 65536);
     if (n <= 0) {
         set_color(0x08); print("syslog: (empty)\n"); set_color(0x07);
         free(buf); tox_exit();

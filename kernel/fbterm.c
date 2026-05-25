@@ -43,6 +43,7 @@ static const uint32_t vga_palette[16] = {
 static uint32_t fb_w, fb_h, fb_pitch_bytes;
 static uint32_t* fb_base;
 static int term_cols, term_rows;
+static int font_scale = 1;
 
 #define MAX_COLS 256
 #define MAX_ROWS 100
@@ -66,7 +67,7 @@ static inline void put_px(uint32_t x, uint32_t y, uint32_t color)
     row[x] = color;
 }
 
-// Draw a full character cell (glyph + background).
+// Draw a full character cell (glyph + background), respecting font_scale.
 static void draw_cell(int col, int row, char c, uint8_t fg, uint8_t bg)
 {
     if (fb_is_vga_mode()) {
@@ -77,33 +78,40 @@ static void draw_cell(int col, int row, char c, uint8_t fg, uint8_t bg)
     uint32_t bgc = vga_palette[bg & 0xF];
     if (c < 32 || c > 126) c = ' ';
     const uint8_t* glyph = font_get_glyph(c);
-    uint32_t px0 = (uint32_t)col * FBTERM_CHAR_W;
-    uint32_t py0 = (uint32_t)row * FBTERM_CHAR_H;
+    int cw = FBTERM_CHAR_W * font_scale;
+    int ch = FBTERM_CHAR_H * font_scale;
+    uint32_t px0 = (uint32_t)col * (uint32_t)cw;
+    uint32_t py0 = (uint32_t)row * (uint32_t)ch;
     for (int y = 0; y < FBTERM_CHAR_H; y++) {
         uint8_t bits = glyph[y];
-        for (int x = 0; x < FBTERM_CHAR_W; x++)
-            put_px(px0+x, py0+y, (bits & (0x80>>x)) ? fgc : bgc);
+        for (int x = 0; x < FBTERM_CHAR_W; x++) {
+            uint32_t color = (bits & (0x80>>x)) ? fgc : bgc;
+            for (int sy = 0; sy < font_scale; sy++)
+                for (int sx = 0; sx < font_scale; sx++)
+                    put_px(px0 + (uint32_t)(x*font_scale+sx),
+                           py0 + (uint32_t)(y*font_scale+sy), color);
+        }
     }
 }
 
-// Draw the cursor — a solid block in the fg color overlaid on the current cell.
+// Draw the cursor — an underline bar, respecting font_scale.
 static void draw_cursor_at(int col, int row, uint8_t fg, int show)
 {
     if (col < 0 || col >= term_cols) return;
     if (row < 0 || row >= term_rows) return;
 
-    uint32_t px0 = (uint32_t)col * FBTERM_CHAR_W;
-    uint32_t py0 = (uint32_t)row * FBTERM_CHAR_H;
+    int cw = FBTERM_CHAR_W * font_scale;
+    int ch = FBTERM_CHAR_H * font_scale;
+    uint32_t px0 = (uint32_t)col * (uint32_t)cw;
+    uint32_t py0 = (uint32_t)row * (uint32_t)ch;
 
     if (show) {
-        // Solid block cursor — invert the cell colors
         uint32_t fgc = vga_palette[fg & 0xF];
-        // Draw a 2-pixel-tall underline bar at the bottom of the cell
-        for (int y = FBTERM_CHAR_H-3; y < FBTERM_CHAR_H-1; y++)
-            for (int x = 0; x < FBTERM_CHAR_W; x++)
-                put_px(px0+x, py0+y, fgc);
+        int bar = (font_scale > 1) ? 2 * font_scale : 2;
+        for (int y = ch - bar - 1; y < ch - 1; y++)
+            for (int x = 0; x < cw; x++)
+                put_px(px0+(uint32_t)x, py0+(uint32_t)y, fgc);
     } else {
-        // Hide cursor — redraw the cell underneath it
         cell_t* cel = &cells[active_tty][row][col];
         draw_cell(col, row, cel->c, cel->fg, cel->bg);
     }
@@ -155,8 +163,14 @@ void fbterm_init(void)
     fb_pitch_bytes = fb_get_pitch();
     fb_base        = (uint32_t*)fb_get_addr();
 
-    term_cols = (int)(fb_w / FBTERM_CHAR_W);
-    term_rows = (int)(fb_h / FBTERM_CHAR_H);
+    // Auto-scale font so text is readable at any resolution.
+    // 8×16 base glyph: scale=2 → 16×32, scale=3 → 24×48
+    if      (fb_w >= 3200) font_scale = 3;  // 4K / ultrawide QHD
+    else if (fb_w >= 1280) font_scale = 2;  // 1080p / 2560×1080 etc.
+    else                   font_scale = 1;  // 1024×768 or smaller
+
+    term_cols = (int)(fb_w / (uint32_t)(FBTERM_CHAR_W * font_scale));
+    term_rows = (int)(fb_h / (uint32_t)(FBTERM_CHAR_H * font_scale));
     if (term_cols > MAX_COLS) term_cols = MAX_COLS;
     if (term_rows > MAX_ROWS) term_rows = MAX_ROWS;
 

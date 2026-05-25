@@ -7,6 +7,7 @@
 #define PAGE_PRESENT    0x1
 #define PAGE_WRITABLE   0x2
 #define PAGE_USER       0x4
+#define PAGE_CD         0x10  // Cache Disable (bit 4 in PTE) — marks MMIO UC
 
 // User address space layout constants live in memmap.h.
 // Include it wherever you need USER_STACK_TOP, USER_ELF_BASE, etc.

@@ -271,26 +271,63 @@ static int ata_do_write(const ata_channel_t* ch, uint8_t sel, uint32_t lba,
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-// AHCI fallback — if AHCI initialised, redirect disk I/O through it
+// AHCI / NVMe / ramdisk fallback — redirect disk I/O if a faster driver is active
 #include "../include/ahci.h"
-static int use_ahci = 0;
+#include "../include/nvme.h"
+static int      use_ahci   = 0;
+static int      use_nvme   = 0;
+static int      nvme_ready = 0;  // NVMe was probed OK (even if not the TxFS source)
+static int      ahci_ready = 0;  // AHCI was probed OK (even if not the TxFS source)
+static uint8_t *ramdisk_buf  = 0;
+static uint32_t ramdisk_size = 0;
+
 void ata_set_ahci(int v) { use_ahci = v; }
+void ata_set_nvme(int v) { use_nvme = v; }
+void ata_set_nvme_ready(int v) { nvme_ready = v; }
+void ata_set_ahci_ready(int v) { ahci_ready = v; }
+void ata_set_ramdisk(uint8_t *buf, uint32_t size) { ramdisk_buf = buf; ramdisk_size = size; }
+int  ata_has_ramdisk(void) { return ramdisk_buf != 0; }
+
+// In-memory read/write for the ramdisk (always drive 0)
+static int ramdisk_read(uint32_t lba, uint8_t *buf, uint32_t sectors)
+{
+    uint32_t off = lba * 512, nbytes = sectors * 512;
+    if (off + nbytes > ramdisk_size) return -1;
+    for (uint32_t i = 0; i < nbytes; i++) buf[i] = ramdisk_buf[off + i];
+    return (int)sectors;
+}
+static int ramdisk_write(uint32_t lba, const uint8_t *buf, uint32_t sectors)
+{
+    uint32_t off = lba * 512, nbytes = sectors * 512;
+    if (off + nbytes > ramdisk_size) return -1;
+    for (uint32_t i = 0; i < nbytes; i++) ramdisk_buf[off + i] = buf[i];
+    return (int)sectors;
+}
 
 int ata_read(uint32_t lba, uint8_t* buf, uint32_t sectors)
 {
+    if (ramdisk_buf) return ramdisk_read(lba, buf, sectors);
+    if (use_nvme) return nvme_read_drive(0, lba, buf, sectors);
     if (use_ahci) return ahci_read_drive(0, lba, buf, sectors);
     return ata_do_read(&channels[0], 0xE0, lba, buf, sectors);
 }
 
 int ata_write(uint32_t lba, const uint8_t* buf, uint32_t sectors)
 {
+    if (ramdisk_buf) return ramdisk_write(lba, buf, sectors);
+    if (use_nvme) return nvme_write_drive(0, lba, buf, sectors);
     if (use_ahci) return ahci_write_drive(0, lba, buf, sectors);
     return ata_do_write(&channels[0], 0xE0, lba, buf, sectors);
 }
 
 int ata_read_drive(uint8_t drive, uint32_t lba, uint8_t* buf, uint32_t sectors)
 {
+    if (drive == 0 && ramdisk_buf) return ramdisk_read(lba, buf, sectors);
+    if (use_nvme) return nvme_read_drive(drive, lba, buf, sectors);
     if (use_ahci) return ahci_read_drive(drive, lba, buf, sectors);
+    // Ramdisk is TxFS source; route secondary drives to NVMe/AHCI if present
+    if (ramdisk_buf && nvme_ready && drive == 1) return nvme_read_drive(0, lba, buf, sectors);
+    if (ramdisk_buf && ahci_ready && drive == 1) return ahci_read_drive(0, lba, buf, sectors);
     int ch_idx; uint8_t sel;
     ata_decode_drive(drive, &ch_idx, &sel);
     return ata_do_read(&channels[ch_idx], sel, lba, buf, sectors);
@@ -298,16 +335,28 @@ int ata_read_drive(uint8_t drive, uint32_t lba, uint8_t* buf, uint32_t sectors)
 
 int ata_write_drive(uint8_t drive, uint32_t lba, const uint8_t* buf, uint32_t sectors)
 {
+    if (drive == 0 && ramdisk_buf) return ramdisk_write(lba, buf, sectors);
+    if (use_nvme) return nvme_write_drive(drive, lba, buf, sectors);
     if (use_ahci) return ahci_write_drive(drive, lba, buf, sectors);
+    // Ramdisk is TxFS source; route secondary drives to NVMe/AHCI if present
+    if (ramdisk_buf && nvme_ready && drive == 1) return nvme_write_drive(0, lba, buf, sectors);
+    if (ramdisk_buf && ahci_ready && drive == 1) return ahci_write_drive(0, lba, buf, sectors);
     int ch_idx; uint8_t sel;
     ata_decode_drive(drive, &ch_idx, &sel);
     return ata_do_write(&channels[ch_idx], sel, lba, buf, sectors);
 }
 
-// Return total 512-byte sectors on drive via ATA IDENTIFY (words 60-61 = LBA28 count).
-// Returns 0 if the drive doesn't respond or reports no capacity.
+// Return total 512-byte sectors on drive.
+// When ramdisk is the TxFS source, drive 0 = ramdisk and drive 1 = NVMe/AHCI target.
 uint32_t ata_get_sectors(uint8_t drive)
 {
+    if (drive == 0 && ramdisk_buf) return ramdisk_size / 512;
+    if (use_nvme) return nvme_get_sectors(drive);
+    if (use_ahci) return ahci_get_sectors(drive);
+    if (ramdisk_buf && nvme_ready && drive == 1) return nvme_get_sectors(0);
+    if (ramdisk_buf && ahci_ready && drive == 1) return ahci_get_sectors(0);
+
+    // Fall through to ATA PIO IDENTIFY
     int ch_idx; uint8_t sel;
     ata_decode_drive(drive, &ch_idx, &sel);
     const ata_channel_t* ch = &channels[ch_idx];
@@ -328,7 +377,7 @@ uint32_t ata_get_sectors(uint8_t drive)
     uint16_t id[256];
     for (int i = 0; i < 256; i++) id[i] = inw(ch->data);
 
-    // Words 60-61: 28-bit LBA total sectors (little-endian in the word array)
+    // Words 60-61: 28-bit LBA total sectors
     uint32_t lba28 = (uint32_t)id[60] | ((uint32_t)id[61] << 16);
     return lba28;
 }

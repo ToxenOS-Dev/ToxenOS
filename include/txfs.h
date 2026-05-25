@@ -79,6 +79,7 @@ typedef struct
     uint32_t    position;
 } txfs_fd_t;
 
+void         txfs_set_lba_offset(uint32_t off);
 fs_driver_t* txfs_init();
 int          txfs_format(uint32_t total_blocks);
 void         txfs_diskstats(uint32_t* total_kb, uint32_t* free_kb);

@@ -51,18 +51,21 @@ static int txfs_strcmp(const char* a, const char* b)
 
 // --- block I/O ---------------------------------------------------------------
 
-static uint8_t block_buf[TXFS_BLOCK_SIZE];
+static uint8_t  block_buf[TXFS_BLOCK_SIZE];
+static uint32_t txfs_lba_offset = 0;  // LBA offset for installed disk layout
+
+void txfs_set_lba_offset(uint32_t off) { txfs_lba_offset = off; }
 
 static int txfs_read_block(uint32_t block, uint8_t* buf)
 {
     uint32_t sectors = TXFS_BLOCK_SIZE / 512;
-    return ata_read(block * sectors, buf, sectors);
+    return ata_read(txfs_lba_offset + block * sectors, buf, sectors);
 }
 
 static int txfs_write_block(uint32_t block, const uint8_t* buf)
 {
     uint32_t sectors = TXFS_BLOCK_SIZE / 512;
-    return ata_write(block * sectors, buf, sectors);
+    return ata_write(txfs_lba_offset + block * sectors, buf, sectors);
 }
 
 // --- superblock --------------------------------------------------------------

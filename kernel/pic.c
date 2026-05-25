@@ -40,9 +40,10 @@ void pic_remap()
     outb(PIC1_DATA, 0x01); io_wait();
     outb(PIC2_DATA, 0x01); io_wait();
 
-    // restore masks
-    outb(PIC1_DATA, mask1);
-    outb(PIC2_DATA, mask2);
+    // Do NOT restore original masks — on UEFI systems they are 0xFF (all masked)
+    // because the IOAPIC handles routing.  We must unmask the IRQs we use.
+    outb(PIC1_DATA, 0x00);  // unmask all master IRQs (0–7)
+    outb(PIC2_DATA, 0xFF);  // keep slave IRQs masked (we don't use IRQ 8–15)
 }
 
 void pic_send_eoi(uint8_t irq)

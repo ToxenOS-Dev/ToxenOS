@@ -88,6 +88,11 @@ static void keyboard_handler() {
 
 void keyboard_init() { irq_register(1, keyboard_handler); }
 
+void keyboard_inject(char c) {
+    int next = (buf_tail+1)%BUFFER_SIZE;
+    if (next != buf_head) { buffer[buf_tail]=c; buf_tail=next; }
+}
+
 char keyboard_getchar() {
     while (buf_head == buf_tail) __asm__ volatile("hlt");
     char c = buffer[buf_head];

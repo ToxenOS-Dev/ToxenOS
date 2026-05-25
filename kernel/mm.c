@@ -98,11 +98,17 @@ static void fl_remove(block_hdr_t* b)
 }
 
 // ── mm_init ───────────────────────────────────────────────────────────────────
-void mm_init()
+// ramdisk_phys_end: if non-zero, heap starts at max(kernel_end, virt(ramdisk_end))
+// so the heap never overlaps the in-memory ramdisk.
+void mm_init(uint32_t ramdisk_phys_end)
 {
     for (int i = 0; i < NUM_CLASSES; i++) free_lists[i] = 0;
 
     heap_base = (uint8_t*)&kernel_end;
+    if (ramdisk_phys_end) {
+        uint8_t* rd_virt_end = (uint8_t*)(ramdisk_phys_end + 0xC0000000u);
+        if (rd_virt_end > heap_base) heap_base = rd_virt_end;
+    }
     heap_used = 0;
 
     // One giant free block covering the entire heap

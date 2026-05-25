@@ -35,10 +35,13 @@ void _start() {
         }
     }
 
-    // Spawn shell — when it exits, respawn it
     while (1) {
         tox_set_admin(1); // toxenos is admin by default
         int shell_pid = tox_spawn_embedded(0);
-        tox_wait(shell_pid);
+        if (shell_pid < 0) {
+            tox_sleep(1000);
+        } else {
+            tox_wait(shell_pid);
+        }
     }
 }

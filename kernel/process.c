@@ -145,6 +145,10 @@ void process_init()
     process_count = 1;
 }
 
+void process_retire_kernel(void) {
+    processes[0].state = PROCESS_DEAD;
+}
+
 // Load ELF segments into a process's own page directory.
 // Each PT_LOAD segment gets fresh physical pages — no sharing.
 // Returns entry point, or 0 on failure.
@@ -253,7 +257,7 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
     int slot = -1;
     for (int i = 1; i < MAX_PROCESSES; i++)
         if (processes[i].state == PROCESS_DEAD) { slot = i; break; }
-    if (slot == -1) return -1;
+    if (slot == -1) { klog("proc_create: no free slots\n"); return -1; }
 
     process_t* p = &processes[slot];
 
@@ -277,13 +281,19 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
     copy_str(p->name, name, 32);
 
     p->kernel_stack = kstack_alloc();
-    if (!p->kernel_stack) return -1;
+    if (!p->kernel_stack) { klog("proc_create: kstack_alloc fail\n"); return -1; }
 
     p->page_directory = paging_create_directory();
-    if (!p->page_directory) { kstack_free(p->kernel_stack); p->kernel_stack = 0; return -1; }
+    if (!p->page_directory) {
+        klog("proc_create: dir alloc fail\n");
+        kstack_free(p->kernel_stack); p->kernel_stack = 0; return -1;
+    }
 
     uint32_t entry = load_elf_into_dir(p->page_directory, elf_buf, elf_size);
-    if (!entry) { kstack_free(p->kernel_stack); p->kernel_stack = 0; return -1; }
+    if (!entry) {
+        klog("proc_create: elf load fail\n");
+        kstack_free(p->kernel_stack); p->kernel_stack = 0; return -1;
+    }
 
     for (int i = 0; i < USER_STACK_PAGES; i++)
     {
@@ -502,14 +512,20 @@ static int load_elf_from_path(const char* path, uint8_t** buf_out, uint32_t* siz
     *size_out = 0;
 
     uint32_t file_size = 0;
-    if (vfs_stat(path, &file_size) < 0) return -1;
-    if (file_size == 0 || file_size > USER_ELF_MAX_SIZE) return -1;
+    if (vfs_stat(path, &file_size) < 0) {
+        klog("spawn: stat fail: "); klog(path); klog("\n");
+        return -1;
+    }
+    if (file_size == 0 || file_size > USER_ELF_MAX_SIZE) {
+        klog("spawn: bad size: "); klog(path); klog("\n");
+        return -1;
+    }
 
     uint8_t* buf = (uint8_t*)kmalloc(file_size);
-    if (!buf) return -1;
+    if (!buf) { klog("spawn: kmalloc fail\n"); return -1; }
 
     int fd = vfs_open(path, 1);
-    if (fd < 0) { kfree(buf); return -1; }
+    if (fd < 0) { kfree(buf); klog("spawn: open fail: "); klog(path); klog("\n"); return -1; }
 
     uint32_t total = 0;
     int n;
@@ -521,6 +537,7 @@ static int load_elf_from_path(const char* path, uint8_t** buf_out, uint32_t* siz
     vfs_close(fd);
 
     if (total < 52 || *(uint32_t*)buf != 0x464C457F) {
+        klog("spawn: bad elf\n");
         kfree(buf);
         return -1;
     }

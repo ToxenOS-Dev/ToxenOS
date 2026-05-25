@@ -42,6 +42,7 @@ typedef struct {
 
 extern process_t processes[MAX_PROCESSES];
 void       process_init();
+void       process_retire_kernel(); // mark PID 0 dead before jumping to ring 3
 int        process_create(const char* name, void (*entry)());
 int        process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size);
 void       process_exit();

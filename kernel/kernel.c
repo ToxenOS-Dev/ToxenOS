@@ -30,6 +30,8 @@
 #include "../include/net.h"
 #include "../include/dhcp.h"
 #include "../include/ahci.h"
+#include "../include/nvme.h"
+#include "../include/usb_hid.h"
 #include "../include/cpu.h"
 
 // ── VGA legacy state (referenced by fbterm layer) ────────────────────────────
@@ -39,8 +41,59 @@ int     cursor_y      = 0;
 int     prompt_end_x  = 0;
 uint8_t current_color = 0x07;
 
+// ── Installer: bootable disk.img (GRUB prefix + TxFS) passed as ramdisk ──────
+// Set when the GRUB-loaded module is a bootable disk.img rather than raw TxFS.
+// SYS_INSTALL_CHUNK reads from here so it copies the full bootable image.
+uint8_t*  install_img_buf  = 0;
+uint32_t  install_img_size = 0;
+
 extern uint32_t stack_top;
 extern uint32_t kernel_directory[1024];
+
+// ── LAPIC virtual-wire mode ───────────────────────────────────────────────────
+// On UEFI systems the 8259 PIC is often fully masked (0xFF) by firmware and
+// LAPIC LINT0 may not be in ExtINT mode.  Without this setup, no 8259 interrupt
+// (timer IRQ 0, keyboard IRQ 1) ever reaches the CPU after 'sti'.
+//
+// We configure the LAPIC so the 8259's INT output is forwarded to the CPU via
+// LINT0 in ExtINT delivery mode — the same "virtual wire mode" described in the
+// Intel MP specification.
+//
+// Physical LAPIC base = 0xFEE00000 (default on all APIC-capable x86 systems).
+// PDE for that address = 1015 (in kernel PDE range 768..1023), so the mapping
+// is automatically present in every user-process page directory.
+
+#define LAPIC_BASE  0xFEE00000u
+
+static void lapic_virtual_wire_init(void)
+{
+    // Map LAPIC MMIO as cache-disable so MMIO reads/writes bypass the L1/L2 cache.
+    // paging_init() pre-allocated the page table for PDE 1015; we just update
+    // the one PTE for 0xFEE00000 to point at the real LAPIC physical address.
+    paging_map(kernel_directory, LAPIC_BASE, LAPIC_BASE,
+               PAGE_PRESENT | PAGE_WRITABLE | PAGE_CD);
+    __asm__ volatile("invlpg (%0)" :: "r"(LAPIC_BASE) : "memory");
+
+    volatile uint32_t* lapic = (volatile uint32_t*)LAPIC_BASE;
+
+    // SVR (offset 0x0F0): software-enable LAPIC, spurious vector = 0xFF.
+    // Bit 8 = APIC Software Enable.  Spurious vector 0xFF has bit 4 set,
+    // which some early implementations require.
+    lapic[0x0F0 / 4] = 0x1FFu;
+
+    // TPR (offset 0x080): task priority 0 — accept all interrupt priorities.
+    lapic[0x080 / 4] = 0;
+
+    // LVT LINT0 (offset 0x350): ExtINT delivery, edge-triggered, unmasked.
+    // Delivery mode 111 = ExtINT: on each timer tick the CPU does an INTA
+    // cycle to the 8259 PIC which replies with the interrupt vector (0x20).
+    lapic[0x350 / 4] = 0x700u;
+
+    // LVT LINT1 (offset 0x360): NMI delivery, edge-triggered, unmasked.
+    lapic[0x360 / 4] = 0x400u;
+
+    klog("LAPIC: virtual wire mode (LINT0=ExtINT)\n");
+}
 
 // ── Terminal output helpers ───────────────────────────────────────────────────
 void put_char(char c)     { fbterm_putchar(c); }
@@ -61,6 +114,8 @@ extern uint8_t _binary_build_user_init_elf_start[];
 extern uint8_t _binary_build_user_init_elf_end[];
 
 // ── Multiboot2 framebuffer tag (type 8) ───────────────────────────────────────
+// Multiboot2 spec: framebuffer_addr is uint64_t at tag+8.
+// On a 32-bit OS we can only use addresses below 4 GB (high 32 bits == 0).
 typedef struct {
     uint32_t addr;
     uint32_t width;
@@ -80,11 +135,16 @@ static fb_info_t parse_multiboot_fb(uint32_t mb_info_addr)
         uint32_t type = *(uint32_t*)tag;
         uint32_t size = *(uint32_t*)(tag + 4);
         if (type == 8) {
-            info.addr   = *(uint32_t*)(tag + 8);
-            info.pitch  = *(uint32_t*)(tag + 16);
-            info.width  = *(uint32_t*)(tag + 20);
-            info.height = *(uint32_t*)(tag + 24);
-            info.bpp    = *(uint8_t*) (tag + 28);
+            uint32_t addr_lo = *(uint32_t*)(tag + 8);
+            uint32_t addr_hi = *(uint32_t*)(tag + 12); // high 32 bits of uint64_t
+            if (addr_hi == 0) {                        // only usable in 32-bit mode
+                info.addr   = addr_lo;
+                info.pitch  = *(uint32_t*)(tag + 16);
+                info.width  = *(uint32_t*)(tag + 20);
+                info.height = *(uint32_t*)(tag + 24);
+                info.bpp    = *(uint8_t*) (tag + 28);
+            }
+            // addr_hi != 0 → framebuffer above 4 GB, leave info zeroed → VGA fallback
             break;
         }
         tag += (size + 7) & ~7;
@@ -93,20 +153,47 @@ static fb_info_t parse_multiboot_fb(uint32_t mb_info_addr)
 }
 
 // ── fb_setup: map framebuffer and bring up the terminal ───────────────────────
-static void map_phys_range(uint32_t phys_start, uint32_t size)
-{
-    uint32_t start = phys_start & ~0xFFFu;
-    uint32_t end   = (phys_start + size + 0xFFFu) & ~0xFFFu;
-    for (uint32_t addr = start; addr < end; addr += PAGE_SIZE)
-        paging_map(kernel_directory, addr, addr, PAGE_PRESENT | PAGE_WRITABLE);
-}
+//
+// The framebuffer physical address from UEFI GOP can be anywhere in the 4GB
+// address space (e.g. 0xA0000000 on AMD systems). If we identity-map it at that
+// physical address, it lands in a PDE < 768 (user-space PDE range). User process
+// page directories only copy PDEs 768..1023 from kernel_directory, so they don't
+// inherit user-range PDEs. When the timer ISR fires and fbterm_tick() writes to
+// the framebuffer while a user process's CR3 is loaded, it page-faults.
+//
+// Fix: always map the framebuffer at a fixed kernel VA (0xFD000000, PDE 1012).
+// This VA is in the kernel PDE range (768..1023), which all process page
+// directories share via the pre-allocated kernel_tables. The timer ISR can then
+// safely write to the framebuffer from any process context.
+
+#define FB_KERN_VIRT  0xFD000000u  // fixed kernel VA for framebuffer (PDE 1012)
 
 static void fb_setup(const fb_info_t* fb)
 {
-    if (fb->addr && fb->width && fb->height)
-        map_phys_range(fb->addr, fb->pitch * fb->height);
+    if (!fb->addr || !fb->width || !fb->height) {
+        fb_init(0, 0, 0, 0, 0);
+        fbterm_init();
+        fbterm_draw_indicator();
+        return;
+    }
 
-    fb_init(fb->addr, fb->width, fb->height, fb->pitch, fb->bpp);
+    uint32_t phys     = fb->addr;
+    uint32_t size     = fb->pitch * fb->height;
+    uint32_t phys_pg  = phys & ~0xFFFu;
+    uint32_t phys_off = phys - phys_pg;
+    uint32_t pages    = (size + phys_off + 0xFFFu) / PAGE_SIZE;
+
+    for (uint32_t i = 0; i < pages; i++)
+        paging_map(kernel_directory,
+                   FB_KERN_VIRT + i * PAGE_SIZE,
+                   phys_pg    + i * PAGE_SIZE,
+                   PAGE_PRESENT | PAGE_WRITABLE);
+
+    // Flush TLB: paging_map does not invlpg; a CR3 reload flushes everything.
+    uint32_t cr3;
+    __asm__ volatile("mov %%cr3,%0\n\t mov %0,%%cr3" : "=r"(cr3) :: "memory");
+
+    fb_init(FB_KERN_VIRT + phys_off, fb->width, fb->height, fb->pitch, fb->bpp);
     fbterm_init();
 
     // Welcome banner removed — shown only on login screen (user/init.c)
@@ -253,6 +340,7 @@ static void launch_init(void)
                    PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
     }
 
+    process_retire_kernel(); // prevent scheduler from restoring PID 0's stale kernel ESP
     tss_set_kernel_stack((uint32_t)&stack_top);
     jump_to_ring3((void*)entry, USER_STACK_TOP - 4);
     // Never reached
@@ -271,13 +359,37 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     fb_info_t fb = parse_multiboot_fb(mb_info_virt);
 
+    // Locate the GRUB-loaded disk.img module (multiboot2 tag type 3).
+    // Physical addresses only here — virtual access deferred until after paging_init.
+    uint32_t ramdisk_phys = 0, ramdisk_bytes = 0;
+    {
+        uint32_t total = *(uint32_t*)mb_info_virt;
+        uint8_t* tag   = (uint8_t*)(mb_info_virt + 8);
+        uint8_t* end   = (uint8_t*)(mb_info_virt + total);
+        while (tag < end) {
+            uint32_t type = *(uint32_t*)tag;
+            uint32_t size = *(uint32_t*)(tag + 4);
+            if (type == 0) break;
+            if (type == 3 && size >= 16) {
+                uint32_t ms = *(uint32_t*)(tag + 8);
+                uint32_t me = *(uint32_t*)(tag + 12);
+                if (me > ms) { ramdisk_phys = ms; ramdisk_bytes = me - ms; }
+                break;
+            }
+            tag += (size + 7) & ~7;
+        }
+    }
+
     // ── Phase 1: memory and paging ───────────────────────────────────────────
     pmm_init(mb_info_virt);
     paging_init();
-    mm_init();
+    // Pass ramdisk end so heap starts after ramdisk — prevents heap from
+    // overlapping the in-memory disk image and corrupting TxFS inode blocks.
+    mm_init(ramdisk_phys && ramdisk_bytes ? ramdisk_phys + ramdisk_bytes : 0);
 
     // ── Phase 2: core hardware ───────────────────────────────────────────────
     idt_init();
+    lapic_virtual_wire_init();  // must come before pic_remap() and sti
     pic_remap();
     timer_init(100);
     keyboard_init();
@@ -299,21 +411,137 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     fb_setup(&fb);
 
     // ── Phase 5: storage ─────────────────────────────────────────────────────
+    // Priority: NVMe → AHCI → ATA PIO → ramdisk (GRUB module fallback).
+    //
+    print("Detecting storage...");
+    // TxFS probe checks two offsets:
+    //  offset 0:    raw TxFS image (direct installation or QEMU NVMe with disk.img)
+    //  offset 2048: installed layout — disk.img has 1MB GRUB zone at the front,
+    //               TxFS starts at sector 2048 (superblock at 2048+8=2056)
+    //
+    // When the ramdisk module is a bootable disk.img (GRUB prefix + TxFS), we:
+    //  - Keep the full module as install_img_buf for the installer
+    //  - Point the TxFS ramdisk at the TxFS portion (skipping the 1MB prefix)
+    pci_init();   // must come before NVMe/AHCI which scan pci_devices[]
     ata_init();
-    // Try AHCI — falls back to legacy ATA PIO if not found
-    if (ahci_init() == 0) ata_set_ahci(1);
+    {
+        static uint8_t probe[512];
+        int found = 0;
+
+        #define TXFS_MAGIC_CHECK(b) \
+            ((uint32_t)((b)[0] | ((uint32_t)(b)[1]<<8) | \
+                        ((uint32_t)(b)[2]<<16) | ((uint32_t)(b)[3]<<24)) == TXFS_MAGIC)
+
+        // TXFS_PROBE_AT(offset): probe for TxFS at LBA (offset + 8)
+        // offset=0     → raw TxFS image (QEMU direct or old format)
+        // offset=10240 → GPT layout (current: GPT+core.img+FAT ESP at LBA 2048)
+        // offset=8704  → MBR layout (previous: MBR+core+FAT at LBA 512)
+        // offset=2048  → old 1 MB GRUB-only prefix (kept for compatibility)
+        #define TXFS_PROBE_AT(off) ( \
+            ata_read((off) + 8, probe, 1) == 1 && TXFS_MAGIC_CHECK(probe))
+
+        // Helper: find TxFS on a single device across all known offsets
+        #define PROBE_DEVICE(tag_none, tag_gpt, tag_mbr, tag_old) \
+            if      (TXFS_PROBE_AT(0))     { found=1; klog(tag_none); } \
+            else if (TXFS_PROBE_AT(10240)) { found=1; txfs_set_lba_offset(10240); klog(tag_gpt); } \
+            else if (TXFS_PROBE_AT(8704))  { found=1; txfs_set_lba_offset(8704);  klog(tag_mbr); } \
+            else if (TXFS_PROBE_AT(2048))  { found=1; txfs_set_lba_offset(2048);  klog(tag_old); }
+
+        if (!found && nvme_init() == 0) {
+            ata_set_nvme_ready(1);
+            ata_set_nvme(1);
+            PROBE_DEVICE("TxFS: NVMe\n", "TxFS: NVMe (gpt)\n", "TxFS: NVMe (mbr)\n", "TxFS: NVMe (old)\n")
+            else { ata_set_nvme(0); }
+        }
+        if (!found && ahci_init() == 0) {
+            ata_set_ahci_ready(1);
+            ata_set_ahci(1);
+            PROBE_DEVICE("TxFS: AHCI\n", "TxFS: AHCI (gpt)\n", "TxFS: AHCI (mbr)\n", "TxFS: AHCI (old)\n")
+            else { ata_set_ahci(0); }
+        }
+        if (!found) {
+            PROBE_DEVICE("TxFS: ATA\n", "TxFS: ATA (gpt)\n", "TxFS: ATA (mbr)\n", "TxFS: ATA (old)\n")
+        }
+
+        // Always detect bootable ramdisk — set install_img_buf even when NVMe/AHCI
+        // provides TxFS, so the installer can copy the full bootable image to disk.
+        if (!install_img_buf && ramdisk_phys && ramdisk_bytes) {
+            uint8_t* rd = (uint8_t*)KPHYS_TO_VIRT(ramdisk_phys);
+            // GPT layout (current): TxFS at LBA 10240 → superblock at LBA 10248
+            if (ramdisk_bytes > (10248 + 1) * 512 &&
+                TXFS_MAGIC_CHECK(rd + 10248*512)) {
+                install_img_buf  = rd;
+                install_img_size = ramdisk_bytes;
+            // MBR layout: TxFS at LBA 8704 → superblock at LBA 8712
+            } else if (ramdisk_bytes > (8712 + 1) * 512 &&
+                       TXFS_MAGIC_CHECK(rd + 8712*512)) {
+                install_img_buf  = rd;
+                install_img_size = ramdisk_bytes;
+            // Old layout: TxFS at LBA 2048 → superblock at LBA 2056
+            } else if (ramdisk_bytes > (2056 + 1) * 512 &&
+                       TXFS_MAGIC_CHECK(rd + 2056*512)) {
+                install_img_buf  = rd;
+                install_img_size = ramdisk_bytes;
+            }
+        }
+        if (!found && ramdisk_phys && ramdisk_bytes) {
+            uint8_t* rd = (uint8_t*)KPHYS_TO_VIRT(ramdisk_phys);
+            if (ramdisk_bytes >= 9*512 &&
+                TXFS_MAGIC_CHECK(rd + 8*512)) {
+                ata_set_ramdisk(rd, ramdisk_bytes);
+                klog("TxFS: ramdisk\n");
+            } else if (install_img_buf) {
+                // Bootable disk.img — detect which layout to find TxFS offset
+                uint32_t txfs_off;
+                if (ramdisk_bytes > (10248+1)*512 && TXFS_MAGIC_CHECK(rd + 10248*512))
+                    txfs_off = 10240;
+                else if (ramdisk_bytes > (8712+1)*512 && TXFS_MAGIC_CHECK(rd + 8712*512))
+                    txfs_off = 8704;
+                else
+                    txfs_off = 2048;
+                ata_set_ramdisk(rd + txfs_off*512, ramdisk_bytes - txfs_off*512);
+                klog("TxFS: ramdisk (bootable img)\n");
+            } else {
+                klog("TxFS: ramdisk has no recognised TxFS\n");
+            }
+        }
+        if (!found && !ata_has_ramdisk()) {
+            klog("TxFS: no storage found!\n");
+        }
+
+        #undef TXFS_PROBE_AT
+        #undef TXFS_MAGIC_CHECK
+    }
     klog("ATA initialised\n");
+    print(" ok\n");
     vfs_mount("/C:", txfs_init(), 0);
     klog("Mounted /C: (TxFS)\n");
+    {
+        extern int vfs_stat(const char*, uint32_t*);
+        uint32_t sz = 0;
+        if (vfs_stat("/C:/BSM/SystemT/bmsg.elf", &sz) < 0)
+            klog("WARN: bmsg.elf not found in /C:\n");
+        else
+            klog_hex("TxFS: bmsg.elf size=", sz);
+    }
     mount_detected_drives();
 
-    // ── Phase 6: networking ──────────────────────────────────────────────────
-    pci_init();
-    e1000_init();
+    // ── Phase 6: networking + USB ────────────────────────────────────────────
+    print("USB init...");
+    usb_hid_init();
+    print(" ok\n");
+    print("Net init...");
+    int nic_ok = (e1000_init() == 0);
     net_init();
-    if (!dhcp_run()) klog("DHCP failed — using static IP\n");
+    if (nic_ok) {
+        if (!dhcp_run()) klog("DHCP failed — using static IP\n");
+    } else {
+        klog("No NIC — skipping DHCP\n");
+    }
+    print(" ok\n");
 
     // ── Phase 7: launch userspace ────────────────────────────────────────────
     klog("Launching init\n");
+    clear_screen();
     launch_init();
 }

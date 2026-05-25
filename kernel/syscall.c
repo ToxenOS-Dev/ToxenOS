@@ -26,6 +26,11 @@
 extern uint8_t _binary_build_user_shell_elf_start[];
 extern uint8_t _binary_build_user_shell_elf_end[];
 
+// Bootable disk.img stored in RAM (set when ramdisk is a GRUB-prefixed image).
+// SYS_INSTALL_CHUNK reads from here so the full bootable image is copied to disk.
+extern uint8_t*  install_img_buf;
+extern uint32_t  install_img_size;
+
 static uint32_t kstrlen(const char* s) { uint32_t i=0; while(s[i]) i++; return i; }
 static int kstreq(const char* a, const char* b) {
     int i = 0; while (a[i] && b[i] && a[i]==b[i]) i++; return a[i]==b[i];
@@ -107,16 +112,17 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
 
         case SYS_SHUTDOWN:
             __asm__ volatile("cli");
-            // ACPI S5 shutdown — try multiple ports used by different QEMU/hardware configs:
-            // 0x604 = QEMU pc/i440fx PIIX ACPI PM1a control (most common)
+            // ACPI S5 — QEMU-specific ports (work in QEMU, harmless on real hw)
             __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0x604));
-            // 0xB004 = Bochs and old QEMU
             __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0xB004));
-            // 0x600 = Some QEMU versions base port
             __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0x600));
-            // 0x4004 = QEMU with q35 chipset
             __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x3400), "Nd"((uint16_t)0x4004));
-            // None worked — halt forever (battery will drain on real hardware)
+            // ACPI didn't work (real hardware) — reboot via keyboard controller
+            // so the machine restarts rather than freezing indefinitely.
+            __asm__ volatile("outb %0, %1" :: "a"((uint8_t)0xFE), "Nd"((uint16_t)0x64));
+            // Final fallback: triple-fault
+            { volatile struct { uint16_t limit; uint32_t base; } idt = {0, 0};
+              __asm__ volatile("lidt (%0); int $3" :: "r"(&idt)); }
             while(1) __asm__ volatile("hlt");
             return 0;
 
@@ -210,7 +216,12 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         }
 
         case SYS_SPAWN_ARGS:
-        { CHECK_USER_STR(ebx); if(edx){CHECK_USER_STR(edx);} int _p=sys_spawn_tty_args((const char*)ebx,(int)ecx,edx?(const char*)edx:""); if(_p>=0) INHERIT_ADMIN(_p); return _p; }
+        {
+            CHECK_USER_STR(ebx); if(edx){CHECK_USER_STR(edx);}
+            int _p=sys_spawn_tty_args((const char*)ebx,(int)ecx,edx?(const char*)edx:"");
+            if(_p>=0) { INHERIT_ADMIN(_p); }
+            return _p;
+        }
 
         case SYS_IS_ALIVE:
             return process_is_alive((int)ebx);
@@ -235,13 +246,9 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         {
             if (ecx == 0) return 0;
             CHECK_USER_PTR(ebx, ecx);
-            char* out       = (char*)ebx;
-            uint32_t sz     = (uint32_t)ecx;
-            const char* src = klog_get_buf();
-            uint32_t len = 0;
-            while (src[len] && len < sz - 1) { out[len] = src[len]; len++; }
-            out[len] = 0;
-            return (int)len;
+            char* out    = (char*)ebx;
+            int   sz     = (int)(uint32_t)ecx;
+            return klog_read(out, sz);
         }
 
         case SYS_PROC_LIST:
@@ -525,12 +532,27 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         case SYS_INSTALL_CHUNK:
         {
             // ebx=target drive, ecx=start_block, edx=num_blocks
+            // When install_img_buf is set, reads from the bootable disk.img in RAM
+            // (includes GRUB prefix + kernel.bin + TxFS) so the target disk is bootable.
             uint8_t tdrv = (uint8_t)ebx;
             if (tdrv == 0 || tdrv > 3) return (uint32_t)-1;
             uint32_t sects = TXFS_BLOCK_SIZE / 512;
             static uint8_t cbuf[TXFS_BLOCK_SIZE];
             for (uint32_t b = ecx; b < ecx + edx; b++) {
-                ata_read_drive(0, b * sects, cbuf, sects);
+                if (install_img_buf) {
+                    uint32_t off = b * TXFS_BLOCK_SIZE;
+                    if (off < install_img_size) {
+                        uint32_t len = install_img_size - off;
+                        if (len > TXFS_BLOCK_SIZE) len = TXFS_BLOCK_SIZE;
+                        const uint8_t* src = install_img_buf + off;
+                        for (uint32_t i = 0; i < len; i++) cbuf[i] = src[i];
+                        for (uint32_t i = len; i < TXFS_BLOCK_SIZE; i++) cbuf[i] = 0;
+                    } else {
+                        for (uint32_t i = 0; i < TXFS_BLOCK_SIZE; i++) cbuf[i] = 0;
+                    }
+                } else {
+                    ata_read_drive(0, b * sects, cbuf, sects);
+                }
                 ata_write_drive(tdrv, b * sects, cbuf, sects);
             }
             return 0;

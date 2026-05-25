@@ -25,9 +25,9 @@ KOBJS := \
 	build/kernel.o build/keyboard.o build/idt.o build/pic.o build/irq.o \
 	build/timer.o build/mm.o build/klog.o build/pmm.o build/process.o build/syscall.o \
 	build/paging.o build/tss.o build/ring3.o \
-	build/cpu.o build/vfs.o build/tmpfs.o build/ata.o build/ahci.o build/txfs.o build/fat.o build/env.o build/crypto.o build/dhcp.o \
+	build/cpu.o build/vfs.o build/tmpfs.o build/ata.o build/ahci.o build/nvme.o build/txfs.o build/fat.o build/env.o build/crypto.o build/dhcp.o \
 	build/ext2.o build/elf.o build/tty.o build/pipe.o build/waitqueue.o \
-	build/pci.o build/e1000.o build/net.o build/tcp.o build/tls.o \
+	build/usb_hid.o build/pci.o build/e1000.o build/net.o build/tcp.o build/tls.o \
 	build/framebuffer.o build/font.o build/fbterm.o \
 	build/user/shell_blob.o build/user/init_blob.o
 
@@ -59,6 +59,7 @@ all: user
 	gcc $(KFLAGS) -c kernel/ring3.c      -o build/ring3.o
 	gcc $(KFLAGS) -c kernel/cpu.c        -o build/cpu.o
 	gcc $(KFLAGS) -c kernel/ahci.c       -o build/ahci.o
+	gcc $(KFLAGS) -c kernel/nvme.c       -o build/nvme.o
 	gcc $(KFLAGS) -c kernel/vfs.c        -o build/vfs.o
 	gcc $(KFLAGS) -c kernel/env.c        -o build/env.o
 	gcc $(KFLAGS) -c kernel/dhcp.c       -o build/dhcp.o
@@ -71,6 +72,7 @@ all: user
 	gcc $(KFLAGS) -c kernel/tty.c        -o build/tty.o
 	gcc $(KFLAGS) -c kernel/pipe.c       -o build/pipe.o
 	gcc $(KFLAGS) -c kernel/waitqueue.c  -o build/waitqueue.o
+	gcc $(KFLAGS) -c kernel/usb_hid.c    -o build/usb_hid.o
 	gcc $(KFLAGS) -c kernel/pci.c        -o build/pci.o
 	gcc $(KFLAGS) -c kernel/e1000.c      -o build/e1000.o
 	gcc $(KFLAGS) -c kernel/net.c        -o build/net.o
@@ -113,13 +115,16 @@ all: user
 		$(KOBJS) \
 		$$(ls build/mbedtls/*.o)
 
+	# Rebuild disk.img with the freshly-built kernel.bin (installer copies this to NVMe)
+	$(MAKE) populate
 	cp build/kernel.bin iso/boot/kernel.bin
+	cp build/disk.img   iso/boot/disk.img
 	@if command -v grub2-mkrescue >/dev/null 2>&1; then \
-		grub2-mkrescue --modules="part_gpt part_msdos all_video" \
+		grub2-mkrescue --modules="part_gpt part_msdos all_video gfxterm" \
 			--locales="" --themes="" \
 			-o build/ToxenOS.iso iso; \
 	elif command -v grub-mkrescue >/dev/null 2>&1; then \
-		grub-mkrescue --modules="part_gpt part_msdos all_video" \
+		grub-mkrescue --modules="part_gpt part_msdos all_video gfxterm" \
 			--locales="" --themes="" \
 			-o build/ToxenOS.iso iso; \
 	else \
@@ -144,7 +149,37 @@ user:
 build/target.img:
 	dd if=/dev/zero of=build/target.img bs=1M count=2048
 
-run: all populate build/target.img
+run: all build/target.img
+	qemu-system-i386 \
+		-enable-kvm -cpu host,+cmov,+cx8 \
+		-m 256 \
+		-cdrom build/ToxenOS.iso \
+		-drive file=build/disk.img,format=raw,if=none,id=nvme0 \
+		-device nvme,drive=nvme0,serial=toxnvme0 \
+		-drive file=build/target.img,format=raw,if=none,id=nvme1 \
+		-device nvme,drive=nvme1,serial=toxnvme1 \
+		-netdev user,id=net0 \
+		-device e1000,netdev=net0 \
+		-object filter-dump,id=f0,netdev=net0,file=/tmp/toxenos_net.pcap \
+		-serial stdio
+
+run-usb: all build/target.img
+	qemu-system-i386 \
+		-enable-kvm -cpu host,+cmov,+cx8 \
+		-m 256 \
+		-cdrom build/ToxenOS.iso \
+		-drive file=build/disk.img,format=raw,if=none,id=nvme0 \
+		-device nvme,drive=nvme0,serial=toxnvme0 \
+		-drive file=build/target.img,format=raw,if=none,id=nvme1 \
+		-device nvme,drive=nvme1,serial=toxnvme1 \
+		-device qemu-xhci,id=xhci \
+		-device usb-kbd,bus=xhci.0 \
+		-netdev user,id=net0 \
+		-device e1000,netdev=net0 \
+		-object filter-dump,id=f0,netdev=net0,file=/tmp/toxenos_net.pcap \
+		-serial stdio
+
+run-ata: populate all build/target.img
 	qemu-system-i386 \
 		-enable-kvm -cpu host,+cmov,+cx8 \
 		-m 256 \
@@ -162,67 +197,113 @@ disk:
 tools/txfs_write: tools/txfs_write.c
 	gcc -O2 -o tools/txfs_write tools/txfs_write.c
 
-populate: tools/txfs_write
-	dd if=/dev/zero of=build/disk.img bs=4096 count=51200
-	tools/txfs_write build/disk.img build/user/bin/ls.elf /BSM/SystemT/ls.elf
-	tools/txfs_write build/disk.img build/user/bin/shw.elf /BSM/SystemT/shw.elf
-	tools/txfs_write build/disk.img build/user/bin/mkef.elf /BSM/SystemT/mkef.elf
-	tools/txfs_write build/disk.img build/user/bin/mkd.elf /BSM/SystemT/mkd.elf
-	tools/txfs_write build/disk.img build/user/bin/rm.elf /BSM/SystemT/rm.elf
-	tools/txfs_write build/disk.img build/user/bin/echo.elf /BSM/SystemT/echo.elf
-	tools/txfs_write build/disk.img build/user/bin/pcd.elf /BSM/SystemT/pcd.elf
-	tools/txfs_write build/disk.img build/user/bin/uname.elf /BSM/SystemT/uname.elf
-	tools/txfs_write build/disk.img build/user/bin/file.elf /BSM/SystemT/file.elf
-	tools/txfs_write build/disk.img build/user/bin/help.elf /BSM/SystemT/help.elf
-	tools/txfs_write build/disk.img build/user/bin/cp.elf /BSM/SystemT/cp.elf
-	tools/txfs_write build/disk.img build/user/bin/tree.elf /BSM/SystemT/tree.elf
-	tools/txfs_write build/disk.img build/user/bin/hex.elf /BSM/SystemT/hex.elf
-	tools/txfs_write build/disk.img build/user/bin/mv.elf /BSM/SystemT/mv.elf
-	tools/txfs_write build/disk.img build/user/bin/rname.elf /BSM/SystemT/rname.elf
-	tools/txfs_write build/disk.img build/user/bin/sif.elf /BSM/SystemT/sif.elf
-	tools/txfs_write build/disk.img build/user/bin/find.elf /BSM/SystemT/find.elf
-	tools/txfs_write build/disk.img build/user/bin/bmsg.elf /BSM/SystemT/bmsg.elf
-	tools/txfs_write build/disk.img build/user/bin/proc.elf /BSM/SystemT/proc.elf
-	tools/txfs_write build/disk.img build/user/bin/end.elf /BSM/SystemT/end.elf
-	tools/txfs_write build/disk.img build/user/bin/top.elf /BSM/SystemT/top.elf
-	tools/txfs_write build/disk.img build/user/bin/sleeptest.elf /BSM/SystemT/sleeptest.elf
-	tools/txfs_write build/disk.img build/user/bin/memtest.elf /BSM/SystemT/memtest.elf
-	tools/txfs_write build/disk.img build/user/bin/pipetest.elf /BSM/SystemT/pipetest.elf
-	tools/txfs_write build/disk.img build/user/bin/nettest.elf /BSM/SystemT/nettest.elf
-	tools/txfs_write build/disk.img build/user/bin/dns.elf /BSM/SystemT/dns.elf
-	tools/txfs_write build/disk.img build/user/bin/http.elf /BSM/SystemT/http.elf
-	tools/txfs_write build/disk.img build/user/bin/ping.elf /BSM/SystemT/ping.elf
-	tools/txfs_write build/disk.img build/user/bin/https.elf /BSM/SystemT/https.elf
-	tools/txfs_write build/disk.img build/user/bin/isolation_test.elf /BSM/SystemT/isolation_test.elf
-	tools/txfs_write build/disk.img build/user/bin/stresstest.elf /BSM/SystemT/stresstest.elf
-	tools/txfs_write build/disk.img build/user/hello.elf /hello.elf
-	tools/txfs_write build/disk.img build/user/shell.elf /shell.elf
-	tools/txfs_write build/disk.img build/user/init.elf /init.elf
-	tools/txfs_write build/disk.img build/user/bin/rmkd.elf /BSM/SystemT/rmkd.elf
-	tools/txfs_write build/disk.img build/user/bin/restore.elf /BSM/SystemT/restore.elf
-	tools/txfs_write build/disk.img build/user/bin/sysctl.elf /BSM/SystemT/sysctl.elf
-	tools/txfs_write build/disk.img build/user/bin/kill.elf /BSM/SystemT/kill.elf
-	tools/txfs_write build/disk.img build/user/bin/reg.elf /BSM/SystemT/reg.elf
-	tools/txfs_write build/disk.img build/user/bin/syslog.elf /BSM/SystemT/syslog.elf
-	tools/txfs_write build/disk.img build/user/bin/wc.elf /BSM/SystemT/wc.elf
-	tools/txfs_write build/disk.img build/user/bin/date.elf /BSM/SystemT/date.elf
-	tools/txfs_write build/disk.img build/user/bin/chmod.elf /BSM/SystemT/chmod.elf
-	tools/txfs_write build/disk.img build/user/bin/where.elf /BSM/SystemT/where.elf
-	tools/txfs_write build/disk.img build/user/bin/df.elf /BSM/SystemT/df.elf
-	tools/txfs_write build/disk.img build/user/bin/free.elf /BSM/SystemT/free.elf
-	tools/txfs_write build/disk.img build/user/bin/hostname.elf /BSM/SystemT/hostname.elf
-	tools/txfs_write build/disk.img build/user/bin/adduser.elf /BSM/SystemT/adduser.elf
-	tools/txfs_write build/disk.img build/user/bin/passwd.elf /BSM/SystemT/passwd.elf
-	tools/txfs_write build/disk.img build/user/bin/usermod.elf /BSM/SystemT/usermod.elf
-	tools/txfs_write build/disk.img build/user/bin/ipcfg.elf /BSM/SystemT/ipcfg.elf
-	tools/txfs_write build/disk.img build/user/bin/snap.elf /BSM/SystemT/snap.elf
-	tools/txfs_write build/disk.img build/user/bin/install.elf /BSM/SystemT/install.elf
-	tools/txfs_write build/disk.img user/system/users /etc/users
-	tools/txfs_write build/disk.img build/user/bin/trash.elf /BSM/SystemT/trash.elf
-	tools/txfs_write build/disk.img build/user/bin/tox.elf /BSM/SystemT/tox.elf
-	@tools/txfs_write build/disk.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true
-	@tools/txfs_write build/disk.img /dev/null /Trash/.keep 2>/dev/null || true
-	@tools/txfs_write build/disk.img /dev/null /etc/.keep 2>/dev/null || true
+tools/patch_diskboot: tools/patch_diskboot.c
+	gcc -O2 -o tools/patch_diskboot tools/patch_diskboot.c
+
+populate: tools/txfs_write tools/patch_diskboot
+	dd if=/dev/zero of=build/fs.img bs=4096 count=2048
+	tools/txfs_write build/fs.img build/user/bin/ls.elf /BSM/SystemT/ls.elf
+	tools/txfs_write build/fs.img build/user/bin/shw.elf /BSM/SystemT/shw.elf
+	tools/txfs_write build/fs.img build/user/bin/mkef.elf /BSM/SystemT/mkef.elf
+	tools/txfs_write build/fs.img build/user/bin/mkd.elf /BSM/SystemT/mkd.elf
+	tools/txfs_write build/fs.img build/user/bin/rm.elf /BSM/SystemT/rm.elf
+	tools/txfs_write build/fs.img build/user/bin/echo.elf /BSM/SystemT/echo.elf
+	tools/txfs_write build/fs.img build/user/bin/pcd.elf /BSM/SystemT/pcd.elf
+	tools/txfs_write build/fs.img build/user/bin/uname.elf /BSM/SystemT/uname.elf
+	tools/txfs_write build/fs.img build/user/bin/file.elf /BSM/SystemT/file.elf
+	tools/txfs_write build/fs.img build/user/bin/help.elf /BSM/SystemT/help.elf
+	tools/txfs_write build/fs.img build/user/bin/cp.elf /BSM/SystemT/cp.elf
+	tools/txfs_write build/fs.img build/user/bin/tree.elf /BSM/SystemT/tree.elf
+	tools/txfs_write build/fs.img build/user/bin/hex.elf /BSM/SystemT/hex.elf
+	tools/txfs_write build/fs.img build/user/bin/mv.elf /BSM/SystemT/mv.elf
+	tools/txfs_write build/fs.img build/user/bin/rname.elf /BSM/SystemT/rname.elf
+	tools/txfs_write build/fs.img build/user/bin/sif.elf /BSM/SystemT/sif.elf
+	tools/txfs_write build/fs.img build/user/bin/find.elf /BSM/SystemT/find.elf
+	tools/txfs_write build/fs.img build/user/bin/bmsg.elf /BSM/SystemT/bmsg.elf
+	tools/txfs_write build/fs.img build/user/bin/proc.elf /BSM/SystemT/proc.elf
+	tools/txfs_write build/fs.img build/user/bin/end.elf /BSM/SystemT/end.elf
+	tools/txfs_write build/fs.img build/user/bin/top.elf /BSM/SystemT/top.elf
+	tools/txfs_write build/fs.img build/user/bin/sleeptest.elf /BSM/SystemT/sleeptest.elf
+	tools/txfs_write build/fs.img build/user/bin/memtest.elf /BSM/SystemT/memtest.elf
+	tools/txfs_write build/fs.img build/user/bin/pipetest.elf /BSM/SystemT/pipetest.elf
+	tools/txfs_write build/fs.img build/user/bin/nettest.elf /BSM/SystemT/nettest.elf
+	tools/txfs_write build/fs.img build/user/bin/dns.elf /BSM/SystemT/dns.elf
+	tools/txfs_write build/fs.img build/user/bin/http.elf /BSM/SystemT/http.elf
+	tools/txfs_write build/fs.img build/user/bin/ping.elf /BSM/SystemT/ping.elf
+	tools/txfs_write build/fs.img build/user/bin/https.elf /BSM/SystemT/https.elf
+	tools/txfs_write build/fs.img build/user/bin/isolation_test.elf /BSM/SystemT/isolation_test.elf
+	tools/txfs_write build/fs.img build/user/bin/stresstest.elf /BSM/SystemT/stresstest.elf
+	tools/txfs_write build/fs.img build/user/hello.elf /hello.elf
+	tools/txfs_write build/fs.img build/user/shell.elf /shell.elf
+	tools/txfs_write build/fs.img build/user/init.elf /init.elf
+	tools/txfs_write build/fs.img build/user/bin/rmkd.elf /BSM/SystemT/rmkd.elf
+	tools/txfs_write build/fs.img build/user/bin/restore.elf /BSM/SystemT/restore.elf
+	tools/txfs_write build/fs.img build/user/bin/sysctl.elf /BSM/SystemT/sysctl.elf
+	tools/txfs_write build/fs.img build/user/bin/kill.elf /BSM/SystemT/kill.elf
+	tools/txfs_write build/fs.img build/user/bin/reg.elf /BSM/SystemT/reg.elf
+	tools/txfs_write build/fs.img build/user/bin/syslog.elf /BSM/SystemT/syslog.elf
+	tools/txfs_write build/fs.img build/user/bin/wc.elf /BSM/SystemT/wc.elf
+	tools/txfs_write build/fs.img build/user/bin/date.elf /BSM/SystemT/date.elf
+	tools/txfs_write build/fs.img build/user/bin/chmod.elf /BSM/SystemT/chmod.elf
+	tools/txfs_write build/fs.img build/user/bin/where.elf /BSM/SystemT/where.elf
+	tools/txfs_write build/fs.img build/user/bin/df.elf /BSM/SystemT/df.elf
+	tools/txfs_write build/fs.img build/user/bin/free.elf /BSM/SystemT/free.elf
+	tools/txfs_write build/fs.img build/user/bin/hostname.elf /BSM/SystemT/hostname.elf
+	tools/txfs_write build/fs.img build/user/bin/adduser.elf /BSM/SystemT/adduser.elf
+	tools/txfs_write build/fs.img build/user/bin/passwd.elf /BSM/SystemT/passwd.elf
+	tools/txfs_write build/fs.img build/user/bin/usermod.elf /BSM/SystemT/usermod.elf
+	tools/txfs_write build/fs.img build/user/bin/ipcfg.elf /BSM/SystemT/ipcfg.elf
+	tools/txfs_write build/fs.img build/user/bin/snap.elf /BSM/SystemT/snap.elf
+	tools/txfs_write build/fs.img build/user/bin/install.elf /BSM/SystemT/install.elf
+	tools/txfs_write build/fs.img user/system/users /etc/users
+	tools/txfs_write build/fs.img build/user/bin/trash.elf /BSM/SystemT/trash.elf
+	tools/txfs_write build/fs.img build/user/bin/tox.elf /BSM/SystemT/tox.elf
+	@tools/txfs_write build/fs.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true
+	@tools/txfs_write build/fs.img /dev/null /Trash/.keep 2>/dev/null || true
+	@tools/txfs_write build/fs.img /dev/null /etc/.keep 2>/dev/null || true
+	# ── Assemble bootable disk.img (GPT — BIOS + UEFI dual-boot) ────────────────
+	# Layout: LBA 0:        Protective MBR + boot.img code
+	#         LBA 1-33:     GPT header + partition entries
+	#         LBA 34-2047:  GRUB core.img (gap, ~1 MB available)
+	#         LBA 2048-10239: EFI System Partition gpt1 (FAT, 4 MB)
+	#         LBA 10240+:   TxFS filesystem
+	#         LBA last-32:  Backup GPT
+	# BIOS: boot.img -> core.img at LBA 34 -> GRUB reads (hd0,gpt1)/kernel.bin
+	# UEFI: firmware -> /EFI/BOOT/BOOTX64.EFI -> GRUB search --label TOXENOS
+	@if command -v grub2-mkimage >/dev/null 2>&1; then \
+		printf 'insmod gfxterm\ninsmod vbe\nset gfxmode=1024x768x32,800x600x32,auto\nterminal_output gfxterm\nset gfxpayload=keep\nset root=(hd0,gpt1)\nmultiboot2 /kernel.bin\nboot\n' \
+			> build/grub_embed.cfg; \
+		printf 'insmod gfxterm\ninsmod efi_gop\nset gfxmode=1024x768x32,800x600x32,auto\nterminal_output gfxterm\nset gfxpayload=keep\nsearch --no-floppy --set=root --label TOXENOS\nmultiboot2 /kernel.bin\nboot\n' \
+			> build/grub_efi_embed.cfg; \
+		grub2-mkimage --format=i386-pc \
+			--output=build/grub_core.img \
+			--config=build/grub_embed.cfg \
+			--prefix="(hd0,gpt1)" \
+			biosdisk part_gpt fat multiboot2 gfxterm video_fb vbe all_video; \
+		grub2-mkimage --format=x86_64-efi \
+			--output=build/grubx64.efi \
+			--config=build/grub_efi_embed.cfg \
+			--prefix="(hd0,gpt1)" \
+			part_gpt fat multiboot2 search search_label gfxterm video_fb efi_gop all_video; \
+		dd if=/dev/zero of=build/grub_fat.img bs=512 count=8192 status=none; \
+		mkfs.fat -n TOXENOS build/grub_fat.img; \
+		mcopy -i build/grub_fat.img build/kernel.bin ::kernel.bin; \
+		mmd   -i build/grub_fat.img ::EFI ::EFI/BOOT; \
+		mcopy -i build/grub_fat.img build/grubx64.efi ::EFI/BOOT/BOOTX64.EFI; \
+		TOTAL_SECTS=26657; \
+		dd if=/dev/zero             of=build/disk.img bs=512 count=$$TOTAL_SECTS status=none; \
+		dd if=/usr/lib/grub/i386-pc/boot.img \
+		                            of=build/disk.img bs=512 count=1 conv=notrunc status=none; \
+		dd if=build/grub_core.img   of=build/disk.img bs=512 seek=34   conv=notrunc status=none; \
+		dd if=build/grub_fat.img    of=build/disk.img bs=512 seek=2048 conv=notrunc status=none; \
+		dd if=build/fs.img          of=build/disk.img bs=512 seek=10240 conv=notrunc status=none; \
+		CORE_SECTS=$$(( ($$(stat -c %s build/grub_core.img) + 511) / 512 )); \
+		tools/patch_diskboot build/disk.img $$CORE_SECTS $$TOTAL_SECTS; \
+		echo "disk.img: GPT BIOS+UEFI (ESP gpt1 at LBA 2048, TxFS at LBA 10240)"; \
+	else \
+		echo "WARNING: grub2-mkimage not found — disk.img is raw TxFS (not bootable)"; \
+		cp build/fs.img build/disk.img; \
+	fi
 
 clean:
 	rm -rf build/*.o build/*.d build/*.bin build/*.iso build/mbedtls build/user

@@ -154,9 +154,8 @@ static void history_load(void) {
     int fd = sys_open(HISTORY_FILE, 0x1);
     int n = tox_read(fd, (uint8_t*)buf, (uint32_t)sz);
     sys_close(fd); if(n<0)n=0; buf[n]=0;
-    // Collect up to HISTORY_MAX lines from the file
     static char hlines[HISTORY_MAX][INPUT_MAX];
-    int hcount = 0;
+    int hcount = 0, total_lines = 0;
     char* p = buf;
     while (*p) {
         char line[INPUT_MAX]; int li=0;
@@ -164,6 +163,7 @@ static void history_load(void) {
         if (*p=='\n') p++;
         line[li]=0;
         if (li > 0) {
+            total_lines++;
             if (hcount < HISTORY_MAX) str_copy(hlines[hcount++], line);
             else {
                 for (int i=0;i<HISTORY_MAX-1;i++) str_copy(hlines[i],hlines[i+1]);
@@ -172,6 +172,17 @@ static void history_load(void) {
         }
     }
     free(buf);
+    // Trim file when it exceeds HISTORY_MAX entries
+    if (total_lines > HISTORY_MAX) {
+        int tfd = sys_open(HISTORY_FILE, 0x6);  // WRITE|CREATE|TRUNC
+        if (tfd >= 0) {
+            for (int i=0; i<hcount; i++) {
+                tox_write(tfd, (const uint8_t*)hlines[i], (uint32_t)str_len(hlines[i]));
+                tox_write(tfd, (const uint8_t*)"\n", 1);
+            }
+            sys_close(tfd);
+        }
+    }
     for (int i=0;i<hcount;i++) history_push(hlines[i]);
 }
 
@@ -746,6 +757,18 @@ cleanup:
 
 // ── Command router ────────────────────────────────────────────────────────────
 
+// Prompt "Are you sure you want to X? [y/N]". Returns 1 if confirmed.
+static int shell_confirm(const char* action) {
+    set_color(0x0E); print("[ToxenOS] "); set_color(0x07);
+    print("Are you sure you want to "); print(action); print("? [y/N] ");
+    for (int i=0; i<200; i++) yield();
+    while (tox_keyavail()) tox_getchar();
+    char c;
+    do { c = tox_getchar(); } while (c == 0 || (c > 0 && c < ' ' && c != '\n' && c != '\r'));
+    if (c == 'y' || c == 'Y') { print("y\n"); return 1; }
+    print("n\n"); return 0;
+}
+
 static void run_command(char* input) {
     while (*input == ' ') input++;
     if (!*input) return;
@@ -825,8 +848,8 @@ static void run_command(char* input) {
     if (str_equal(cmd_buf,"cd"))       { cmd_cd(args); return; }
     if (str_equal(cmd_buf,"cdb"))      { cmd_cd(".."); return; }
     if (str_equal(cmd_buf,"clear"))    { tox_clear(); return; }
-    if (str_equal(cmd_buf,"reboot"))   { tox_reboot();   return; }
-    if (str_equal(cmd_buf,"shutdown")) { tox_shutdown(); return; }
+    if (str_equal(cmd_buf,"reboot"))   { if (shell_confirm("reboot the system"))   tox_reboot();   return; }
+    if (str_equal(cmd_buf,"shutdown")) { if (shell_confirm("shut down the system")) tox_shutdown(); return; }
     if (str_equal(cmd_buf,"logout") || str_equal(cmd_buf,"exit")) {
         tox_exit(); return;
     }
@@ -875,7 +898,10 @@ static void run_command(char* input) {
             char c = script_buf[i];
             if (c == '\n' || c == '\r' || c == 0) {
                 line[li] = 0;
-                if (li > 0 && line[0] != '#') run_command(line);
+                if (li > 0 && line[0] != '#') {
+                    char expline[256]; sh_expand(line, expline, sizeof(expline));
+                    run_command(expline);
+                }
                 li = 0;
             } else if (li < 255) {
                 line[li++] = c;

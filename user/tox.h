@@ -319,6 +319,76 @@ static inline int tox_tls_recv(int sock, uint8_t* buf, uint16_t maxlen, uint32_t
 }
 static inline void tox_tls_close(int sock) { SYSCALL1(SYS_TLS_CLOSE, sock); }
 
+// ── DNS resolver ─────────────────────────────────────────────────────────────
+// Resolve a hostname to an IPv4 address (queries 8.8.8.8:53 via UDP).
+// If the string is already a dotted-decimal IP, it is parsed and returned directly.
+// Returns the IP as a uint32_t (network byte order host-endian), 0 on failure.
+static inline uint32_t tox_resolve(const char* host) {
+    // Already an IP if it starts with a digit
+    if (host[0] >= '0' && host[0] <= '9') {
+        uint32_t r = 0;
+        const char* s = host;
+        for (int i = 0; i < 4; i++) {
+            uint32_t n = 0;
+            while (*s >= '0' && *s <= '9') { n = n*10 + (uint32_t)(*s-'0'); s++; }
+            if (*s == '.') s++;
+            r = (r << 8) | (n & 0xFF);
+        }
+        return r;
+    }
+    static uint8_t _tx[256], _rx[512];
+    int pos = 0;
+    _tx[pos++]=0x12; _tx[pos++]=0x34; // ID
+    _tx[pos++]=0x01; _tx[pos++]=0x00; // flags: standard query, recursion desired
+    _tx[pos++]=0x00; _tx[pos++]=0x01; // QDCOUNT=1
+    _tx[pos++]=0x00; _tx[pos++]=0x00; // ANCOUNT=0
+    _tx[pos++]=0x00; _tx[pos++]=0x00; // NSCOUNT=0
+    _tx[pos++]=0x00; _tx[pos++]=0x00; // ARCOUNT=0
+    // Encode QNAME
+    const char* p = host;
+    while (*p) {
+        int l = 0; const char* q = p;
+        while (*q && *q != '.') { q++; l++; }
+        _tx[pos++] = (uint8_t)l;
+        for (int i = 0; i < l; i++) _tx[pos++] = (uint8_t)p[i];
+        p += l; if (*p == '.') p++;
+    }
+    _tx[pos++] = 0;
+    _tx[pos++] = 0x00; _tx[pos++] = 0x01; // QTYPE=A
+    _tx[pos++] = 0x00; _tx[pos++] = 0x01; // QCLASS=IN
+    uint32_t dns_ip = (8u<<24|8u<<16|8u<<8|8u);
+    for (int attempt = 0; attempt < 3; attempt++) {
+        int r = tox_net_udp_send(dns_ip, 5353, 53, _tx, (uint16_t)pos);
+        if (r < 0) { tox_net_poll(); tox_sleep(100); tox_net_poll(); continue; }
+        int rlen = tox_net_udp_recv(5353, _rx, 512, 3000);
+        if (rlen < 12) continue;
+        uint16_t rid = (uint16_t)(_rx[0]<<8|_rx[1]);
+        if (rid != 0x1234) continue;
+        uint16_t ancount = (uint16_t)(_rx[6]<<8|_rx[7]);
+        int rpos = 12;
+        // Skip question name
+        while (rpos < rlen && _rx[rpos]) {
+            if ((_rx[rpos] & 0xC0) == 0xC0) { rpos += 2; goto _dns_ans; }
+            rpos += _rx[rpos] + 1;
+        }
+        rpos++; // null terminator
+        _dns_ans: rpos += 4; // skip QTYPE+QCLASS
+        for (int i = 0; i < ancount && rpos < rlen; i++) {
+            if ((_rx[rpos] & 0xC0) == 0xC0) rpos += 2;
+            else { while (rpos < rlen && _rx[rpos]) rpos += _rx[rpos]+1; rpos++; }
+            if (rpos + 10 > rlen) break;
+            uint16_t type  = (uint16_t)(_rx[rpos]<<8|_rx[rpos+1]);
+            uint16_t rdlen = (uint16_t)(_rx[rpos+8]<<8|_rx[rpos+9]);
+            rpos += 10;
+            if (type == 1 && rdlen == 4)
+                return ((uint32_t)_rx[rpos]<<24)|((uint32_t)_rx[rpos+1]<<16)|
+                       ((uint32_t)_rx[rpos+2]<<8)|(uint32_t)_rx[rpos+3];
+            rpos += rdlen;
+        }
+    }
+    return 0;
+}
+
 // Returns the page table flags for a virtual address (kernel use, debug).
 // Bits: 0=present, 1=writable, 2=user-accessible. Returns 0 if not mapped.
 static inline uint32_t tox_page_flags(uint32_t vaddr)

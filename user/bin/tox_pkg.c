@@ -71,6 +71,56 @@ static int http_download(uint32_t ip, uint16_t port, const char* path, const cha
     return total > 0 ? total : -1;
 }
 
+// ── Package metadata helpers ──────────────────────────────────────────────────
+
+// Read one field from a .meta file (format: "key=value\n")
+static void meta_read(const char* meta_path, const char* key, char* out, int maxlen) {
+    out[0] = 0;
+    int sz = tox_stat(meta_path);
+    if (sz <= 0) return;
+    char* buf = malloc((uint32_t)sz+1);
+    if (!buf) return;
+    int fd = tox_open(meta_path, 1);
+    int n = tox_read(fd, (uint8_t*)buf, (uint32_t)sz);
+    tox_close(fd); if(n<0)n=0; buf[n]=0;
+    int kl = (int)tox_strlen(key);
+    char* p = buf;
+    while (*p) {
+        if (tox_strncmp(p, key, kl)==0 && p[kl]=='=') {
+            p += kl+1;
+            int oi=0;
+            while(*p && *p!='\n' && oi<maxlen-1) out[oi++]=*p++;
+            out[oi]=0;
+            break;
+        }
+        while(*p && *p!='\n') p++;
+        if(*p=='\n') p++;
+    }
+    free(buf);
+}
+
+// Write a .meta file for an installed package
+static void meta_write(const char* meta_path, const char* name,
+                        int size, const char* desc) {
+    int fd = tox_open(meta_path, 2|4);  // WRITE|CREATE
+    if (fd < 0) return;
+    tox_write(fd, (uint8_t*)"name=", 5);
+    tox_write(fd, (uint8_t*)name, (uint32_t)tox_strlen(name));
+    tox_write(fd, (uint8_t*)"\n", 1);
+    // size as decimal
+    char sbuf[16]; int si=0; int sv=size;
+    if(sv==0){sbuf[si++]='0';}
+    else{char t[12];int ti=0;while(sv>0){t[ti++]='0'+sv%10;sv/=10;}while(ti>0)sbuf[si++]=t[--ti];}
+    sbuf[si]=0;
+    tox_write(fd, (uint8_t*)"size=", 5);
+    tox_write(fd, (uint8_t*)sbuf, (uint32_t)si);
+    tox_write(fd, (uint8_t*)"\n", 1);
+    tox_write(fd, (uint8_t*)"description=", 12);
+    tox_write(fd, (uint8_t*)desc, (uint32_t)tox_strlen(desc));
+    tox_write(fd, (uint8_t*)"\n", 1);
+    tox_close(fd);
+}
+
 // Find a command in BSM paths, return full path in out. Returns 1 if found.
 static int tox_find(const char* cmd, char* out) {
     const char* dirs[] = { "/C:/BSM/SystemT", "/C:/BSM/usr/lst", 0 };
@@ -95,13 +145,35 @@ void _start() {
     const char* param = args + ci;
 
     if (str_eq(cmd, "list")) {
-        set_color(0x0B); print("Installed packages (/BSM/usr/lst/):\n"); set_color(0x07);
+        set_color(0x0B); print("Installed packages:\n"); set_color(0x07);
         char name[128]; int count = 0;
         for (int i = 0; ; i++) {
             if (tox_readdir("/C:/BSM/usr/lst", name, (uint32_t)i) < 0) break;
             if (name[0] == '.') continue;
-            set_color(0x0A); print("  "); print(name); print("\n"); set_color(0x07);
+            // Skip .meta files in listing (they are companions)
+            int nl = (int)tox_strlen(name);
+            if (nl > 5 && name[nl-5]=='.' && name[nl-4]=='m' && name[nl-3]=='e' &&
+                          name[nl-2]=='t' && name[nl-1]=='a') continue;
             count++;
+            // Try to read companion .meta file
+            char meta_path[256], desc[128], sz_str[16];
+            tox_strcpy(meta_path, "/C:/BSM/usr/lst/");
+            // Build meta path: strip .elf suffix and add .meta
+            char base[64]; int bi=0;
+            while(name[bi]&&!(name[bi]=='.'&&name[bi+1]=='e'&&name[bi+2]=='l'&&name[bi+3]=='f')&&bi<63)
+                base[bi]=name[bi++];
+            base[bi]=0;
+            tox_strcat(meta_path, base); tox_strcat(meta_path, ".meta");
+            meta_read(meta_path, "description", desc, 128);
+            meta_read(meta_path, "size", sz_str, 16);
+            // Print: name padded to 20 chars, size, description
+            set_color(0x0A); print("  "); print(base); set_color(0x07);
+            int plen = 2 + (int)tox_strlen(base);
+            while (plen++ < 22) print(" ");
+            if (sz_str[0]) { set_color(0x08); print(sz_str); print("B  "); set_color(0x07); }
+            if (desc[0]) { set_color(0x07); print(desc); }
+            else         { set_color(0x08); print("(no description)"); }
+            set_color(0x07); print("\n");
         }
         if (count == 0) { set_color(0x08); print("  (none installed)\n"); set_color(0x07); }
         tox_exit();
@@ -126,14 +198,36 @@ void _start() {
         }
         set_color(0x0A); print("installed: "); print(name); print(".elf (");
         print_int(bytes); print(" bytes)\n"); set_color(0x07);
+        // Try to download companion .meta (ignore failure)
+        {
+            char meta_url[128], meta_dst[256];
+            tox_strcpy(meta_url, "/"); tox_strcat(meta_url, name); tox_strcat(meta_url, ".meta");
+            tox_strcpy(meta_dst, "/C:/BSM/usr/lst/"); tox_strcat(meta_dst, name); tox_strcat(meta_dst, ".meta");
+            http_download(TOX_PKG_SERVER_IP, TOX_PKG_PORT, meta_url, meta_dst);
+        }
         tox_exit();
     }
 
     if (str_eq(cmd, "install")) {
-        if (!param[0]) { set_color(0x0C); print("tox: usage: tox install <path>\n"); set_color(0x07); tox_exit(); }
-        // System install (--system flag) goes to BSM/SystemT and needs elevation
+        if (!param[0]) { set_color(0x0C); print("tox: usage: tox install [-d <desc>] <path>\n"); set_color(0x07); tox_exit(); }
+        // Optional description flag: -d <desc>
+        char desc[128]; desc[0] = 0;
+        if (param[0]=='-' && param[1]=='d' && param[2]==' ') {
+            param += 3;
+            // description may be quoted
+            int di=0;
+            if (*param=='"') { param++;
+                while(*param && *param!='"' && di<127) desc[di++]=*param++;
+                if (*param=='"') param++;
+            } else {
+                while(*param && *param!=' ' && di<127) desc[di++]=*param++;
+            }
+            desc[di]=0;
+            while(*param==' ') param++;
+        }
+        // System install (--system flag)
         int system_install = 0;
-        if (param[0] == '-' && param[1] == '-') {
+        if (param[0]=='-' && param[1]=='-') {
             if (param[2]=='s'&&param[3]=='y'&&param[4]=='s'&&param[5]=='t'&&
                 param[6]=='e'&&param[7]=='m') {
                 system_install = 1;
@@ -170,6 +264,18 @@ void _start() {
         tox_close(fd);
         free(buf);
 
+        // Write companion .meta file
+        {
+            char base[64]; int bi=0;
+            while(name[bi]&&!(name[bi]=='.'&&name[bi+1]=='e'&&name[bi+2]=='l'&&name[bi+3]=='f')&&bi<63)
+                base[bi]=name[bi++];
+            base[bi]=0;
+            char meta_path[256];
+            tox_strcpy(meta_path, "/C:/BSM/usr/lst/"); tox_strcat(meta_path, base);
+            tox_strcat(meta_path, ".meta");
+            meta_write(meta_path, base, size, desc[0] ? desc : "No description");
+        }
+
         set_color(0x0A); print("installed: "); print(name); print("\n"); set_color(0x07);
         tox_exit();
     }
@@ -191,6 +297,18 @@ void _start() {
             }
         }
         tox_remove(path);
+        // Also remove companion .meta file (strip .elf suffix first)
+        {
+            char base[64]; int bi=0;
+            const char* pn = param;
+            while(pn[bi]&&!(pn[bi]=='.'&&pn[bi+1]=='e'&&pn[bi+2]=='l'&&pn[bi+3]=='f')&&bi<63)
+                base[bi]=pn[bi++];
+            base[bi]=0;
+            char meta_path[256];
+            tox_strcpy(meta_path, "/C:/BSM/usr/lst/"); tox_strcat(meta_path, base);
+            tox_strcat(meta_path, ".meta");
+            tox_remove(meta_path); // ignore if not found
+        }
         set_color(0x0A); print("removed: "); print(param); print("\n"); set_color(0x07);
         tox_exit();
     }

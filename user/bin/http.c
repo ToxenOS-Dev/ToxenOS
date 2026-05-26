@@ -68,16 +68,21 @@ void _start() {
     }
 
     if (!ip_str[0]) {
-        print("Usage: http <ip> [path] [-b | -o <file>]\n");
+        print("Usage: http <host> [path] [-b | -o <file>]\n");
         tox_exit();
     }
 
-    uint32_t dst_ip = parse_ip(ip_str);
+    uint32_t dst_ip = tox_resolve(ip_str);
+    if (!dst_ip) {
+        set_color(0x0C); print("http: could not resolve: "); print(ip_str); print("\n");
+        set_color(0x07); tox_exit();
+    }
     if (!body_only) {
-        print("Connecting to "); print_int((int)((dst_ip>>24)&0xFF)); print(".");
+        print("Connecting to "); print(ip_str); print(" (");
+        print_int((int)((dst_ip>>24)&0xFF)); print(".");
         print_int((int)((dst_ip>>16)&0xFF)); print(".");
         print_int((int)((dst_ip>>8)&0xFF)); print(".");
-        print_int((int)(dst_ip&0xFF)); print(":80...\n");
+        print_int((int)(dst_ip&0xFF)); print("):80...\n");
     }
 
     int sock = tox_tcp_connect(dst_ip, 80);

@@ -29,6 +29,7 @@ static inline void  str_cat(char* d, const char* s)            { tox_strcat(d, s
 // Forward declarations
 static void run_command(char* input);
 static void run_sh_script(const char* path);
+static void sh_expand(const char* src, char* dst, int max);
 
 // Arrow key escape codes (sent by keyboard driver)
 #define KEY_UP    0x01
@@ -40,6 +41,8 @@ static void run_sh_script(const char* path);
 
 #define INPUT_MAX   256
 #define HISTORY_MAX 16
+
+static int last_exit = 0;  // last command exit code, exposed as $?
 
 static char history[HISTORY_MAX][INPUT_MAX];
 static int  history_count = 0;
@@ -646,7 +649,12 @@ static void run_pipeline(char* line) {
     }
 
     if (pids[nstages-1] >= 0) sys_sigint_target(pids[nstages-1]);
-    for (int s = 0; s < nstages; s++) if (pids[s] >= 0) sys_wait(pids[s]);
+    for (int s = 0; s < nstages; s++) {
+        if (pids[s] >= 0) {
+            int ec = tox_wait_status(pids[s]);
+            if (s == nstages-1) last_exit = ec;
+        }
+    }
     sys_sigint_target(-1);
 
     // Close redirect fds after children finish (not before — they need them open)
@@ -950,18 +958,32 @@ static int sh_kw(const char* line, const char* kw) {
     return after==0||after==' '||after=='\t'||after==';';
 }
 
-// Expand $VAR references in src → dst.
+// Expand $VAR and $? references in src → dst.
 static void sh_expand(const char* src, char* dst, int max) {
     int di=0;
     for (int i=0; src[i] && di<max-1; ) {
-        if (src[i]=='$' && (src[i+1]=='_'||(src[i+1]>='a'&&src[i+1]<='z')||(src[i+1]>='A'&&src[i+1]<='Z'))) {
-            i++; char vname[64]; int vi=0;
-            while (src[i] && (src[i]=='_'||(src[i]>='a'&&src[i]<='z')||(src[i]>='A'&&src[i]<='Z')||(src[i]>='0'&&src[i]<='9')) && vi<63)
-                vname[vi++]=src[i++];
-            vname[vi]=0;
-            char vval[256]; vval[0]=0;
-            tox_getenv(vname, vval, sizeof(vval));
-            for (int j=0;vval[j]&&di<max-1;j++) dst[di++]=vval[j];
+        if (src[i]=='$') {
+            if (src[i+1]=='?') {
+                i+=2;
+                int v = last_exit;
+                char tmp[12]; int ti=0;
+                if (v==0) { if(di<max-1) dst[di++]='0'; }
+                else {
+                    if (v<0) { if(di<max-1) dst[di++]='-'; v=-v; }
+                    while (v>0&&ti<11) { tmp[ti++]='0'+(v%10); v/=10; }
+                    while (ti>0&&di<max-1) dst[di++]=tmp[--ti];
+                }
+            } else if (src[i+1]=='_'||(src[i+1]>='a'&&src[i+1]<='z')||(src[i+1]>='A'&&src[i+1]<='Z')) {
+                i++; char vname[64]; int vi=0;
+                while (src[i] && (src[i]=='_'||(src[i]>='a'&&src[i]<='z')||(src[i]>='A'&&src[i]<='Z')||(src[i]>='0'&&src[i]<='9')) && vi<63)
+                    vname[vi++]=src[i++];
+                vname[vi]=0;
+                char vval[256]; vval[0]=0;
+                tox_getenv(vname, vval, sizeof(vval));
+                for (int j=0;vval[j]&&di<max-1;j++) dst[di++]=vval[j];
+            } else {
+                dst[di++]=src[i++];
+            }
         } else {
             dst[di++]=src[i++];
         }
@@ -1276,7 +1298,9 @@ void _start() {
             input[len] = 0;
             history_push(input);
             history_pos = -1;
-            run_command(input);
+            static char exp_cmd[INPUT_MAX * 4];
+            sh_expand(input, exp_cmd, sizeof(exp_cmd));
+            run_command(exp_cmd);
             len = 0; cur = 0;
             print_prompt();
             continue;

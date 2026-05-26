@@ -36,12 +36,10 @@ void _start() {
     }
 
     while (1) {
-        tox_set_admin(1); // toxenos is admin by default
-        int shell_pid = tox_spawn_embedded(0);
-        if (shell_pid < 0) {
-            tox_sleep(1000);
-        } else {
-            tox_wait(shell_pid);
-        }
+        tox_setenv("USER", "toxenos");
+        tox_set_admin(1);
+        int pid = tox_spawn_embedded(0);
+        if (pid < 0) tox_sleep(1000);
+        else tox_wait(pid);
     }
 }

@@ -50,11 +50,12 @@ static void cat_files(void) {
     row("cdb",   "",              "shw",    "<file>");
     row("cp",    "<src> <dst>",   "mv",     "<src> <dst>");
     row("rm",    "<path>",        "rname",  "<old> <new>");
-    row("mkef",  "<file>",        "mkd",    "<dir>");
-    row("rmkd",  "<dir>",         "find",   "[dir] <pat>");
-    row("hex",   "<file>",        "wc",     "<file>");
-    row("file",  "<file>",        "sif",    "<pat> <file>");
-    row("chmod", "<mode> <path>", "snap",   "[name]");
+    row("touch", "<file>",        "mkef",   "<file>");
+    row("mkd",   "<dir>",         "rmkd",   "<dir>");
+    row("find",  "[dir] <pat>",   "hex",    "<file>");
+    row("wc",    "<file>",        "sif",    "<pat> <file>");
+    row("file",  "<file>",        "chmod",  "<mode> <path>");
+    row("snap",  "[name]",        "",       "");
 }
 
 static void cat_trash(void) {
@@ -79,8 +80,8 @@ static void cat_system(void) {
     row("bmsg",     "",               "echo",     "<text>");
     row("reboot",   "",               "shutdown", "");
     row("hostname", "[name]",         "where",    "<cmd>");
-    row("adduser",  "<name>",         "passwd",   "[user]");
-    row("usermod",  "<user> <role>",  "",         "");
+    row("whoami",   "",               "adduser",  "<name>");
+    row("passwd",   "[user]",         "usermod",  "<user> <role>");
     row("reg set",  "<key> <val>",    "reg get",  "<key>");
     row("reg del",  "<key>",          "reg list", "");
 }
@@ -102,8 +103,8 @@ static void cat_shell(void) {
     hdr("Shell");
     row("export",    "<k>=<v>",  "env",      "");
     row("alias",     "<k>=<v>",  "unalias",  "<name>");
-    row("source",    "<file>",   "ts",       "<script.ts>");
-    row("run",       "<file.ts>","",         "");
+    row("script.sh", "",         "ts",       "<script.ts>");
+    row("run",       "<file>",   "",         "");
     row("cmd | cmd", "",         "cmd &",    "bg");
     row("cmd > file","",         "cmd < file","");
     row("Tab",       "complete", "Up/Down",  "history");

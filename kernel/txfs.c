@@ -16,6 +16,7 @@
 #include "../include/mm.h"
 #include "../include/vga.h"
 #include "../include/timer.h"
+#include "../include/process.h"
 
 static char txfs_mountpoint[64] = "/C:";
 
@@ -511,12 +512,21 @@ static int txfs_open_fn(const char* path, int flags)
     int inode_num = txfs_lookup(local);
 
     if (inode_num >= 0) {
-        // File exists — check permissions
+        // File exists — check permissions based on uid
         txfs_inode_t existing;
         txfs_read_inode((uint32_t)inode_num, &existing);
-        uint32_t perm = existing.mode & 0x1FF;
-        if ((flags & VFS_O_READ)  && !(perm & TXFS_PERM_OWNER_R)) return -1;
-        if ((flags & VFS_O_WRITE) && !(perm & TXFS_PERM_OWNER_W)) return -1;
+        uint32_t cur_uid = process_current()->uid;
+        if (cur_uid != 0) {  // root bypasses all checks
+            uint32_t perm = existing.mode & 0x1FF;
+            uint32_t r_bit, w_bit;
+            if (cur_uid == existing.uid) {
+                r_bit = TXFS_PERM_OWNER_R; w_bit = TXFS_PERM_OWNER_W;
+            } else {
+                r_bit = TXFS_PERM_OTHER_R; w_bit = TXFS_PERM_OTHER_W;
+            }
+            if ((flags & VFS_O_READ)  && !(perm & r_bit)) return -1;
+            if ((flags & VFS_O_WRITE) && !(perm & w_bit)) return -1;
+        }
         // Truncate: reset size so new writes start from 0
         if (flags & VFS_O_TRUNC) {
             existing.size = 0;
@@ -533,7 +543,9 @@ static int txfs_open_fn(const char* path, int flags)
         txfs_inode_t inode;
         uint8_t* p = (uint8_t*)&inode;
         for (uint32_t i = 0; i < sizeof(inode); i++) p[i] = 0;
-        inode.mode     = (TXFS_TYPE_FILE << 12) | TXFS_PERM_OWNER_R | TXFS_PERM_OWNER_W | TXFS_PERM_OWNER_X;
+        inode.uid      = process_current()->uid;
+        inode.mode     = (TXFS_TYPE_FILE << 12) | TXFS_PERM_OWNER_R | TXFS_PERM_OWNER_W | TXFS_PERM_OWNER_X
+                       | TXFS_PERM_OTHER_R | TXFS_PERM_OTHER_X;
         inode.links    = 1;
         inode.size     = 0;
         inode.created  = timer_getticks();

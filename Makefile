@@ -140,6 +140,7 @@ user:
 	gcc $(UFLAGS) user/init.c -o build/user/init.elf
 	objcopy -I binary -O elf32-i386 -B i386 \
 		build/user/init.elf build/user/init_blob.o
+	gcc $(UFLAGS) user/login.c -o build/user/login.elf
 	gcc $(UFLAGS) user/hello.c -o build/user/hello.elf
 	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns http ping https isolation_test stresstest restore trash rmkd sysctl kill reg syslog wc date chmod where df free hostname adduser passwd usermod ipcfg snap install; do \
 		gcc $(UFLAGS) user/bin/$$cmd.c -o build/user/bin/$$cmd.elf || exit 1; \
@@ -240,6 +241,7 @@ populate: tools/txfs_write tools/patch_diskboot
 	tools/txfs_write build/fs.img build/user/hello.elf /hello.elf
 	tools/txfs_write build/fs.img build/user/shell.elf /shell.elf
 	tools/txfs_write build/fs.img build/user/init.elf /init.elf
+	tools/txfs_write build/fs.img build/user/login.elf /BSM/SystemT/login.elf
 	tools/txfs_write build/fs.img build/user/bin/rmkd.elf /BSM/SystemT/rmkd.elf
 	tools/txfs_write build/fs.img build/user/bin/restore.elf /BSM/SystemT/restore.elf
 	tools/txfs_write build/fs.img build/user/bin/sysctl.elf /BSM/SystemT/sysctl.elf

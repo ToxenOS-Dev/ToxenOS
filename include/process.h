@@ -38,6 +38,8 @@ typedef struct {
     char            name[32];
     char            args[256];
     uint8_t         is_admin;        // 1 = elevated (can write to protected dirs)
+    uint32_t        uid;             // 0 = root/admin, >0 = regular user
+    int             exit_code;       // last exit code (set by process_exit)
 } process_t;
 
 extern process_t processes[MAX_PROCESSES];
@@ -54,6 +56,7 @@ process_t* process_current();
 int  sys_exec(const char* path);
 int  sys_spawn(const char* path);
 void sys_wait(int pid);
+int  sys_wait_status(int pid);
 void sys_sleep(uint32_t ms);
 uint32_t sys_sbrk(int32_t increment);
 int  process_is_alive(int pid);

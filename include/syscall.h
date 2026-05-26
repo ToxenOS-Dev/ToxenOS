@@ -77,6 +77,10 @@ int  sys_getpid();
 #define SYS_IS_ADMIN       63  // returns 1 if current process is elevated
 #define SYS_SET_ADMIN      64  // trusted: set is_admin=1 without prompt (login use only)
 #define SYS_PBKDF2         65  // PBKDF2-SHA256 password hashing via mbedTLS
+#define SYS_GETUID         75  // return current process uid
+#define SYS_SETUID         76  // set current process uid (login only)
+#define SYS_WHOAMI         77  // copy username string to buf
+#define SYS_WAIT_STATUS    78  // wait(pid) and return exit code
 #define SYS_INSTALL_DRIVE  73  // block-copy TxFS from drive 0 to target drive
 #define SYS_INSTALL_CHUNK  74  // copy one chunk (for progress reporting)
 #define SYS_DISK_SECTORS   70  // get total sectors for a drive

@@ -26,6 +26,10 @@ static inline int   str_starts(const char* s, const char* p)   { return tox_star
 static inline void  str_cat(char* d, const char* s)            { tox_strcat(d, s); }
 
 
+// Forward declarations
+static void run_command(char* input);
+static void run_sh_script(const char* path);
+
 // Arrow key escape codes (sent by keyboard driver)
 #define KEY_UP    0x01
 #define KEY_DOWN  0x02
@@ -176,6 +180,18 @@ static void shell_print_int(int n) {
     if (!n) { buf[i--] = '0'; }
     while (n) { buf[i--] = '0' + n % 10; n /= 10; }
     print(buf + i + 1);
+}
+// Print KB value as "X.X MB" (>=1MB) or "X KB"
+static void print_size_kb(uint32_t kb) {
+    if (kb >= 1024) {
+        shell_print_int((int)(kb / 1024));
+        print(".");
+        shell_print_int((int)((kb % 1024) * 10 / 1024));
+        print(" MB");
+    } else {
+        shell_print_int((int)kb);
+        print(" KB");
+    }
 }
 
 // ── Shell-local environment table ────────────────────────────────────────────
@@ -397,11 +413,12 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
     int is_keyword = str_equal(cmd,"echo")||str_equal(cmd,"tox")||str_equal(cmd,"reg")||
                      str_equal(cmd,"kill")||str_equal(cmd,"hostname")||str_equal(cmd,"adduser")||
                      str_equal(cmd,"passwd")||str_equal(cmd,"usermod")||str_equal(cmd,"sysctl")||
-                     str_equal(cmd,"where")||str_equal(cmd,"date")||str_equal(cmd,"free")||
+                     str_equal(cmd,"where")||str_equal(cmd,"touch")||str_equal(cmd,"whoami")||str_equal(cmd,"date")||str_equal(cmd,"free")||
                      str_equal(cmd,"df")||str_equal(cmd,"wc")||str_equal(cmd,"syslog")||
                      str_equal(cmd,"trash")||str_equal(cmd,"help")||str_equal(cmd,"uname")||
                      str_equal(cmd,"proc")||str_equal(cmd,"top")||str_equal(cmd,"bmsg")||
-                     str_equal(cmd,"ts")||str_equal(cmd,"edit")||str_equal(cmd,"run");
+                     str_equal(cmd,"ts")||str_equal(cmd,"edit")||str_equal(cmd,"run")||
+                     str_equal(cmd,"chmod");
     if (args && args[0]) {
         // Only prepend cwd for args that look like relative file paths
         // Don't prepend for IPs (start with digit), hostnames with dots,
@@ -681,6 +698,14 @@ static void run_command(char* input) {
             if (pid >= 0) sys_wait(pid);
             return;
         }
+        // .sh script: run inline
+        if (clen > 3 && cmd_buf[clen-3] == '.' && cmd_buf[clen-2] == 's' && cmd_buf[clen-1] == 'h') {
+            static char sh_path[256];
+            if (cmd_buf[0] == '/') str_copy(sh_path, cmd_buf);
+            else { str_copy(sh_path, cwd); str_cat(sh_path, "/"); str_cat(sh_path, cmd_buf); }
+            run_sh_script(sh_path);
+            return;
+        }
     }
 
     if (str_equal(cmd_buf,"run")) {
@@ -699,6 +724,8 @@ static void run_command(char* input) {
         }
         int flen = str_len(run_file);
         int is_ts = flen > 3 && run_file[flen-3]=='.' && run_file[flen-2]=='t' && run_file[flen-1]=='s';
+        int is_sh = flen > 3 && run_file[flen-3]=='.' && run_file[flen-2]=='s' && run_file[flen-1]=='h';
+        if (is_sh) { run_sh_script(run_path); return; }
         int pid;
         if (is_ts) {
             int tty = sys_my_tty(); if (tty < 0) tty = 0;
@@ -818,7 +845,393 @@ static void run_command(char* input) {
         return;
     }
 
+    if (str_equal(cmd_buf,"free")) {
+        char _b[32];
+        uint32_t total=0, free_kb=0;
+        if (tox_sysctl("mem.total",_b,sizeof(_b))>=0){uint32_t v=0;for(int i=0;_b[i]>='0'&&_b[i]<='9';i++)v=v*10+(uint32_t)(_b[i]-'0');total=v;}
+        if (tox_sysctl("mem.free", _b,sizeof(_b))>=0){uint32_t v=0;for(int i=0;_b[i]>='0'&&_b[i]<='9';i++)v=v*10+(uint32_t)(_b[i]-'0');free_kb=v;}
+        uint32_t used = total - free_kb;
+        set_color(0x0B); print("         total        used        free\n"); set_color(0x07);
+        print("Mem:     ");
+        set_color(0x0F); print_size_kb(total);  print("      ");
+        set_color(0x0C); print_size_kb(used);   print("      ");
+        set_color(0x0A); print_size_kb(free_kb); print("\n"); set_color(0x07);
+        return;
+    }
+    if (str_equal(cmd_buf,"df")) {
+        char _b[32];
+        uint32_t total=0, free_kb=0;
+        if (tox_sysctl("disk.total",_b,sizeof(_b))>=0){uint32_t v=0;for(int i=0;_b[i]>='0'&&_b[i]<='9';i++)v=v*10+(uint32_t)(_b[i]-'0');total=v;}
+        if (tox_sysctl("disk.free", _b,sizeof(_b))>=0){uint32_t v=0;for(int i=0;_b[i]>='0'&&_b[i]<='9';i++)v=v*10+(uint32_t)(_b[i]-'0');free_kb=v;}
+        uint32_t used = total - free_kb;
+        uint32_t pct  = total ? (used * 100 / total) : 0;
+        set_color(0x0B); print("Filesystem    Size       Used       Avail    Use%\n"); set_color(0x07);
+        print("TxFS        ");
+        set_color(0x0F); print_size_kb(total);   print("     ");
+        set_color(0x0C); print_size_kb(used);    print("     ");
+        set_color(0x0A); print_size_kb(free_kb); print("     "); set_color(0x07);
+        shell_print_int((int)pct); print("%\n");
+        return;
+    }
+    if (str_equal(cmd_buf,"chmod")) {
+        if (!args || !args[0]) {
+            set_color(0x0C); print("Usage: chmod <mode> <path>\n"); set_color(0x07); return;
+        }
+        // Parse octal mode (e.g. 755, 644)
+        uint32_t mode = 0;
+        int ai = 0;
+        while (args[ai] >= '0' && args[ai] <= '7') { mode = mode * 8 + (uint32_t)(args[ai++] - '0'); }
+        while (args[ai] == ' ') ai++;
+        const char* cpath = args + ai;
+        if (!cpath[0]) { set_color(0x0C); print("chmod: missing path\n"); set_color(0x07); return; }
+        static char chmod_path[256];
+        if (cpath[0] == '/') str_copy(chmod_path, cpath);
+        else { str_copy(chmod_path, cwd); str_cat(chmod_path, "/"); str_cat(chmod_path, cpath); }
+        if (tox_chmod(chmod_path, mode) < 0) {
+            set_color(0x0C); print("chmod: failed: "); print(chmod_path); print("\n"); set_color(0x07);
+        }
+        return;
+    }
+
+    if (str_equal(cmd_buf,"whoami")) {
+        char wbuf[64];
+        if (tox_whoami(wbuf, sizeof(wbuf)) > 0) { print(wbuf); print("\n"); }
+        else { print("root\n"); }
+        return;
+    }
+    if (str_equal(cmd_buf,"touch")) {
+        if (!args || !args[0]) { set_color(0x0C); print("Usage: touch <path>\n"); set_color(0x07); return; }
+        static char touch_path[256];
+        if (args[0] == '/') str_copy(touch_path, args);
+        else { str_copy(touch_path, cwd); str_cat(touch_path, "/"); str_cat(touch_path, args); }
+        int tfd = tox_open(touch_path, 0x2 | 0x4);  // WRITE | CREATE
+        if (tfd < 0) { set_color(0x0C); print("touch: failed: "); print(touch_path); print("\n"); set_color(0x07); }
+        else tox_close(tfd);
+        return;
+    }
+    if (str_equal(cmd_buf,"where")) {
+        if (!args || !args[0]) { set_color(0x0C); print("Usage: where <command>\n"); set_color(0x07); return; }
+        char where_out[256];
+        if (find_in_path(args, where_out)) { print(where_out); print("\n"); }
+        else { set_color(0x0C); print("where: not found: "); print(args); print("\n"); set_color(0x07); }
+        return;
+    }
+
     run_pipeline(input);
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+// ── Shell scripting ───────────────────────────────────────────────────────────
+
+#define SH_MAX_LINES  256
+#define SH_LINE_MAX   256
+#define SH_VAR_MAX    32
+#define SH_LOOP_STACK 16
+
+// Lines are heap-allocated inside run_sh_script; these pointers share that buffer.
+static char* sh_lines[SH_MAX_LINES];
+static int   sh_nlines;
+
+// Trim leading/trailing spaces in place; returns pointer past leading spaces.
+static char* sh_trim(char* s) {
+    while (*s == ' ' || *s == '\t') s++;
+    int l = str_len(s);
+    while (l > 0 && (s[l-1]==' '||s[l-1]=='\t')) { s[--l]=0; }
+    return s;
+}
+
+// Check if line starts with keyword (word boundary).
+static int sh_kw(const char* line, const char* kw) {
+    int kl = str_len(kw);
+    if (str_len(line) < kl) return 0;
+    for (int i=0;i<kl;i++) if(line[i]!=kw[i]) return 0;
+    char after = line[kl];
+    return after==0||after==' '||after=='\t'||after==';';
+}
+
+// Expand $VAR references in src → dst.
+static void sh_expand(const char* src, char* dst, int max) {
+    int di=0;
+    for (int i=0; src[i] && di<max-1; ) {
+        if (src[i]=='$' && (src[i+1]=='_'||(src[i+1]>='a'&&src[i+1]<='z')||(src[i+1]>='A'&&src[i+1]<='Z'))) {
+            i++; char vname[64]; int vi=0;
+            while (src[i] && (src[i]=='_'||(src[i]>='a'&&src[i]<='z')||(src[i]>='A'&&src[i]<='Z')||(src[i]>='0'&&src[i]<='9')) && vi<63)
+                vname[vi++]=src[i++];
+            vname[vi]=0;
+            char vval[256]; vval[0]=0;
+            tox_getenv(vname, vval, sizeof(vval));
+            for (int j=0;vval[j]&&di<max-1;j++) dst[di++]=vval[j];
+        } else {
+            dst[di++]=src[i++];
+        }
+    }
+    dst[di]=0;
+}
+
+// Run one expanded line as a shell command; return exit code (0=ok).
+static int sh_eval(char* line) {
+    char exp[SH_LINE_MAX]; sh_expand(line, exp, SH_LINE_MAX);
+    char* l = sh_trim(exp);
+    if (!l[0] || l[0]=='#') return 0;
+    // VAR=value assignment?
+    {
+        int ei=-1;
+        for (int i=0;l[i]&&l[i]!=' ';i++) if(l[i]=='='){ei=i;break;}
+        if (ei>0) {
+            char vn[64]; int vi=0;
+            int valid=1;
+            for (int i=0;i<ei;i++){
+                if(!((l[i]>='a'&&l[i]<='z')||(l[i]>='A'&&l[i]<='Z')||(l[i]>='0'&&l[i]<='9')||l[i]=='_'))
+                    {valid=0;break;}
+                vn[vi++]=l[i];
+            }
+            vn[vi]=0;
+            if (valid && vi>0) {
+                tox_setenv(vn, l+ei+1);
+                return 0;
+            }
+        }
+    }
+    // Run as shell command
+    run_command(l);
+    return 0;
+}
+
+// Run one line as condition command; return 0=true, nonzero=false.
+static int sh_eval_cond(char* line) {
+    char exp[SH_LINE_MAX]; sh_expand(line, exp, SH_LINE_MAX);
+    char* l = sh_trim(exp);
+    if (!l[0]) return 1;
+
+    // Built-in test: [ ... ] or test ...
+    int is_bracket = (l[0]=='['&&l[str_len(l)-1]==']');
+    int is_test    = (l[0]=='t'&&l[1]=='e'&&l[2]=='s'&&l[3]=='t'&&(l[4]==' '||l[4]==0));
+    if (is_bracket || is_test) {
+        // Extract inner content
+        char inner[SH_LINE_MAX];
+        if (is_bracket) {
+            int il=str_len(l); str_copy(inner,l+1); inner[il-2]=0;
+        } else {
+            str_copy(inner, l+5);
+        }
+        char* s = sh_trim(inner);
+        // -f path
+        if (s[0]=='-'&&s[1]=='f'&&s[2]==' ') return sys_stat(sh_trim(s+3))>=0?0:1;
+        // -d path
+        if (s[0]=='-'&&s[1]=='d'&&s[2]==' ') return sys_isdir(sh_trim(s+3))>0?0:1;
+        // -e path
+        if (s[0]=='-'&&s[1]=='e'&&s[2]==' ') return sys_stat(sh_trim(s+3))>=0?0:1;
+        // -z string (zero length)
+        if (s[0]=='-'&&s[1]=='z'&&s[2]==' ') { char ex[SH_LINE_MAX];sh_expand(sh_trim(s+3),ex,SH_LINE_MAX);return ex[0]?1:0; }
+        // -n string (non-zero length)
+        if (s[0]=='-'&&s[1]=='n'&&s[2]==' ') { char ex[SH_LINE_MAX];sh_expand(sh_trim(s+3),ex,SH_LINE_MAX);return ex[0]?0:1; }
+        // "A" = "B" or "A" == "B"
+        {
+            // Find = or !=
+            int si=0;
+            char lhs[128]; int li=0;
+            // strip quotes
+            if(s[si]=='"') si++;
+            while(s[si]&&s[si]!='"'&&s[si]!=' '&&li<127)lhs[li++]=s[si++];
+            lhs[li]=0;
+            if(s[si]=='"') si++;
+            while(s[si]==' ')si++;
+            int neq=0;
+            if(s[si]=='!'&&s[si+1]=='='){neq=1;si+=2;}
+            else if(s[si]=='='&&s[si+1]=='='){si+=2;}
+            else if(s[si]=='='){si++;}
+            else return 1;
+            while(s[si]==' ')si++;
+            char rhs[128]; int ri=0;
+            if(s[si]=='"')si++;
+            while(s[si]&&s[si]!='"'&&ri<127)rhs[ri++]=s[si++];
+            rhs[ri]=0;
+            int eq=str_equal(lhs,rhs);
+            return neq?!eq:eq?0:1;
+        }
+    }
+
+    // Run as command and get exit code
+    char path[256];
+    if (!find_in_path(l, path)) return 1;
+    int tty = sys_my_tty(); if(tty<0)tty=0;
+    int pid = sys_spawn_tty_args(path, tty, "");
+    if (pid < 0) return 1;
+    return tox_wait_status(pid);
+}
+
+// Find next occurrence of keyword kw at given nesting level starting at ip+1.
+// Handles nested if/for/while. Returns line index or -1.
+static int sh_find_kw(int ip, const char* open_kw, const char* close_kw) {
+    int depth=1;
+    for (int i=ip+1;i<sh_nlines;i++) {
+        char* l=sh_trim(sh_lines[i]);
+        if(sh_kw(l,open_kw)) depth++;
+        if(sh_kw(l,close_kw)){depth--;if(!depth)return i;}
+        // also count elif/else at depth 1 for if scanning
+    }
+    return -1;
+}
+
+// Find elif/else/fi at same depth starting after ip.
+static int sh_find_branch(int ip) {
+    int depth=0;
+    for(int i=ip+1;i<sh_nlines;i++){
+        char* l=sh_trim(sh_lines[i]);
+        if(sh_kw(l,"if")||sh_kw(l,"for")||sh_kw(l,"while"))depth++;
+        if(sh_kw(l,"fi")||sh_kw(l,"done"))depth--;
+        if(depth==0&&(sh_kw(l,"elif")||sh_kw(l,"else")||sh_kw(l,"fi")))return i;
+    }
+    return -1;
+}
+
+// Extract command from "if CMD; then" or "while CMD; do"
+static void sh_extract_cond(const char* after_kw, char* out) {
+    // skip leading space
+    const char* p=after_kw; while(*p==' ')p++;
+    int oi=0;
+    // copy until '; then', '; do', or end of line
+    while(*p&&oi<SH_LINE_MAX-1){
+        if(*p==';'){break;}
+        out[oi++]=*p++;
+    }
+    out[oi]=0;
+    // strip trailing space
+    while(oi>0&&(out[oi-1]==' '||out[oi-1]=='\t'))out[--oi]=0;
+}
+
+// Main script executor. Returns last exit code.
+static int sh_run(int start, int end) {
+    int ip=start;
+    while(ip<end){
+        char* raw=sh_lines[ip];
+        char exp[SH_LINE_MAX]; sh_expand(raw,exp,SH_LINE_MAX);
+        char* l=sh_trim(exp);
+
+        if(!l[0]||l[0]=='#'){ip++;continue;}
+
+        // if
+        if(sh_kw(l,"if")){
+            char cond[SH_LINE_MAX];
+            sh_extract_cond(l+2,cond);
+            int res=sh_eval_cond(cond);
+            int fi_line=sh_find_kw(ip,"if","fi");
+            if(fi_line<0){ip++;continue;}
+            if(res==0){
+                // true: execute body until elif/else/fi
+                int branch=sh_find_branch(ip);
+                if(branch<0)branch=fi_line;
+                sh_run(ip+1,branch);
+                ip=fi_line+1;
+            } else {
+                // false: find elif/else/fi
+                int branch=sh_find_branch(ip);
+                if(branch<0){ip=fi_line+1;continue;}
+                char* bl=sh_trim(sh_lines[branch]);
+                if(sh_kw(bl,"else")){
+                    // execute else body
+                    int fi2=sh_find_kw(branch,"if","fi");
+                    if(fi2<0)fi2=fi_line;
+                    sh_run(branch+1,fi2);
+                    ip=fi2+1;
+                } else if(sh_kw(bl,"elif")){
+                    // treat elif as a new if at that line
+                    // rewrite lines[branch] to "if ..." and recurse
+                    char save[SH_LINE_MAX]; str_copy(save,sh_lines[branch]);
+                    sh_lines[branch][0]='i'; sh_lines[branch][1]='f';
+                    sh_lines[branch][2]=' ';
+                    str_copy(sh_lines[branch]+3, sh_trim(save)+4); // skip "elif"
+                    ip=branch;
+                } else {
+                    // fi
+                    ip=fi_line+1;
+                }
+            }
+            continue;
+        }
+
+        // for VAR in LIST; do ... done
+        if(sh_kw(l,"for")){
+            char rest[SH_LINE_MAX]; str_copy(rest,l+3);
+            char* r=sh_trim(rest);
+            // parse VAR
+            char var[64]; int vi=0;
+            while(*r&&*r!=' '&&vi<63)var[vi++]=*r++;
+            var[vi]=0; while(*r==' ')r++;
+            // skip "in"
+            if(r[0]=='i'&&r[1]=='n'&&r[2]==' ')r+=3;
+            // skip to end of list (stop at ';')
+            char list[SH_LINE_MAX]; int li=0;
+            while(*r&&*r!=';'&&li<SH_LINE_MAX-1)list[li++]=*r++;
+            list[li]=0;
+            int done_line=sh_find_kw(ip,"for","done");
+            if(done_line<0){ip++;continue;}
+            // iterate over whitespace-separated tokens
+            const char* p=list;
+            while(*p){
+                while(*p==' ')p++;
+                if(!*p)break;
+                char item[128]; int ii=0;
+                while(*p&&*p!=' '&&ii<127)item[ii++]=*p++;
+                item[ii]=0;
+                tox_setenv(var,item);
+                sh_run(ip+1,done_line);
+            }
+            ip=done_line+1;
+            continue;
+        }
+
+        // while COND; do ... done
+        if(sh_kw(l,"while")){
+            char cond[SH_LINE_MAX];
+            sh_extract_cond(l+5,cond);
+            int done_line=sh_find_kw(ip,"while","done");
+            if(done_line<0){ip++;continue;}
+            while(sh_eval_cond(cond)==0)
+                sh_run(ip+1,done_line);
+            ip=done_line+1;
+            continue;
+        }
+
+        // fi / done / else / elif — skip (handled by if/for/while above)
+        if(sh_kw(l,"fi")||sh_kw(l,"done")||sh_kw(l,"else")||sh_kw(l,"elif")){ip++;continue;}
+
+        // exit
+        if(sh_kw(l,"exit")){
+            tox_exit();
+        }
+
+        // Plain command
+        sh_eval(raw);
+        ip++;
+    }
+    return 0;
+}
+
+static void run_sh_script(const char* path) {
+    int sz = sys_stat(path);
+    if (sz <= 0) { set_color(0x0C); print("sh: cannot read: "); print(path); print("\n"); set_color(0x07); return; }
+
+    char* buf = malloc((uint32_t)sz+2);
+    if (!buf) { set_color(0x0C); print("sh: out of memory\n"); set_color(0x07); return; }
+    int fd = sys_open(path, 0x1);
+    int n = tox_read(fd, (uint8_t*)buf, (uint32_t)sz);
+    tox_close(fd); if(n<0)n=0; buf[n]='\n'; buf[n+1]=0;
+
+    // Split in-place: replace \r\n with \0, store pointers into buf
+    sh_nlines=0;
+    int i=0;
+    if(buf[0]=='#'&&buf[1]=='!'){while(buf[i]&&buf[i]!='\n')i++;i++;} // skip shebang
+    sh_lines[sh_nlines=0] = buf+i;
+    while(buf[i] && sh_nlines < SH_MAX_LINES-1) {
+        if(buf[i]=='\r'){buf[i]=0;i++;continue;}
+        if(buf[i]=='\n'){buf[i]=0;i++;sh_lines[++sh_nlines]=buf+i;continue;}
+        i++;
+    }
+    if(buf[i]==0&&sh_nlines<SH_MAX_LINES) sh_nlines++;
+    sh_run(0, sh_nlines);
+    free(buf);
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────

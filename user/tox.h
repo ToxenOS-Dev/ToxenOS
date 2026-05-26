@@ -89,6 +89,10 @@
 #define SYS_IS_ADMIN      63   // returns 1 if current process is elevated
 #define SYS_SET_ADMIN     64   // trusted: set is_admin flag (login use only)
 #define SYS_PBKDF2        65   // PBKDF2-SHA256 password hashing
+#define SYS_GETUID        75   // return current process uid
+#define SYS_SETUID        76   // set current process uid (login only)
+#define SYS_WHOAMI        77   // copy username string to buf
+#define SYS_WAIT_STATUS   78   // wait(pid) and return exit code
 
 // ── Output ────────────────────────────────────────────────────────────────────
 static inline void print(const char* s)   { SYSCALL1(SYS_PRINT, s); }
@@ -421,6 +425,14 @@ static inline int tox_is_admin(void)
 // Set admin flag directly — only call from trusted login code
 static inline void tox_set_admin(int val)
     { SYSCALL1(SYS_SET_ADMIN, val); }
+static inline uint32_t tox_getuid(void)
+    { return (uint32_t)SYSCALL0(SYS_GETUID); }
+static inline void tox_setuid(uint32_t uid)
+    { SYSCALL1(SYS_SETUID, uid); }
+static inline int tox_whoami(char* buf, uint32_t maxlen)
+    { return SYSCALL2(SYS_WHOAMI, buf, maxlen); }
+static inline int tox_wait_status(int pid)
+    { return (int)SYSCALL1(SYS_WAIT_STATUS, pid); }
 
 // ── Disk access (for installer) ───────────────────────────────────────────────
 #define SYS_INSTALL_DRIVE  73

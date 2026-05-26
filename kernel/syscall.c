@@ -740,12 +740,40 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return 19;
         }
 
+        case SYS_GETUID:   // 75
+            return process_current()->uid;
+
+        case SYS_SETUID:   // 76
+            process_current()->uid = (uint32_t)ebx;
+            return 0;
+
+        case SYS_WAIT_STATUS:  // 78
+        {
+            extern int sys_wait_status(int pid);
+            return (uint32_t)sys_wait_status((int)ebx);
+        }
+
+        case SYS_WHOAMI:
+        {
+            if (!ebx || !ecx) return (uint32_t)-1;
+            CHECK_USER_PTR(ebx, ecx);
+            char ubuf[64];
+            if (env_get("USER", ubuf, sizeof(ubuf)) < 0)
+                ubuf[0] = 0;
+            char* dst = (char*)ebx;
+            uint32_t max = (uint32_t)ecx;
+            uint32_t i = 0;
+            while (ubuf[i] && i < max - 1) { dst[i] = ubuf[i]; i++; }
+            dst[i] = 0;
+            return (uint32_t)i;
+        }
+
         default:
             return (uint32_t)-1;
     }
 }
 
-void sys_exit(int code)         { (void)code; process_exit(); }
+void sys_exit(int code)         { process_current()->exit_code = code; process_exit(); }
 void sys_print(const char* str) { print(str); }
 char sys_getchar()              { return keyboard_getchar(); }
 int  sys_getpid()               { return process_current()->pid; }

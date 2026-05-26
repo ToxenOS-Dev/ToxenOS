@@ -618,6 +618,21 @@ void sys_wait(int pid)
     scheduler();
 }
 
+// Wait for pid and return its exit code (-1 if pid not found).
+int sys_wait_status(int pid)
+{
+    // Find the process first to get its slot
+    process_t* target = process_get_by_pid(pid);
+    if (!target) return -1;
+
+    sys_wait(pid);
+
+    // After wake-up the slot still holds the DEAD process (until reused).
+    // Re-read the exit code from it.
+    target = process_get_by_pid(pid);   // might be null if already recycled
+    return target ? target->exit_code : 0;
+}
+
 // Sleep for `ms` milliseconds. Timer runs at 100Hz so 1 tick = 10ms.
 void sys_sleep(uint32_t ms)
 {

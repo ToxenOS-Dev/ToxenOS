@@ -28,7 +28,7 @@ static inline void  str_cat(char* d, const char* s)            { tox_strcat(d, s
 
 // Forward declarations
 static void run_command(char* input);
-static void run_sh_script(const char* path);
+static void run_sh_script(const char* path, const char* args_str);
 static void sh_expand(const char* src, char* dst, int max);
 
 // Arrow key escape codes (sent by keyboard driver)
@@ -99,6 +99,80 @@ static void alias_remove(const char* name) {
             alias_count--; return;
         }
     }
+}
+
+// ── Alias persistence ──────────────────────────────────────────────────────────
+#define ALIAS_FILE    "/C:/etc/aliases"
+#define HISTORY_FILE  "/C:/etc/history"
+
+static void alias_save(void) {
+    int fd = sys_open(ALIAS_FILE, 0x6);  // WRITE|CREATE|TRUNC
+    if (fd < 0) return;
+    for (int i = 0; i < alias_count; i++) {
+        tox_write(fd, (const uint8_t*)alias_keys[i], (uint32_t)str_len(alias_keys[i]));
+        tox_write(fd, (const uint8_t*)"=", 1);
+        tox_write(fd, (const uint8_t*)alias_vals[i], (uint32_t)str_len(alias_vals[i]));
+        tox_write(fd, (const uint8_t*)"\n", 1);
+    }
+    sys_close(fd);
+}
+static void alias_load(void) {
+    int sz = sys_stat(ALIAS_FILE);
+    if (sz <= 0) return;
+    char* buf = malloc((uint32_t)sz+1);
+    if (!buf) return;
+    int fd = sys_open(ALIAS_FILE, 0x1);
+    int n = tox_read(fd, (uint8_t*)buf, (uint32_t)sz);
+    sys_close(fd); if(n<0)n=0; buf[n]=0;
+    char* p = buf;
+    while (*p) {
+        char name[ALIAS_KEY_MAX], val[ALIAS_VAL_MAX];
+        int ni=0, vi=0;
+        while(*p && *p!='=' && *p!='\n' && ni<ALIAS_KEY_MAX-1) name[ni++]=*p++;
+        name[ni]=0;
+        if (*p=='=') { p++; while(*p && *p!='\n' && vi<ALIAS_VAL_MAX-1) val[vi++]=*p++; }
+        val[vi]=0;
+        if (*p=='\n') p++;
+        if (ni>0) alias_set(name, val);
+    }
+    free(buf);
+}
+
+static void history_append(const char* cmd) {
+    if (!cmd[0]) return;
+    int fd = sys_open(HISTORY_FILE, 0x2|0x4|0x8);  // WRITE|CREATE|APPEND
+    if (fd < 0) return;
+    tox_write(fd, (const uint8_t*)cmd, (uint32_t)str_len(cmd));
+    tox_write(fd, (const uint8_t*)"\n", 1);
+    sys_close(fd);
+}
+static void history_load(void) {
+    int sz = sys_stat(HISTORY_FILE);
+    if (sz <= 0) return;
+    char* buf = malloc((uint32_t)sz+1);
+    if (!buf) return;
+    int fd = sys_open(HISTORY_FILE, 0x1);
+    int n = tox_read(fd, (uint8_t*)buf, (uint32_t)sz);
+    sys_close(fd); if(n<0)n=0; buf[n]=0;
+    // Collect up to HISTORY_MAX lines from the file
+    static char hlines[HISTORY_MAX][INPUT_MAX];
+    int hcount = 0;
+    char* p = buf;
+    while (*p) {
+        char line[INPUT_MAX]; int li=0;
+        while(*p && *p!='\n' && li<INPUT_MAX-1) line[li++]=*p++;
+        if (*p=='\n') p++;
+        line[li]=0;
+        if (li > 0) {
+            if (hcount < HISTORY_MAX) str_copy(hlines[hcount++], line);
+            else {
+                for (int i=0;i<HISTORY_MAX-1;i++) str_copy(hlines[i],hlines[i+1]);
+                str_copy(hlines[HISTORY_MAX-1], line);
+            }
+        }
+    }
+    free(buf);
+    for (int i=0;i<hcount;i++) history_push(hlines[i]);
 }
 
 // ── Wildcard/glob ─────────────────────────────────────────────────────────────
@@ -711,7 +785,7 @@ static void run_command(char* input) {
             static char sh_path[256];
             if (cmd_buf[0] == '/') str_copy(sh_path, cmd_buf);
             else { str_copy(sh_path, cwd); str_cat(sh_path, "/"); str_cat(sh_path, cmd_buf); }
-            run_sh_script(sh_path);
+            run_sh_script(sh_path, args);
             return;
         }
     }
@@ -733,7 +807,7 @@ static void run_command(char* input) {
         int flen = str_len(run_file);
         int is_ts = flen > 3 && run_file[flen-3]=='.' && run_file[flen-2]=='t' && run_file[flen-1]=='s';
         int is_sh = flen > 3 && run_file[flen-3]=='.' && run_file[flen-2]=='s' && run_file[flen-1]=='h';
-        if (is_sh) { run_sh_script(run_path); return; }
+        if (is_sh) { run_sh_script(run_path, run_rest); return; }
         int pid;
         if (is_ts) {
             int tty = sys_my_tty(); if (tty < 0) tty = 0;
@@ -772,10 +846,11 @@ static void run_command(char* input) {
         name[ni] = 0;
         const char* val = (args[ni] == '=') ? args+ni+1 : "";
         alias_set(name, val);
+        alias_save();
         return;
     }
     if (str_equal(cmd_buf,"unalias")) {
-        if (args && args[0]) alias_remove(args);
+        if (args && args[0]) { alias_remove(args); alias_save(); }
         return;
     }
     if (str_equal(cmd_buf,"source") || (cmd_buf[0]=='.' && !cmd_buf[1])) {
@@ -936,6 +1011,15 @@ static void run_command(char* input) {
 #define SH_LINE_MAX   256
 #define SH_VAR_MAX    32
 #define SH_LOOP_STACK 16
+#define SH_POS_MAX    10   // $0-$9
+
+// Positional parameters: sh_pos[0]=$0 (script name), sh_pos[1]=$1, ...
+static char sh_pos[SH_POS_MAX][128];
+static int  sh_argc = 0;
+
+// Set by 'exit N' inside a script — propagates up through sh_run calls
+static int sh_exit_requested = 0;
+static int sh_exit_code = 0;
 
 // Lines are heap-allocated inside run_sh_script; these pointers share that buffer.
 static char* sh_lines[SH_MAX_LINES];
@@ -958,7 +1042,7 @@ static int sh_kw(const char* line, const char* kw) {
     return after==0||after==' '||after=='\t'||after==';';
 }
 
-// Expand $VAR and $? references in src → dst.
+// Expand $VAR, $?, $0-$9, $#, $@, $* references in src → dst.
 static void sh_expand(const char* src, char* dst, int max) {
     int di=0;
     for (int i=0; src[i] && di<max-1; ) {
@@ -972,6 +1056,21 @@ static void sh_expand(const char* src, char* dst, int max) {
                     if (v<0) { if(di<max-1) dst[di++]='-'; v=-v; }
                     while (v>0&&ti<11) { tmp[ti++]='0'+(v%10); v/=10; }
                     while (ti>0&&di<max-1) dst[di++]=tmp[--ti];
+                }
+            } else if (src[i+1]>='0' && src[i+1]<='9') {
+                int n = src[i+1]-'0'; i+=2;
+                const char* pv = (n <= sh_argc) ? sh_pos[n] : "";
+                for (int j=0;pv[j]&&di<max-1;j++) dst[di++]=pv[j];
+            } else if (src[i+1]=='#') {
+                i+=2;
+                int v=sh_argc;
+                if(v==0){if(di<max-1)dst[di++]='0';}
+                else{char tmp[12];int ti=0;while(v>0&&ti<11){tmp[ti++]='0'+(v%10);v/=10;}while(ti>0&&di<max-1)dst[di++]=tmp[--ti];}
+            } else if (src[i+1]=='@' || src[i+1]=='*') {
+                i+=2;
+                for(int a=1;a<=sh_argc;a++){
+                    if(a>1&&di<max-1) dst[di++]=' ';
+                    for(int j=0;sh_pos[a][j]&&di<max-1;j++) dst[di++]=sh_pos[a][j];
                 }
             } else if (src[i+1]=='_'||(src[i+1]>='a'&&src[i+1]<='z')||(src[i+1]>='A'&&src[i+1]<='Z')) {
                 i++; char vname[64]; int vi=0;
@@ -1219,21 +1318,48 @@ static int sh_run(int start, int end) {
         // fi / done / else / elif — skip (handled by if/for/while above)
         if(sh_kw(l,"fi")||sh_kw(l,"done")||sh_kw(l,"else")||sh_kw(l,"elif")){ip++;continue;}
 
-        // exit
+        // exit [N]
         if(sh_kw(l,"exit")){
-            tox_exit();
+            char* rest=sh_trim(l+4);
+            sh_exit_code=0;
+            while(*rest>='0'&&*rest<='9'){sh_exit_code=sh_exit_code*10+(*rest++-'0');}
+            last_exit=sh_exit_code;
+            sh_exit_requested=1;
+            return sh_exit_code;
         }
 
         // Plain command
         sh_eval(raw);
         ip++;
+        if(sh_exit_requested) return sh_exit_code;
     }
     return 0;
 }
 
-static void run_sh_script(const char* path) {
+static void run_sh_script(const char* path, const char* args_str) {
     int sz = sys_stat(path);
     if (sz <= 0) { set_color(0x0C); print("sh: cannot read: "); print(path); print("\n"); set_color(0x07); return; }
+
+    // Save and set positional parameters
+    char save_pos[SH_POS_MAX][128];
+    int  save_argc = sh_argc;
+    for(int j=0;j<SH_POS_MAX;j++) str_copy(save_pos[j], sh_pos[j]);
+
+    str_copy(sh_pos[0], path);
+    sh_argc = 0;
+    if (args_str) {
+        const char* ap = args_str;
+        while (*ap && sh_argc < SH_POS_MAX-1) {
+            while (*ap==' ') ap++;
+            if (!*ap) break;
+            sh_argc++;
+            int ai=0;
+            while(*ap&&*ap!=' '&&ai<127) sh_pos[sh_argc][ai++]=*ap++;
+            sh_pos[sh_argc][ai]=0;
+        }
+    }
+
+    sh_exit_requested = 0;
 
     char* buf = malloc((uint32_t)sz+2);
     if (!buf) { set_color(0x0C); print("sh: out of memory\n"); set_color(0x07); return; }
@@ -1254,11 +1380,18 @@ static void run_sh_script(const char* path) {
     if(buf[i]==0&&sh_nlines<SH_MAX_LINES) sh_nlines++;
     sh_run(0, sh_nlines);
     free(buf);
+
+    // Restore positional parameters
+    sh_argc = save_argc;
+    for(int j=0;j<SH_POS_MAX;j++) str_copy(sh_pos[j], save_pos[j]);
+    sh_exit_requested = 0;
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 void _start() {
+    history_load();
+    alias_load();
     tox_setenv("CWD", cwd);
     char input[INPUT_MAX];
     int  len = 0, cur = 0;
@@ -1297,6 +1430,7 @@ void _start() {
             print("\n");
             input[len] = 0;
             history_push(input);
+            history_append(input);
             history_pos = -1;
             static char exp_cmd[INPUT_MAX * 4];
             sh_expand(input, exp_cmd, sizeof(exp_cmd));

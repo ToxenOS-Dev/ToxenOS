@@ -12,6 +12,7 @@
 #include "../include/idt64.h"
 #include "../include/irq64.h"
 #include "../include/pic.h"
+#include "../include/process64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
@@ -143,7 +144,13 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     out_line("PIC remapped, IRQ0/IRQ1 registered");
 
     __asm__ volatile ("sti");
-    out_line("Interrupts enabled (sti) -- entering idle loop");
+    out_line("Interrupts enabled (sti) -- starting kernel tasks");
+
+    process64_init();
+    process64_start();
+    // Reached only if the scheduler later switches back to the boot
+    // task (e.g. if both demo tasks ever died) — falls into the same
+    // idle loop as before.
 
     for (;;) {
         __asm__ volatile("hlt");

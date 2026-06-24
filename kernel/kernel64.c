@@ -17,6 +17,7 @@
 #include "../include/ring3_test64.h"
 #include "../include/ata64.h"
 #include "../include/txfs64.h"
+#include "../include/exec64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
@@ -27,6 +28,11 @@
 // exclusive (the ring3 test halts forever once it catches the
 // deliberate #UD, so there is no "resume the scheduler afterward").
 // #define RING3_TEST64_RUN 1
+
+// Define to run the Milestone 6 NEX64/ELF64 exec test in place of both
+// of the above -- loads a real compiled program from TxFS64 and runs
+// it in ring3. All three test modes are mutually exclusive.
+// #define EXEC64_TEST_RUN 1
 
 extern void timer64_handler(void);
 extern void keyboard64_handler(void);
@@ -180,7 +186,20 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
         out_line("TxFS64 mount failed (bad magic)");
     }
 
-#ifdef RING3_TEST64_RUN
+#if defined(EXEC64_TEST_RUN)
+    // Path is a literal here on purpose, swapped by hand between
+    // /exec64_test.nex64 (primary), /exec64_test.elf64 (fallback proof),
+    // and /hello.nex (wrong-arch rejection proof) during verification --
+    // see the Milestone 6 plan's test matrix.
+    const char* exec64_test_path = "/exec64_test.nex64";
+    out_line("Loading via exec64...");
+    klog(exec64_test_path);
+    klog("\n");
+    if (exec64_load_and_run(exec64_test_path) < 0)
+        out_line("exec64: load failed -- see above");
+    // unreachable on success: ring3_enter64 ends in iretq, and the
+    // loaded program's own sys64_exit halts forever once it's done.
+#elif defined(RING3_TEST64_RUN)
     out_line("Entering ring3 syscall test (iretq) -- expect sys64_write/sys64_exit next");
     ring3_test64_start();
     // unreachable: ring3_enter64 ends in iretq, and the stub's sys64_exit

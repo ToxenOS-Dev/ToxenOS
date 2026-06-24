@@ -1,7 +1,14 @@
-.PHONY: all user install run disk clean populate kernel64 run64
+.PHONY: all user install run disk clean populate kernel64 run64 user64
 
 # ── Address space layout — must match include/memmap.h ───────────────────────
 USER_ELF_BASE := 0x10000000
+
+# Milestone 6: 64-bit user ELF/NEX64 base. = KERNEL_VIRT_BASE64 +
+# PD_EXEC_IDX*0x200000 (include/nex64.h) -- must stay in sync with that
+# file and with tools/elf2nex64.c's own copy; Make can't evaluate that
+# expression, so the literal is duplicated here, same precedent as
+# USER_ELF_BASE above.
+USER64_ELF_BASE := 0xFFFFFFFF83C00000
 
 # Set PACKAGE_ELF=1 (e.g. `make all PACKAGE_ELF=1`) to also write .elf copies
 # of bundled commands into the TxFS image alongside .nex, for dev/debug use.
@@ -41,6 +48,16 @@ KFLAGS64 := -ffreestanding -fno-stack-protector -fno-pic -fno-pie -m64 \
             -mcmodel=kernel -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
             -fno-asynchronous-unwind-tables \
             -Wall -Wextra -Wno-unused-parameter -MMD -MP -I include
+
+# Milestone 6: 64-bit userspace test program flags -- the 64-bit
+# analogue of UFLAGS above (-m64 plus the same SSE/red-zone-avoidance
+# flags KFLAGS64 already needs for freestanding x86_64 code).
+UFLAGS64 := -ffreestanding -fno-stack-protector -fno-pic -m64 \
+            -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
+            -nostdlib -nostartfiles \
+            -Ttext=$(USER64_ELF_BASE) \
+            -no-pie -static \
+            -Wall -Wextra -Wno-unused-parameter
 
 # ── Kernel object files ───────────────────────────────────────────────────────
 KOBJS := \
@@ -224,12 +241,13 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/ata64.c        -o build/ata64.o
 	gcc $(KFLAGS64) -c kernel/txfs64.c       -o build/txfs64.o
 	gcc $(KFLAGS64) -c kernel/syscall64.c    -o build/syscall64.o
+	gcc $(KFLAGS64) -c kernel/exec64.c       -o build/exec64.o
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
 		build/boot64.o build/isr64.o build/switch64.o build/kernel64.o \
 		build/klog64.o build/idt64.o build/interrupt64.o build/irq64.o \
 		build/timer64.o build/keyboard64.o build/pic64.o build/process64.o \
 		build/tss64.o build/ring3_test64.o build/ring3_test64_asm.o \
-		build/ata64.o build/txfs64.o build/syscall64.o \
+		build/ata64.o build/txfs64.o build/syscall64.o build/exec64.o \
 		build/ring3_syscall_stub64_blob.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin
 	@if command -v grub2-mkrescue >/dev/null 2>&1; then \
@@ -321,7 +339,16 @@ tools/patch_diskboot: tools/patch_diskboot.c
 tools/elf2nex: tools/elf2nex.c
 	gcc -O2 -o tools/elf2nex tools/elf2nex.c
 
-populate: tools/txfs_write tools/patch_diskboot
+# ── Milestone 6: 64-bit user exec test program ───────────────────────────────
+tools/elf2nex64: tools/elf2nex64.c
+	gcc -O2 -o tools/elf2nex64 tools/elf2nex64.c
+
+user64: tools/elf2nex64
+	@mkdir -p build/user64
+	gcc $(UFLAGS64) user64/exec_test.c -o build/user64/exec_test.elf64
+	tools/elf2nex64 build/user64/exec_test.elf64 build/user64/exec_test.nex64
+
+populate: tools/txfs_write tools/patch_diskboot user64
 	dd if=/dev/zero of=build/fs.img bs=4096 count=2048
 	# Bundled commands: .nex is the packaged default. Pass PACKAGE_ELF=1 to
 	# also ship the .elf copies (dev/debug builds only — see note up top).
@@ -347,6 +374,11 @@ populate: tools/txfs_write tools/patch_diskboot
 	fi
 	tools/txfs_write build/fs.img user/system/users /etc/users
 	tools/txfs_write build/fs.img user/system/hello.ts /hello.ts
+	# Milestone 6: 64-bit exec test binaries -- inert to the 32-bit
+	# kernel (just two more files it never looks at), read by
+	# kernel/exec64.c via the same shared disk image.
+	tools/txfs_write build/fs.img build/user64/exec_test.nex64 /exec64_test.nex64
+	tools/txfs_write build/fs.img build/user64/exec_test.elf64 /exec64_test.elf64
 	@tools/txfs_write build/fs.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true
 	@tools/txfs_write build/fs.img /dev/null /etc/.keep 2>/dev/null || true
 	# ── Assemble bootable disk.img (GPT — BIOS + UEFI dual-boot) ────────────────

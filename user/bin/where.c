@@ -37,6 +37,11 @@ void _start() {
         if (tox_stat(full) >= 0) {
             set_color(0x0A); print(full); print("\n"); set_color(0x07); tox_exit();
         }
+        char nexpath[256];
+        tox_strcpy(nexpath, full); tox_strcat(nexpath, ".nex");
+        if (tox_stat(nexpath) >= 0) {
+            set_color(0x0A); print(nexpath); print("\n"); set_color(0x07); tox_exit();
+        }
         tox_strcat(full, ".elf");
         if (tox_stat(full) >= 0) {
             set_color(0x0A); print(full); print("\n"); set_color(0x07); tox_exit();

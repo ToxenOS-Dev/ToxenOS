@@ -50,8 +50,10 @@
 int  ata_init();
 void ata_set_ahci(int use_ahci);        // redirect TxFS I/O through AHCI
 void ata_set_nvme(int use_nvme);        // redirect TxFS I/O through NVMe
+void ata_set_virtio(int v);             // redirect TxFS I/O through VirtIO block
 void ata_set_nvme_ready(int v);         // mark NVMe as probed (for installer drive numbering)
 void ata_set_ahci_ready(int v);         // mark AHCI as probed (for installer drive numbering)
+void ata_set_virtio_ready(int v);       // mark VirtIO as probed
 void ata_set_ramdisk(uint8_t *buf, uint32_t size); // use in-memory buffer for drive 0
 int  ata_has_ramdisk(void);
 

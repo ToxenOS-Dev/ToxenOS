@@ -149,6 +149,7 @@ static uint8_t  hid_c=1; static uint16_t hid_eq=0;
 // Controller base addresses
 static int      xhci_ok=0;
 static uint32_t cap_b=0, op_b=0, rt_b=0, db_b=0;
+static uint8_t  last_cmd_cc=0;
 
 // Keyboard device state
 static uint8_t  kbd_slot=0;
@@ -224,8 +225,9 @@ static int cmd_wait(uint8_t *slot_out){
         if(evt_wait(&p0,&p1,&st,&ct)<0) return -1;
         uint32_t type=(ct>>10)&0x3F;
         if(type==EV_CMD_COMPL){
+            last_cmd_cc=(uint8_t)(st>>24);
             if(slot_out) *slot_out=(uint8_t)(ct>>24);
-            return ((st>>24)==CC_SUCCESS)?0:-1;
+            return (last_cmd_cc==CC_SUCCESS)?0:-1;
         }
     }
     return -1;
@@ -395,6 +397,8 @@ static int setup_controller(pci_device_t *dev){
                 *r|=(1u<<24);  // request OS ownership
                 // Wait up to ~500ms for BIOS to release (5M MMIO reads ~= 500ms)
                 for(int t=0;t<5000000;t++) if(!(*r&(1u<<16))) break;
+                klog((*r&(1u<<16))?"xHCI: BIOS handoff FAILED\n"
+                                  :"xHCI: BIOS handoff OK\n");
                 break;
             }
             uint8_t next=(uint8_t)((*r>>8)&0xFF);
@@ -516,17 +520,21 @@ static int find_keyboard(void){
                 wait_ms(20);
             }
         }
-        if(!(PORT(p)&PORTSC_PED)) continue;  // port still not enabled
+        if(!(PORT(p)&PORTSC_PED)){
+            klog_hex("xHCI: port not enabled after reset PORTSC=",PORT(p));
+            continue;
+        }
 
         uint8_t speed=(uint8_t)((PORT(p)>>10)&0xF);
         if(!speed) speed=3;  // default to HighSpeed if unknown
+        klog_hex("xHCI: port enabled speed=",speed);
         kbd_slot=0;
 
         // ── Enable Slot ───────────────────────────────────────────────────
         cmd_submit(0,0,0,TRB_TYPE(TRB_ENABLE_SLOT));
         uint8_t slot=0;
         if(cmd_wait(&slot)<0||!slot){
-            klog("xHCI: Enable Slot fail\n"); continue; }
+            klog_hex("xHCI: Enable Slot fail CC=",last_cmd_cc); continue; }
 
         // ── Address Device (slot + EP0) ────────────────────────────────────
         uint8_t *ictx=(uint8_t*)&inp_ctx;
@@ -547,17 +555,22 @@ static int find_keyboard(void){
         kbd_slot=slot;
 
         cmd_submit(v2p(&inp_ctx),0,0,TRB_TYPE(TRB_ADDRESS_DEV)|TRB_SLOT(slot));
-        if(cmd_wait(0)<0){ klog("xHCI: Address Device fail\n"); continue; }
+        if(cmd_wait(0)<0){ klog_hex("xHCI: Address Device fail CC=",last_cmd_cc); continue; }
 
         // SET_ADDRESS recovery time: USB 2.0 spec requires ≥2ms
         wait_ms(10);
 
         // ── GET_DESCRIPTOR Device (18 bytes) ──────────────────────────────
         for(int i=0;i<512;i++) ubuf[i]=0;
-        if(ctrl_xfer(0x80,6,0x0100,0,ubuf,18)<0) continue;
+        if(ctrl_xfer(0x80,6,0x0100,0,ubuf,18)<0){
+            klog("xHCI: GET_DESCRIPTOR(device) fail\n"); continue; }
+        klog_hex("xHCI: dev class=",  (uint32_t)ubuf[4]);
+        klog_hex("xHCI: dev subclass=",(uint32_t)ubuf[5]);
+        klog_hex("xHCI: dev proto=",  (uint32_t)ubuf[6]);
 
         // ── GET_DESCRIPTOR Configuration (full, up to 255 bytes) ──────────
-        if(ctrl_xfer(0x80,6,0x0200,0,ubuf,255)<0) continue;
+        if(ctrl_xfer(0x80,6,0x0200,0,ubuf,255)<0){
+            klog("xHCI: GET_DESCRIPTOR(config) fail\n"); continue; }
 
         // ── Parse descriptors: find HID keyboard interface + interrupt IN EP
         uint16_t total=(uint16_t)(ubuf[2]|((uint16_t)ubuf[3]<<8));
@@ -566,22 +579,32 @@ static int find_keyboard(void){
         uint8_t if_num=0, ep_addr=0;
         uint16_t ep_mps=8;
         uint8_t  ep_intv=3;
+        int in_kbd_iface=0;  // true while scanning inside the HID boot kbd interface
 
         uint16_t off=0;
         while(off<total){
             uint8_t dlen=ubuf[off]; if(!dlen) break;
             uint8_t dtype=ubuf[off+1];
             if(dtype==DESC_IFACE&&dlen>=9){
+                klog_hex("xHCI: iface class=",   (uint32_t)ubuf[off+5]);
+                klog_hex("xHCI: iface subclass=", (uint32_t)ubuf[off+6]);
+                klog_hex("xHCI: iface proto=",    (uint32_t)ubuf[off+7]);
                 if(ubuf[off+5]==USB_CLASS_HID&&ubuf[off+6]==USB_SUBCLASS_BOOT
-                   &&ubuf[off+7]==USB_PROTO_KBD)
+                   &&ubuf[off+7]==USB_PROTO_KBD){
                     if_num=ubuf[off+2];
+                    in_kbd_iface=1;
+                } else {
+                    in_kbd_iface=0;
+                }
             }
-            if(dtype==DESC_EP&&dlen>=7&&ep_addr==0){
+            // Only accept an interrupt-IN EP if it's inside the keyboard interface
+            if(dtype==DESC_EP&&dlen>=7&&ep_addr==0&&in_kbd_iface){
                 uint8_t ea=ubuf[off+2];
                 if((ea&0x80)&&(ubuf[off+3]&3)==3){ // IN + Interrupt
                     ep_addr=ea;
                     ep_mps=(uint16_t)(ubuf[off+4]|((uint16_t)ubuf[off+5]<<8));
                     ep_intv=ubuf[off+6];
+                    klog_hex("xHCI: took EP addr=",ep_addr);
                 }
             }
             off+=dlen;
@@ -613,7 +636,7 @@ static int find_keyboard(void){
         inp_ctx.ep[dci-1].tx_info=8;
 
         cmd_submit(v2p(&inp_ctx),0,0,TRB_TYPE(TRB_CONFIG_EP)|TRB_SLOT(slot));
-        if(cmd_wait(0)<0){ klog("xHCI: Configure EP fail\n"); continue; }
+        if(cmd_wait(0)<0){ klog_hex("xHCI: Configure EP fail CC=",last_cmd_cc); continue; }
 
         klog("xHCI: USB keyboard ready\n");
         hid_queue();  // prime the receive TRB

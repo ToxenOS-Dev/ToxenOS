@@ -10,15 +10,8 @@ static int str_eq(const char* a, const char* b) {
 }
 
 static int is_protected_dir(const char* p) {
-    return str_eq(p, "/C:/Trash")  || str_eq(p, "/C:/Trash/")  ||
-           str_eq(p, "/C:/BSM")    || str_eq(p, "/C:/BSM/")    ||
-           str_eq(p, "/C:/etc")    || str_eq(p, "/C:/etc/");
-}
-
-static const char* basename(const char* path) {
-    const char* last = path;
-    for (const char* p = path; *p; p++) if (*p == '/') last = p + 1;
-    return last;
+    return str_eq(p, "/C:/BSM") || str_eq(p, "/C:/BSM/") ||
+           str_eq(p, "/C:/etc") || str_eq(p, "/C:/etc/");
 }
 
 static void rm_one(const char* args);
@@ -55,20 +48,6 @@ static void rm_one(const char* args) {
         set_color(0x07); return;
     }
 
-    // Files already in Trash are permanently deleted (not re-trashed)
-    if (starts_with(args, "/C:/Trash/")) {
-        if (tox_remove(args) < 0) {
-            set_color(0x0C); print("rm: failed: "); print(args); print("\n"); set_color(0x07);
-        } else {
-            // Also clean up .origin file if present
-            char origin[256]; tox_strcpy(origin, args); tox_strcat(origin, ".origin");
-            tox_remove(origin);
-            set_color(0x0A); print("permanently deleted: "); print(basename(args)); print("\n");
-            set_color(0x07);
-        }
-        return;
-    }
-
     if (tox_isdir(args) == 1) {
         if (tox_remove(args) < 0) {
             set_color(0x0C); print("rm: failed to remove directory: "); print(args); print("\n");
@@ -79,51 +58,14 @@ static void rm_one(const char* args) {
         return;
     }
 
-    int size = tox_stat(args);
-    if (size < 0) {
+    if (tox_stat(args) < 0) {
         set_color(0x0C); print("rm: not found: "); print(args); print("\n");
         set_color(0x07); return;
     }
 
-    const char* name = basename(args);
-    char trash_path[256];
-    tox_strcpy(trash_path, "/C:/Trash/");
-    tox_strcat(trash_path, name);
-
-    // Copy file to Trash (handle 0-byte files without malloc)
-    uint8_t* buf = 0;
-    int fd;
-    if (size > 0) {
-        buf = malloc((uint32_t)size);
-        if (!buf) { set_color(0x0C); print("rm: out of memory\n"); set_color(0x07); return; }
-        fd = tox_open(args, 1);
-        tox_read(fd, buf, (uint32_t)size);
-        tox_close(fd);
+    if (tox_remove(args) < 0) {
+        set_color(0x0C); print("rm: failed: "); print(args); print("\n"); set_color(0x07);
+    } else {
+        set_color(0x0A); print("removed: "); print(args); print("\n"); set_color(0x07);
     }
-
-    fd = tox_open(trash_path, 2 | 4);
-    if (fd < 0) {
-        // Trash unavailable — fall back to permanent delete
-        free(buf);
-        if (tox_remove(args) < 0) {
-            set_color(0x0C); print("rm: failed: "); print(args); print("\n"); set_color(0x07);
-        } else {
-            set_color(0x0A); print("removed (permanent): "); print(name); print("\n"); set_color(0x07);
-        }
-        return;
-    }
-    if (buf && size > 0) tox_write(fd, buf, (uint32_t)size);
-    tox_close(fd);
-    if (buf) free(buf);
-
-    // Save original path so restore knows where to put it back
-    char origin_path[256];
-    tox_strcpy(origin_path, trash_path);
-    tox_strcat(origin_path, ".origin");
-    fd = tox_open(origin_path, 2 | 4);
-    if (fd >= 0) { tox_write(fd, (uint8_t*)args, (uint32_t)tox_strlen(args)); tox_close(fd); }
-
-    tox_remove(args);
-    set_color(0x0E); print("moved to Trash: "); print(name); print("\n"); set_color(0x07);
-    return;
 }

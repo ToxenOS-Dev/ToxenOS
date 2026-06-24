@@ -31,8 +31,10 @@
 #include "../include/dhcp.h"
 #include "../include/ahci.h"
 #include "../include/nvme.h"
+#include "../include/virtio_blk.h"
 #include "../include/usb_hid.h"
 #include "../include/cpu.h"
+#include "../include/acpi.h"
 
 // ── VGA legacy state (referenced by fbterm layer) ────────────────────────────
 uint16_t* const VGA_MEMORY = (uint16_t*)0xB8000;
@@ -281,6 +283,13 @@ static void mount_detected_drives(void)
 
 // ── launch_init: load the embedded init ELF and jump to ring 3 ───────────────
 // This is the point of no return — kernel_main never returns after this.
+//
+// Intentionally ELF-only, unlike the rest of userland: this is a standalone
+// bootstrap loader that hand-parses program headers directly into
+// kernel_directory before per-process page directories even exist. It does
+// not go through process.c's load_binary_into_dir() magic-sniffing
+// dispatcher, so it has no NEX support. Duplicating a second tiny parser
+// here for one binary isn't worth it — init.elf stays ELF-pinned by design.
 static void launch_init(void)
 {
     uint8_t*  elf_buf  = _binary_build_user_init_elf_start;
@@ -459,6 +468,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             PROBE_DEVICE("TxFS: AHCI\n", "TxFS: AHCI (gpt)\n", "TxFS: AHCI (mbr)\n", "TxFS: AHCI (old)\n")
             else { ata_set_ahci(0); }
         }
+        if (!found && virtio_blk_init() == 0) {
+            ata_set_virtio_ready(1);
+            ata_set_virtio(1);
+            PROBE_DEVICE("TxFS: VirtIO\n", "TxFS: VirtIO (gpt)\n", "TxFS: VirtIO (mbr)\n", "TxFS: VirtIO (old)\n")
+            else { ata_set_virtio(0); }
+        }
         if (!found) {
             PROBE_DEVICE("TxFS: ATA\n", "TxFS: ATA (gpt)\n", "TxFS: ATA (mbr)\n", "TxFS: ATA (old)\n")
         }
@@ -519,14 +534,17 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     {
         extern int vfs_stat(const char*, uint32_t*);
         uint32_t sz = 0;
-        if (vfs_stat("/C:/BSM/SystemT/bmsg.elf", &sz) < 0)
-            klog("WARN: bmsg.elf not found in /C:\n");
+        if (vfs_stat("/C:/BSM/SystemT/bmsg.nex", &sz) < 0)
+            klog("WARN: bmsg.nex not found in /C:\n");
         else
-            klog_hex("TxFS: bmsg.elf size=", sz);
+            klog_hex("TxFS: bmsg.nex size=", sz);
     }
     mount_detected_drives();
 
-    // ── Phase 6: networking + USB ────────────────────────────────────────────
+    // ── Phase 6: ACPI + networking + USB ────────────────────────────────────
+    print("ACPI init...");
+    acpi_init();
+    print(" ok\n");
     print("USB init...");
     usb_hid_init();
     print(" ok\n");

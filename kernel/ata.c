@@ -271,20 +271,25 @@ static int ata_do_write(const ata_channel_t* ch, uint8_t sel, uint32_t lba,
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-// AHCI / NVMe / ramdisk fallback — redirect disk I/O if a faster driver is active
+// AHCI / NVMe / VirtIO / ramdisk fallback — redirect disk I/O if a faster driver is active
 #include "../include/ahci.h"
 #include "../include/nvme.h"
-static int      use_ahci   = 0;
-static int      use_nvme   = 0;
-static int      nvme_ready = 0;  // NVMe was probed OK (even if not the TxFS source)
-static int      ahci_ready = 0;  // AHCI was probed OK (even if not the TxFS source)
+#include "../include/virtio_blk.h"
+static int      use_ahci    = 0;
+static int      use_nvme    = 0;
+static int      use_virtio  = 0;
+static int      nvme_ready   = 0;
+static int      ahci_ready   = 0;
+static int      virtio_ready = 0;
 static uint8_t *ramdisk_buf  = 0;
 static uint32_t ramdisk_size = 0;
 
-void ata_set_ahci(int v) { use_ahci = v; }
-void ata_set_nvme(int v) { use_nvme = v; }
-void ata_set_nvme_ready(int v) { nvme_ready = v; }
-void ata_set_ahci_ready(int v) { ahci_ready = v; }
+void ata_set_ahci(int v)         { use_ahci    = v; }
+void ata_set_nvme(int v)         { use_nvme    = v; }
+void ata_set_virtio(int v)       { use_virtio  = v; }
+void ata_set_nvme_ready(int v)   { nvme_ready   = v; }
+void ata_set_ahci_ready(int v)   { ahci_ready   = v; }
+void ata_set_virtio_ready(int v) { virtio_ready = v; }
 void ata_set_ramdisk(uint8_t *buf, uint32_t size) { ramdisk_buf = buf; ramdisk_size = size; }
 int  ata_has_ramdisk(void) { return ramdisk_buf != 0; }
 
@@ -306,28 +311,31 @@ static int ramdisk_write(uint32_t lba, const uint8_t *buf, uint32_t sectors)
 
 int ata_read(uint32_t lba, uint8_t* buf, uint32_t sectors)
 {
-    if (ramdisk_buf) return ramdisk_read(lba, buf, sectors);
-    if (use_nvme) return nvme_read_drive(0, lba, buf, sectors);
-    if (use_ahci) return ahci_read_drive(0, lba, buf, sectors);
+    if (ramdisk_buf)  return ramdisk_read(lba, buf, sectors);
+    if (use_nvme)     return nvme_read_drive(0, lba, buf, sectors);
+    if (use_ahci)     return ahci_read_drive(0, lba, buf, sectors);
+    if (use_virtio)   return virtio_blk_read(0, lba, buf, sectors);
     return ata_do_read(&channels[0], 0xE0, lba, buf, sectors);
 }
 
 int ata_write(uint32_t lba, const uint8_t* buf, uint32_t sectors)
 {
-    if (ramdisk_buf) return ramdisk_write(lba, buf, sectors);
-    if (use_nvme) return nvme_write_drive(0, lba, buf, sectors);
-    if (use_ahci) return ahci_write_drive(0, lba, buf, sectors);
+    if (ramdisk_buf)  return ramdisk_write(lba, buf, sectors);
+    if (use_nvme)     return nvme_write_drive(0, lba, buf, sectors);
+    if (use_ahci)     return ahci_write_drive(0, lba, buf, sectors);
+    if (use_virtio)   return virtio_blk_write(0, lba, buf, sectors);
     return ata_do_write(&channels[0], 0xE0, lba, buf, sectors);
 }
 
 int ata_read_drive(uint8_t drive, uint32_t lba, uint8_t* buf, uint32_t sectors)
 {
     if (drive == 0 && ramdisk_buf) return ramdisk_read(lba, buf, sectors);
-    if (use_nvme) return nvme_read_drive(drive, lba, buf, sectors);
-    if (use_ahci) return ahci_read_drive(drive, lba, buf, sectors);
-    // Ramdisk is TxFS source; route secondary drives to NVMe/AHCI if present
-    if (ramdisk_buf && nvme_ready && drive == 1) return nvme_read_drive(0, lba, buf, sectors);
-    if (ramdisk_buf && ahci_ready && drive == 1) return ahci_read_drive(0, lba, buf, sectors);
+    if (use_nvme)   return nvme_read_drive(drive, lba, buf, sectors);
+    if (use_ahci)   return ahci_read_drive(drive, lba, buf, sectors);
+    if (use_virtio) return virtio_blk_read(drive, lba, buf, sectors);
+    if (ramdisk_buf && nvme_ready   && drive == 1) return nvme_read_drive(0, lba, buf, sectors);
+    if (ramdisk_buf && ahci_ready   && drive == 1) return ahci_read_drive(0, lba, buf, sectors);
+    if (ramdisk_buf && virtio_ready && drive == 1) return virtio_blk_read(0, lba, buf, sectors);
     int ch_idx; uint8_t sel;
     ata_decode_drive(drive, &ch_idx, &sel);
     return ata_do_read(&channels[ch_idx], sel, lba, buf, sectors);
@@ -336,11 +344,12 @@ int ata_read_drive(uint8_t drive, uint32_t lba, uint8_t* buf, uint32_t sectors)
 int ata_write_drive(uint8_t drive, uint32_t lba, const uint8_t* buf, uint32_t sectors)
 {
     if (drive == 0 && ramdisk_buf) return ramdisk_write(lba, buf, sectors);
-    if (use_nvme) return nvme_write_drive(drive, lba, buf, sectors);
-    if (use_ahci) return ahci_write_drive(drive, lba, buf, sectors);
-    // Ramdisk is TxFS source; route secondary drives to NVMe/AHCI if present
-    if (ramdisk_buf && nvme_ready && drive == 1) return nvme_write_drive(0, lba, buf, sectors);
-    if (ramdisk_buf && ahci_ready && drive == 1) return ahci_write_drive(0, lba, buf, sectors);
+    if (use_nvme)   return nvme_write_drive(drive, lba, buf, sectors);
+    if (use_ahci)   return ahci_write_drive(drive, lba, buf, sectors);
+    if (use_virtio) return virtio_blk_write(drive, lba, buf, sectors);
+    if (ramdisk_buf && nvme_ready   && drive == 1) return nvme_write_drive(0, lba, buf, sectors);
+    if (ramdisk_buf && ahci_ready   && drive == 1) return ahci_write_drive(0, lba, buf, sectors);
+    if (ramdisk_buf && virtio_ready && drive == 1) return virtio_blk_write(0, lba, buf, sectors);
     int ch_idx; uint8_t sel;
     ata_decode_drive(drive, &ch_idx, &sel);
     return ata_do_write(&channels[ch_idx], sel, lba, buf, sectors);
@@ -351,10 +360,12 @@ int ata_write_drive(uint8_t drive, uint32_t lba, const uint8_t* buf, uint32_t se
 uint32_t ata_get_sectors(uint8_t drive)
 {
     if (drive == 0 && ramdisk_buf) return ramdisk_size / 512;
-    if (use_nvme) return nvme_get_sectors(drive);
-    if (use_ahci) return ahci_get_sectors(drive);
-    if (ramdisk_buf && nvme_ready && drive == 1) return nvme_get_sectors(0);
-    if (ramdisk_buf && ahci_ready && drive == 1) return ahci_get_sectors(0);
+    if (use_nvme)   return nvme_get_sectors(drive);
+    if (use_ahci)   return ahci_get_sectors(drive);
+    if (use_virtio) return virtio_blk_sectors(drive);
+    if (ramdisk_buf && nvme_ready   && drive == 1) return nvme_get_sectors(0);
+    if (ramdisk_buf && ahci_ready   && drive == 1) return ahci_get_sectors(0);
+    if (ramdisk_buf && virtio_ready && drive == 1) return virtio_blk_sectors(0);
 
     // Fall through to ATA PIO IDENTIFY
     int ch_idx; uint8_t sel;

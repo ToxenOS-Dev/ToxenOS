@@ -7,7 +7,11 @@
 #define TXFS_MAGIC          0x54584653  // "TXFS"
 #define TXFS_VERSION        2           // v2: uint64_t size + triple indirect
 #define TXFS_BLOCK_SIZE     4096
-#define TXFS_MAX_INODES     128
+// 256 inodes still fits the existing 32-block inode table region
+// (TXFS_BLOCK_INODES..TXFS_BLOCK_DATA = 32 blocks * 16 inodes/block = 512 max)
+// — bumped from 128 because packaging both .nex and .elf for every bundled
+// command (PACKAGE_ELF=1 dev builds) roughly doubles the file count.
+#define TXFS_MAX_INODES     256
 #define TXFS_DIRECT_BLOCKS  12
 
 // block layout

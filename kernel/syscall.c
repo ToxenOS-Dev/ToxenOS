@@ -22,9 +22,14 @@
 #include "../include/crypto.h"
 #include "../include/pmm.h"
 #include "../include/txfs.h"
+#include "../include/acpi.h"
 
-extern uint8_t _binary_build_user_shell_elf_start[];
-extern uint8_t _binary_build_user_shell_elf_end[];
+// Embedded boot-time shell, packaged as native .nex bytes. This is safe
+// because process_create_elf() -> load_binary_into_dir() already sniffs the
+// ELF/NEX magic rather than assuming a format, so handing it NEX bytes here
+// just works without any kernel changes.
+extern uint8_t _binary_build_user_shell_nex_start[];
+extern uint8_t _binary_build_user_shell_nex_end[];
 
 // Bootable disk.img stored in RAM (set when ramdisk is a GRUB-prefixed image).
 // SYS_INSTALL_CHUNK reads from here so the full bootable image is copied to disk.
@@ -47,9 +52,8 @@ static int path_is_system_protected(const char* path) {
 
 // Returns 1 if path IS a core system directory that cannot be deleted
 static int path_is_system_dir(const char* path) {
-    return kstreq(path, "/C:/BSM")   || kstreq(path, "/C:/BSM/") ||
-           kstreq(path, "/C:/Trash") || kstreq(path, "/C:/Trash/") ||
-           kstreq(path, "/C:/etc")   || kstreq(path, "/C:/etc/");
+    return kstreq(path, "/C:/BSM") || kstreq(path, "/C:/BSM/") ||
+           kstreq(path, "/C:/etc") || kstreq(path, "/C:/etc/");
 }
 
 uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx)
@@ -111,19 +115,7 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
             return 0;
 
         case SYS_SHUTDOWN:
-            __asm__ volatile("cli");
-            // ACPI S5 — QEMU-specific ports (work in QEMU, harmless on real hw)
-            __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0x604));
-            __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0xB004));
-            __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x2000), "Nd"((uint16_t)0x600));
-            __asm__ volatile("outw %0, %1" :: "a"((uint16_t)0x3400), "Nd"((uint16_t)0x4004));
-            // ACPI didn't work (real hardware) — reboot via keyboard controller
-            // so the machine restarts rather than freezing indefinitely.
-            __asm__ volatile("outb %0, %1" :: "a"((uint8_t)0xFE), "Nd"((uint16_t)0x64));
-            // Final fallback: triple-fault
-            { volatile struct { uint16_t limit; uint32_t base; } idt = {0, 0};
-              __asm__ volatile("lidt (%0); int $3" :: "r"(&idt)); }
-            while(1) __asm__ volatile("hlt");
+            acpi_shutdown();
             return 0;
 
         case SYS_READDIR:
@@ -231,9 +223,9 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
 
         case SYS_SPAWN_EMBEDDED:
         {
-            uint8_t* buf  = _binary_build_user_shell_elf_start;
-            uint32_t size = (uint32_t)(_binary_build_user_shell_elf_end
-                                      - _binary_build_user_shell_elf_start);
+            uint8_t* buf  = _binary_build_user_shell_nex_start;
+            uint32_t size = (uint32_t)(_binary_build_user_shell_nex_end
+                                      - _binary_build_user_shell_nex_start);
             int tty = (int)ebx;
             int pid = process_create_elf("shell", buf, size);
             if (pid < 0) return (uint32_t)-1;
@@ -751,6 +743,15 @@ uint32_t __attribute__((cdecl)) syscall_handler(uint32_t eax, uint32_t ebx, uint
         {
             extern int sys_wait_status(int pid);
             return (uint32_t)sys_wait_status((int)ebx);
+        }
+
+        case SYS_ENV_LIST:  // 79
+        {
+            // ebx=index, ecx=key_buf (32 bytes), edx=val_buf (128 bytes)
+            if (!ecx || !edx) return (uint32_t)-1;
+            CHECK_USER_PTR(ecx, 32);
+            CHECK_USER_PTR(edx, 128);
+            return (uint32_t)env_list((int)ebx, (char*)ecx, (char*)edx);
         }
 
         case SYS_WHOAMI:

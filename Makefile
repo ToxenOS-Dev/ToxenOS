@@ -1,7 +1,14 @@
-.PHONY: all user install run disk clean populate
+.PHONY: all user install run disk clean populate kernel64 run64
 
 # ── Address space layout — must match include/memmap.h ───────────────────────
 USER_ELF_BASE := 0x10000000
+
+# Set PACKAGE_ELF=1 (e.g. `make all PACKAGE_ELF=1`) to also write .elf copies
+# of bundled commands into the TxFS image alongside .nex, for dev/debug use.
+# Normal images ship .nex only — .elf binaries still exist in build/ as
+# compile intermediates, and ELF stays fully loadable for anything a user
+# manually installs (e.g. /C:/tools/test.elf).
+PACKAGE_ELF ?= 0
 
 # ── Compiler flags ────────────────────────────────────────────────────────────
 # -MMD -MP: generate .d dependency files for incremental builds
@@ -19,13 +26,29 @@ MBEDFLAGS := -ffreestanding -fno-stack-protector -fno-pic -m32 \
              -DMBEDTLS_CONFIG_FILE='"../mbedtls/toxenos_config.h"' \
              -I mbedtls/include -I mbedtls
 
+# ── x86_64 long-mode bring-up (Milestone 1) — additive, parallel build ───────
+# Does not touch KFLAGS/KOBJS/the 32-bit `all` target above: the 32-bit
+# kernel stays fully buildable as the migration's stable-backup reference
+# while this is brought up. See kernel/kernel64.c and kernel/boot64.asm.
+# -mcmodel=kernel: required because linker64.ld links the kernel at the
+#   canonical higher-half base 0xFFFFFFFF80000000 (top 2GB of canonical
+#   address space) — the default/small code model can't address that.
+# -fno-pie alongside -fno-pic: freestanding kernel code must not be PIE.
+# -mno-red-zone: mandatory for any x86_64 kernel code that can be interrupted.
+# -mno-sse/-mno-mmx: avoid the compiler using SSE/MMX regs before FPU/SSE
+#   state is set up (not yet relevant with interrupts off, but free to add now).
+KFLAGS64 := -ffreestanding -fno-stack-protector -fno-pic -fno-pie -m64 \
+            -mcmodel=kernel -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
+            -fno-asynchronous-unwind-tables \
+            -Wall -Wextra -Wno-unused-parameter -MMD -MP -I include
+
 # ── Kernel object files ───────────────────────────────────────────────────────
 KOBJS := \
 	build/boot.o build/isr.o build/switch.o \
 	build/kernel.o build/keyboard.o build/idt.o build/pic.o build/irq.o \
 	build/timer.o build/mm.o build/klog.o build/pmm.o build/process.o build/syscall.o \
 	build/paging.o build/tss.o build/ring3.o \
-	build/cpu.o build/vfs.o build/tmpfs.o build/ata.o build/ahci.o build/nvme.o build/txfs.o build/fat.o build/env.o build/crypto.o build/dhcp.o \
+	build/cpu.o build/acpi.o build/vfs.o build/tmpfs.o build/ata.o build/ahci.o build/nvme.o build/virtio_blk.o build/txfs.o build/fat.o build/env.o build/crypto.o build/dhcp.o \
 	build/ext2.o build/elf.o build/tty.o build/pipe.o build/waitqueue.o \
 	build/usb_hid.o build/pci.o build/e1000.o build/net.o build/tcp.o build/tls.o \
 	build/framebuffer.o build/font.o build/fbterm.o \
@@ -58,8 +81,10 @@ all: user
 	gcc $(KFLAGS) -c kernel/tss.c        -o build/tss.o
 	gcc $(KFLAGS) -c kernel/ring3.c      -o build/ring3.o
 	gcc $(KFLAGS) -c kernel/cpu.c        -o build/cpu.o
-	gcc $(KFLAGS) -c kernel/ahci.c       -o build/ahci.o
-	gcc $(KFLAGS) -c kernel/nvme.c       -o build/nvme.o
+	gcc $(KFLAGS) -c kernel/acpi.c       -o build/acpi.o
+	gcc $(KFLAGS) -c kernel/ahci.c        -o build/ahci.o
+	gcc $(KFLAGS) -c kernel/nvme.c        -o build/nvme.o
+	gcc $(KFLAGS) -c kernel/virtio_blk.c  -o build/virtio_blk.o
 	gcc $(KFLAGS) -c kernel/vfs.c        -o build/vfs.o
 	gcc $(KFLAGS) -c kernel/env.c        -o build/env.o
 	gcc $(KFLAGS) -c kernel/dhcp.c       -o build/dhcp.o
@@ -132,25 +157,65 @@ all: user
 		echo "      Install grub2 then run: grub2-mkrescue -o build/ToxenOS.iso iso"; \
 	fi
 
-user:
+user: tools/elf2nex
 	@mkdir -p build/user build/user/bin
 	gcc $(UFLAGS) user/shell.c -o build/user/shell.elf
-	objcopy -I binary -O elf32-i386 -B i386 \
-		build/user/shell.elf build/user/shell_blob.o
 	gcc $(UFLAGS) user/init.c -o build/user/init.elf
-	objcopy -I binary -O elf32-i386 -B i386 \
-		build/user/init.elf build/user/init_blob.o
 	gcc $(UFLAGS) user/login.c -o build/user/login.elf
 	gcc $(UFLAGS) user/hello.c -o build/user/hello.elf
-	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns http ping https isolation_test stresstest restore trash rmkd sysctl kill reg syslog wc date chmod where df free hostname adduser passwd usermod ipcfg snap install uptime; do \
+	for cmd in ls shw mkef mkd rm echo pcd uname file help cp tree hex mv rname sif find bmsg proc end top sleeptest memtest pipetest nettest dns http ping https isolation_test stresstest rmkd sysctl kill reg syslog wc date chmod where df free hostname adduser passwd usermod ipcfg snap install uptime env alias touch nexinfo; do \
 		gcc $(UFLAGS) user/bin/$$cmd.c -o build/user/bin/$$cmd.elf || exit 1; \
 	done
 	gcc $(UFLAGS) user/bin/tox_pkg.c -o build/user/bin/tox.elf
 	gcc $(UFLAGS) user/bin/ts.c -o build/user/bin/ts.elf
 	gcc $(UFLAGS) user/bin/edit.c -o build/user/bin/edit.elf
 
+	# ── Convert every ELF binary to ToxenOS's native .nex format ──────────────
+	# The .elf files above are build intermediates (GCC/ld only emit ELF);
+	# .nex is what actually gets packaged into the TxFS image below.
+	for f in build/user/*.elf build/user/bin/*.elf; do \
+		tools/elf2nex "$$f" "$${f%.elf}.nex" || exit 1; \
+	done
+
+	# init's embedded boot blob stays ELF — see the comment on launch_init()
+	# in kernel/kernel.c for why.
+	objcopy -I binary -O elf32-i386 -B i386 \
+		build/user/init.elf build/user/init_blob.o
+	# shell's embedded boot blob (SYS_SPAWN_EMBEDDED) goes through
+	# process_create_elf()'s magic-sniffing dispatcher, so it can be genuine
+	# NEX bytes — see the comment in kernel/syscall.c.
+	objcopy -I binary -O elf32-i386 -B i386 \
+		build/user/shell.nex build/user/shell_blob.o
+
 build/target.img:
 	dd if=/dev/zero of=build/target.img bs=1M count=2048
+
+# ── x86_64 long-mode bring-up (Milestone 1) ──────────────────────────────────
+# No disk image involved — there's no filesystem code in this milestone,
+# just boot64.asm's long-mode transition + kernel64.c's VGA/serial proof
+# of life. Lives in its own iso64/ tree so it never touches iso/ (used by
+# the 32-bit `all`/`populate` targets).
+kernel64:
+	@mkdir -p build iso64/boot
+	nasm -f elf64 kernel/boot64.asm -o build/boot64.o
+	gcc $(KFLAGS64) -c kernel/kernel64.c -o build/kernel64.o
+	gcc $(KFLAGS64) -c kernel/klog.c     -o build/klog64.o
+	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
+		build/boot64.o build/kernel64.o build/klog64.o
+	cp build/kernel64.bin iso64/boot/kernel64.bin
+	@if command -v grub2-mkrescue >/dev/null 2>&1; then \
+		grub2-mkrescue --modules="multiboot2" \
+			-o build/ToxenOS64.iso iso64; \
+	elif command -v grub-mkrescue >/dev/null 2>&1; then \
+		grub-mkrescue --modules="multiboot2" \
+			-o build/ToxenOS64.iso iso64; \
+	else \
+		echo "NOTE: grub2-mkrescue not found — kernel64.bin built but ISO not created."; \
+		echo "      Install grub2 then run: grub2-mkrescue -o build/ToxenOS64.iso iso64"; \
+	fi
+
+run64: kernel64
+	qemu-system-x86_64 -m 256 -cdrom build/ToxenOS64.iso -serial stdio
 
 run: all build/target.img
 	qemu-system-i386 \
@@ -162,6 +227,19 @@ run: all build/target.img
 		-device nvme,drive=nvme0,serial=toxnvme0 \
 		-drive file=build/target.img,format=raw,if=none,id=nvme1 \
 		-device nvme,drive=nvme1,serial=toxnvme1 \
+		-netdev user,id=net0 \
+		-device e1000,netdev=net0 \
+		-object filter-dump,id=f0,netdev=net0,file=/tmp/toxenos_net.pcap \
+		-serial stdio
+
+run-virtio: all build/target.img
+	qemu-system-i386 \
+		-enable-kvm -cpu host,+cmov,+cx8 \
+		-m 256 \
+		-boot order=d \
+		-cdrom build/ToxenOS.iso \
+		-drive file=build/disk.img,format=raw,if=virtio \
+		-drive file=build/target.img,format=raw,if=virtio \
 		-netdev user,id=net0 \
 		-device e1000,netdev=net0 \
 		-object filter-dump,id=f0,netdev=net0,file=/tmp/toxenos_net.pcap \
@@ -205,71 +283,36 @@ tools/txfs_write: tools/txfs_write.c
 tools/patch_diskboot: tools/patch_diskboot.c
 	gcc -O2 -o tools/patch_diskboot tools/patch_diskboot.c
 
+tools/elf2nex: tools/elf2nex.c
+	gcc -O2 -o tools/elf2nex tools/elf2nex.c
+
 populate: tools/txfs_write tools/patch_diskboot
 	dd if=/dev/zero of=build/fs.img bs=4096 count=2048
-	tools/txfs_write build/fs.img build/user/bin/ls.elf /BSM/SystemT/ls.elf
-	tools/txfs_write build/fs.img build/user/bin/shw.elf /BSM/SystemT/shw.elf
-	tools/txfs_write build/fs.img build/user/bin/mkef.elf /BSM/SystemT/mkef.elf
-	tools/txfs_write build/fs.img build/user/bin/mkd.elf /BSM/SystemT/mkd.elf
-	tools/txfs_write build/fs.img build/user/bin/rm.elf /BSM/SystemT/rm.elf
-	tools/txfs_write build/fs.img build/user/bin/echo.elf /BSM/SystemT/echo.elf
-	tools/txfs_write build/fs.img build/user/bin/pcd.elf /BSM/SystemT/pcd.elf
-	tools/txfs_write build/fs.img build/user/bin/uname.elf /BSM/SystemT/uname.elf
-	tools/txfs_write build/fs.img build/user/bin/file.elf /BSM/SystemT/file.elf
-	tools/txfs_write build/fs.img build/user/bin/help.elf /BSM/SystemT/help.elf
-	tools/txfs_write build/fs.img build/user/bin/cp.elf /BSM/SystemT/cp.elf
-	tools/txfs_write build/fs.img build/user/bin/tree.elf /BSM/SystemT/tree.elf
-	tools/txfs_write build/fs.img build/user/bin/hex.elf /BSM/SystemT/hex.elf
-	tools/txfs_write build/fs.img build/user/bin/mv.elf /BSM/SystemT/mv.elf
-	tools/txfs_write build/fs.img build/user/bin/rname.elf /BSM/SystemT/rname.elf
-	tools/txfs_write build/fs.img build/user/bin/sif.elf /BSM/SystemT/sif.elf
-	tools/txfs_write build/fs.img build/user/bin/find.elf /BSM/SystemT/find.elf
-	tools/txfs_write build/fs.img build/user/bin/bmsg.elf /BSM/SystemT/bmsg.elf
-	tools/txfs_write build/fs.img build/user/bin/proc.elf /BSM/SystemT/proc.elf
-	tools/txfs_write build/fs.img build/user/bin/end.elf /BSM/SystemT/end.elf
-	tools/txfs_write build/fs.img build/user/bin/top.elf /BSM/SystemT/top.elf
-	tools/txfs_write build/fs.img build/user/bin/sleeptest.elf /BSM/SystemT/sleeptest.elf
-	tools/txfs_write build/fs.img build/user/bin/memtest.elf /BSM/SystemT/memtest.elf
-	tools/txfs_write build/fs.img build/user/bin/pipetest.elf /BSM/SystemT/pipetest.elf
-	tools/txfs_write build/fs.img build/user/bin/nettest.elf /BSM/SystemT/nettest.elf
-	tools/txfs_write build/fs.img build/user/bin/dns.elf /BSM/SystemT/dns.elf
-	tools/txfs_write build/fs.img build/user/bin/http.elf /BSM/SystemT/http.elf
-	tools/txfs_write build/fs.img build/user/bin/ping.elf /BSM/SystemT/ping.elf
-	tools/txfs_write build/fs.img build/user/bin/https.elf /BSM/SystemT/https.elf
-	tools/txfs_write build/fs.img build/user/bin/isolation_test.elf /BSM/SystemT/isolation_test.elf
-	tools/txfs_write build/fs.img build/user/bin/stresstest.elf /BSM/SystemT/stresstest.elf
-	tools/txfs_write build/fs.img build/user/hello.elf /hello.elf
-	tools/txfs_write build/fs.img build/user/shell.elf /shell.elf
-	tools/txfs_write build/fs.img build/user/init.elf /init.elf
-	tools/txfs_write build/fs.img build/user/login.elf /BSM/SystemT/login.elf
-	tools/txfs_write build/fs.img build/user/bin/rmkd.elf /BSM/SystemT/rmkd.elf
-	tools/txfs_write build/fs.img build/user/bin/restore.elf /BSM/SystemT/restore.elf
-	tools/txfs_write build/fs.img build/user/bin/sysctl.elf /BSM/SystemT/sysctl.elf
-	tools/txfs_write build/fs.img build/user/bin/kill.elf /BSM/SystemT/kill.elf
-	tools/txfs_write build/fs.img build/user/bin/reg.elf /BSM/SystemT/reg.elf
-	tools/txfs_write build/fs.img build/user/bin/syslog.elf /BSM/SystemT/syslog.elf
-	tools/txfs_write build/fs.img build/user/bin/wc.elf /BSM/SystemT/wc.elf
-	tools/txfs_write build/fs.img build/user/bin/date.elf /BSM/SystemT/date.elf
-	tools/txfs_write build/fs.img build/user/bin/chmod.elf /BSM/SystemT/chmod.elf
-	tools/txfs_write build/fs.img build/user/bin/where.elf /BSM/SystemT/where.elf
-	tools/txfs_write build/fs.img build/user/bin/df.elf /BSM/SystemT/df.elf
-	tools/txfs_write build/fs.img build/user/bin/free.elf /BSM/SystemT/free.elf
-	tools/txfs_write build/fs.img build/user/bin/hostname.elf /BSM/SystemT/hostname.elf
-	tools/txfs_write build/fs.img build/user/bin/adduser.elf /BSM/SystemT/adduser.elf
-	tools/txfs_write build/fs.img build/user/bin/passwd.elf /BSM/SystemT/passwd.elf
-	tools/txfs_write build/fs.img build/user/bin/usermod.elf /BSM/SystemT/usermod.elf
-	tools/txfs_write build/fs.img build/user/bin/ipcfg.elf /BSM/SystemT/ipcfg.elf
-	tools/txfs_write build/fs.img build/user/bin/snap.elf /BSM/SystemT/snap.elf
-	tools/txfs_write build/fs.img build/user/bin/install.elf /BSM/SystemT/install.elf
-	tools/txfs_write build/fs.img build/user/bin/uptime.elf /BSM/SystemT/uptime.elf
+	# Bundled commands: .nex is the packaged default. Pass PACKAGE_ELF=1 to
+	# also ship the .elf copies (dev/debug builds only — see note up top).
+	for f in build/user/bin/*.nex; do \
+		name=$$(basename $$f); \
+		tools/txfs_write build/fs.img $$f /BSM/SystemT/$$name || exit 1; \
+	done
+	if [ "$(PACKAGE_ELF)" = "1" ]; then \
+		for f in build/user/bin/*.elf; do \
+			name=$$(basename $$f); \
+			tools/txfs_write build/fs.img $$f /BSM/SystemT/$$name || exit 1; \
+		done; \
+	fi
+	tools/txfs_write build/fs.img build/user/hello.nex /hello.nex
+	tools/txfs_write build/fs.img build/user/shell.nex /shell.nex
+	tools/txfs_write build/fs.img build/user/init.nex /init.nex
+	tools/txfs_write build/fs.img build/user/login.nex /BSM/SystemT/login.nex
+	if [ "$(PACKAGE_ELF)" = "1" ]; then \
+		tools/txfs_write build/fs.img build/user/hello.elf /hello.elf; \
+		tools/txfs_write build/fs.img build/user/shell.elf /shell.elf; \
+		tools/txfs_write build/fs.img build/user/init.elf /init.elf; \
+		tools/txfs_write build/fs.img build/user/login.elf /BSM/SystemT/login.elf; \
+	fi
 	tools/txfs_write build/fs.img user/system/users /etc/users
-	tools/txfs_write build/fs.img build/user/bin/trash.elf /BSM/SystemT/trash.elf
-	tools/txfs_write build/fs.img build/user/bin/tox.elf /BSM/SystemT/tox.elf
-	tools/txfs_write build/fs.img build/user/bin/ts.elf /BSM/SystemT/ts.elf
-	tools/txfs_write build/fs.img build/user/bin/edit.elf /BSM/SystemT/edit.elf
 	tools/txfs_write build/fs.img user/system/hello.ts /hello.ts
 	@tools/txfs_write build/fs.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true
-	@tools/txfs_write build/fs.img /dev/null /Trash/.keep 2>/dev/null || true
 	@tools/txfs_write build/fs.img /dev/null /etc/.keep 2>/dev/null || true
 	# ── Assemble bootable disk.img (GPT — BIOS + UEFI dual-boot) ────────────────
 	# Layout: LBA 0:        Protective MBR + boot.img code

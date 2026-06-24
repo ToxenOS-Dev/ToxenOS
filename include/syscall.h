@@ -81,6 +81,7 @@ int  sys_getpid();
 #define SYS_SETUID         76  // set current process uid (login only)
 #define SYS_WHOAMI         77  // copy username string to buf
 #define SYS_WAIT_STATUS    78  // wait(pid) and return exit code
+#define SYS_ENV_LIST       79  // enumerate kernel env vars by index
 #define SYS_INSTALL_DRIVE  73  // block-copy TxFS from drive 0 to target drive
 #define SYS_INSTALL_CHUNK  74  // copy one chunk (for progress reporting)
 #define SYS_DISK_SECTORS   70  // get total sectors for a drive

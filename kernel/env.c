@@ -37,6 +37,13 @@ int env_get(const char* name, char* buf, uint32_t maxl) {
     return -1;
 }
 
+int env_list(int i, char* key_out, char* val_out) {
+    if (i < 0 || i >= g_count) return -1;
+    kcopy(key_out, g_keys[i], KEY_MAX);
+    kcopy(val_out, g_vals[i], VAL_MAX);
+    return 0;
+}
+
 int env_set(const char* name, const char* val) {
     if (!name) return -1;
     // Update existing

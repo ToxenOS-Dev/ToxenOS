@@ -20,10 +20,17 @@ static int read_pass(char* buf, int max) {
 void _start() {
     char args[64]; tox_get_args(args);
     // If no arg, get current user from env
+    char current_user[64]; current_user[0] = 0;
+    tox_getenv("USER", current_user, sizeof(current_user));
     if (!args[0]) {
-        if (tox_getenv("USER", args, sizeof(args)) < 0) {
-            tox_strcpy(args, "admin");
-        }
+        if (current_user[0]) tox_strcpy(args, current_user);
+        else tox_strcpy(args, "admin");
+    }
+
+    // Changing another user's password requires admin
+    if (!str_eq(args, current_user) && !tox_is_admin()) {
+        set_color(0x0C); print("passwd: permission denied — admin required to change another user's password\n");
+        set_color(0x07); tox_exit();
     }
 
     // Read new password

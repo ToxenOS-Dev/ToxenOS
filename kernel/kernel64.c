@@ -1,0 +1,116 @@
+// kernel/kernel64.c — ToxenOS x86_64 long-mode boot bring-up (Milestone 1).
+//
+// Deliberately tiny and throwaway: proves the boot64.asm long-mode
+// transition genuinely succeeded (VGA + serial output, CR0/CR4/EFER
+// readback including LMA), then halts. Does not call into any existing
+// 32-bit subsystem (cpu.c/acpi.c/paging.c/fbterm.c/...) — those get
+// ported in their own later migration milestones, not here.
+#include <stdint.h>
+#include "../include/klog.h"
+
+_Static_assert(sizeof(void*) == 8, "kernel64.c must be compiled as 64-bit (-m64)");
+
+static uint16_t* const VGA = (uint16_t*)0xB8000;
+#define VGA_COLS 80
+#define VGA_ROWS 25
+
+static int vga_row = 0;
+
+static void vga_puts(const char* s, uint8_t color) {
+    if (vga_row >= VGA_ROWS) return;
+    int col = 0;
+    for (int i = 0; s[i] && col < VGA_COLS; i++) {
+        VGA[vga_row * VGA_COLS + col] = ((uint16_t)color << 8) | (uint8_t)s[i];
+        col++;
+    }
+    vga_row++;
+}
+
+// Writes one line to both VGA text memory and the serial/klog ring buffer.
+static void out_line(const char* s) {
+    vga_puts(s, 0x0F);
+    klog(s);
+    klog("\n");
+}
+
+static void hex64(uint64_t val, char* out) {
+    const char* h = "0123456789ABCDEF";
+    out[0] = '0'; out[1] = 'x';
+    for (int i = 0; i < 16; i++) {
+        out[2 + (15 - i)] = h[val & 0xF];
+        val >>= 4;
+    }
+    out[18] = 0;
+}
+
+static void out_kv(const char* label, uint64_t val) {
+    char line[48];
+    int i = 0;
+    while (label[i]) { line[i] = label[i]; i++; }
+    char hex[19];
+    hex64(val, hex);
+    int j = 0;
+    while (hex[j]) { line[i++] = hex[j++]; }
+    line[i] = 0;
+    out_line(line);
+}
+
+static void append_flag(char* buf, int* pos, const char* name, int set) {
+    int i = 0;
+    while (name[i]) buf[(*pos)++] = name[i++];
+    buf[(*pos)++] = '=';
+    buf[(*pos)++] = set ? '1' : '0';
+    buf[(*pos)++] = ' ';
+}
+
+static inline uint64_t read_cr0(void) {
+    uint64_t v;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(v));
+    return v;
+}
+
+static inline uint64_t read_cr4(void) {
+    uint64_t v;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(v));
+    return v;
+}
+
+static inline uint64_t read_efer(void) {
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000080u));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
+    vga_row = 0;
+
+    out_line("ToxenOS64 -- Milestone 1: long-mode boot");
+    out_kv("multiboot magic: ", magic);
+    out_kv("mb_info_addr:    ", mb_info_addr);
+
+    uint64_t cr0  = read_cr0();
+    uint64_t cr4  = read_cr4();
+    uint64_t efer = read_efer();
+    out_kv("CR0:  ", cr0);
+    out_kv("CR4:  ", cr4);
+    out_kv("EFER: ", efer);
+
+    // PG (CR0 bit31), PAE (CR4 bit5), LME (EFER bit8), LMA (EFER bit10).
+    // LMA in particular is set by the CPU only once the long-mode
+    // transition has genuinely completed — distinct proof from LME,
+    // which is just the software enable request.
+    char flags[64];
+    int pos = 0;
+    append_flag(flags, &pos, "PG",  (int)((cr0  >> 31) & 1));
+    append_flag(flags, &pos, "PAE", (int)((cr4  >> 5)  & 1));
+    append_flag(flags, &pos, "LME", (int)((efer >> 8)  & 1));
+    append_flag(flags, &pos, "LMA", (int)((efer >> 10) & 1));
+    flags[pos] = 0;
+    out_line(flags);
+
+    out_line("TOXENOS64 LONGMODE OK");
+
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}

@@ -31,6 +31,11 @@ static int read_pass(char* buf, int max) {
 }
 
 void _start() {
+    if (!tox_is_admin()) {
+        set_color(0x0C); print("adduser: permission denied — admin account required\n"); set_color(0x07);
+        tox_exit();
+    }
+
     // Drain keyboard buffer
     for (int _i = 0; _i < 100; _i++) yield();
     while (tox_keyavail()) tox_getchar();

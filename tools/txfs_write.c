@@ -13,7 +13,7 @@
 
 #define TXFS_MAGIC          0x54584653
 #define TXFS_BLOCK_SIZE     4096
-#define TXFS_MAX_INODES     128
+#define TXFS_MAX_INODES     256  // keep in sync with include/txfs.h
 #define TXFS_DIRECT_BLOCKS  12
 #define TXFS_PTRS_PER_BLOCK (TXFS_BLOCK_SIZE / 4)
 #define TXFS_BLOCK_SUPER    1
@@ -337,6 +337,7 @@ static int ensure_dir_path(const char* txpath)
         if (found < 0) {
             // create subdir
             int ni = ainode();
+            if (ni < 0) { fprintf(stderr, "out of inodes creating dir: %s\n", p); exit(1); }
             inode_t nd = {0};
             nd.mode  = (TXFS_TYPE_DIR << 12) | 0x1C0;
             nd.links = 1;
@@ -395,6 +396,7 @@ static int write_file(const char* txpath, const char* lpath)
 
     // Allocate new inode and write file data
     int ni = ainode();
+    if (ni < 0) { fprintf(stderr, "out of inodes writing %s\n", txpath); free(data); exit(1); }
     inode_t ino = {0};
     ino.mode  = (TXFS_TYPE_FILE << 12) | 0x1C0;
     ino.links = 1;

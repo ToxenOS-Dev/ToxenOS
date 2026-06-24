@@ -9,6 +9,15 @@ static int str_eq(const char* a, const char* b) {
 
 static int my_strlen(const char* s) { int i=0; while(s[i]) i++; return i; }
 
+// Prefer the native .nex shell; fall back to .elf only if .nex isn't
+// installed at all (manual/compat installs). If .nex exists but is
+// corrupt, tox_exec fails and we deliberately do NOT fall back to .elf —
+// silently swapping formats would hide a real NEX problem.
+static void exec_shell(void) {
+    if (tox_stat("/C:/shell.nex") >= 0) { tox_exec("/C:/shell.nex"); return; }
+    if (tox_stat("/C:/shell.elf") >= 0) { tox_exec("/C:/shell.elf"); return; }
+}
+
 static void my_itoa(uint32_t v, char* buf) {
     if (!v) { buf[0]='0'; buf[1]=0; return; }
     char tmp[12]; int i=0;
@@ -52,7 +61,7 @@ void _start() {
         tox_setenv("USER", "root");
         tox_setuid(0);
         tox_set_admin(1);
-        tox_exec("/C:/BSM/SystemT/shell.elf");
+        exec_shell();
         tox_exit();
     }
 
@@ -148,7 +157,7 @@ void _start() {
         print("Welcome, "); print(username); print("!\n");
         set_color(0x07);
 
-        tox_exec("/C:/BSM/SystemT/shell.elf");
+        exec_shell();
         // If exec fails fall back to embedded shell
         tox_exit();
     }

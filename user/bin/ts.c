@@ -220,6 +220,7 @@ static int fe_expand(const char* pat, char ents[][48], int max) {
 static int find_cmd(const char* cmd, char* out) {
     if (cmd[0] == '/') {
         tscpy(out, cmd); if (tox_stat(out) >= 0) return 1;
+        tscpy(out, cmd); tscat(out, ".nex"); if (tox_stat(out) >= 0) return 1;
         tscpy(out, cmd); tscat(out, ".elf"); if (tox_stat(out) >= 0) return 1;
         return 0;
     }
@@ -241,6 +242,8 @@ static int find_cmd(const char* cmd, char* out) {
         }
         dir[dl] = 0; if (*pp == ';' || *pp == ':') pp++; if (!dl) continue;
         tscpy(out, dir); tscat(out, "/"); tscat(out, cmd);
+        if (tox_stat(out) >= 0) return 1;
+        tscpy(out, dir); tscat(out, "/"); tscat(out, cmd); tscat(out, ".nex");
         if (tox_stat(out) >= 0) return 1;
         tscpy(out, dir); tscat(out, "/"); tscat(out, cmd); tscat(out, ".elf");
         if (tox_stat(out) >= 0) return 1;
@@ -427,7 +430,10 @@ static void exec_stmt(const char* line) {
         }
         int tty = tox_my_tty(); if (tty < 0) tty = 0;
         int pid = tox_spawn_args(path, tty, args[0] ? args : "");
-        if (pid >= 0) tox_wait(pid);
+        if (pid >= 0) { tox_wait(pid); return; }
+        // path was already resolved (.nex preferred over .elf) — don't retry
+        // with a different extension, just report the exact file that failed.
+        set_color(0x0C); print("ts: failed to run: "); print(path); print("\n"); set_color(0x07);
         return;
     }
 

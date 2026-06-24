@@ -7,6 +7,7 @@
 #include "../include/tss.h"
 #include "../include/timer.h"
 #include "../include/vfs.h"
+#include "../include/nex.h"
 
 process_t processes[MAX_PROCESSES];
 static int       current_pid   = 0;
@@ -248,6 +249,99 @@ static uint32_t load_elf_into_dir(uint32_t* dir,
     return entry;
 }
 
+// Load NEX segments into a process's own page directory.
+// Same per-segment safety checks as load_elf_into_dir, just reading from
+// nex_seg_t instead of ELF program headers.
+static uint32_t load_nex_into_dir(uint32_t* dir, uint8_t* nex_buf, uint32_t nex_size)
+{
+    if (nex_size < sizeof(nex_header_t)) return 0;
+
+    nex_header_t* hdr = (nex_header_t*)nex_buf;
+    if (hdr->magic != NEX_MAGIC) return 0;
+    if (hdr->version != 1) return 0;
+
+    uint32_t seg_table_off = sizeof(nex_header_t);
+    uint32_t seg_table_sz  = (uint32_t)hdr->seg_count * sizeof(nex_seg_t);
+    if (seg_table_sz > nex_size - seg_table_off) return 0;
+
+    uint32_t entry = hdr->entry;
+    if (entry < USER_ELF_BASE || entry >= USER_STACK_TOP) return 0;
+
+    for (int i = 0; i < hdr->seg_count; i++)
+    {
+        nex_seg_t* seg = (nex_seg_t*)(nex_buf + seg_table_off + i * sizeof(nex_seg_t));
+
+        uint32_t vaddr  = seg->vaddr;
+        uint32_t offset = seg->offset;
+        uint32_t filesz = seg->filesz;
+        uint32_t memsz  = seg->memsz;
+        uint32_t flags  = seg->flags;
+
+        if (memsz == 0) continue;
+
+        // Segment must be in user address space (not kernel)
+        if (vaddr >= USER_STACK_TOP) return 0;
+
+        // memsz overflow check: vaddr + memsz must not wrap or enter kernel
+        if (memsz > USER_STACK_TOP - vaddr) return 0;
+
+        if (filesz > memsz) return 0;
+
+        // file data must be within the NEX buffer
+        if (offset > nex_size) return 0;
+        if (filesz > nex_size - offset) return 0;
+
+        // total mapped size must fit within allowed ELF region
+        if (vaddr + memsz > USER_ELF_BASE + USER_ELF_MAX_SIZE) return 0;
+
+        uint32_t pf = PAGE_PRESENT | PAGE_USER;
+        if (flags & NEX_PF_W) pf |= PAGE_WRITABLE;
+
+        uint32_t page_start = vaddr & ~0xFFFu;
+        uint32_t page_end   = (vaddr + memsz + 0xFFFu) & ~0xFFFu;
+
+        for (uint32_t va = page_start; va < page_end; va += PAGE_SIZE)
+        {
+            uint32_t phys = paging_alloc_page();
+            if (!phys) return 0;
+
+            paging_map(dir, va, phys, pf);
+
+            uint8_t* dst = (uint8_t*)KPHYS_TO_VIRT(phys);
+
+            // Zero the whole page first (handles BSS)
+            for (int j = 0; j < (int)PAGE_SIZE; j++) dst[j] = 0;
+
+            // Copy file data that falls within this page
+            {
+                uint32_t page_vstart = va;
+                uint32_t seg_vend    = vaddr + filesz;
+                for (uint32_t b = 0; b < PAGE_SIZE; b++) {
+                    uint32_t cur_va = page_vstart + b;
+                    if (cur_va < vaddr)    continue;
+                    if (cur_va >= seg_vend) break;
+                    dst[b] = nex_buf[offset + (cur_va - vaddr)];
+                }
+            }
+        }
+    }
+
+    return entry;
+}
+
+// Pick the right loader based on the file's magic bytes — ToxenOS's native
+// NEX format and ELF (kept as the alternate/dev/fallback format) coexist on
+// disk, so the loader sniffs the magic rather than trusting the extension.
+static uint32_t load_binary_into_dir(uint32_t* dir, uint8_t* buf, uint32_t size)
+{
+    if (size < 4) return 0;
+
+    uint32_t magic = *(uint32_t*)buf;
+    if (magic == 0x464C457Fu) return load_elf_into_dir(dir, buf, size);
+    if (magic == NEX_MAGIC)   return load_nex_into_dir(dir, buf, size);
+    return 0;
+}
+
 // Create a new isolated user process.
 // elf_buf/elf_size: the ELF binary to load.
 // Returns pid on success, -1 on failure.
@@ -289,7 +383,7 @@ int process_create_elf(const char* name, uint8_t* elf_buf, uint32_t elf_size)
         kstack_free(p->kernel_stack); p->kernel_stack = 0; return -1;
     }
 
-    uint32_t entry = load_elf_into_dir(p->page_directory, elf_buf, elf_size);
+    uint32_t entry = load_binary_into_dir(p->page_directory, elf_buf, elf_size);
     if (!entry) {
         klog("proc_create: elf load fail\n");
         kstack_free(p->kernel_stack); p->kernel_stack = 0; return -1;
@@ -497,7 +591,9 @@ void scheduler()
 }
 
 // ── load_elf_from_path ────────────────────────────────────────────────────────
-// Read an ELF file from the VFS into a kernel heap buffer.
+// Read an executable (ELF or NEX) from the VFS into a kernel heap buffer.
+// Magic validation here only checks the file is one of the two known
+// formats; load_binary_into_dir() does the real per-format parsing.
 // On success: *buf_out points to a kmalloc'd buffer the caller must kfree,
 //             *size_out is the number of bytes read, returns 0.
 // On failure: *buf_out is NULL, returns -1.
@@ -536,8 +632,9 @@ static int load_elf_from_path(const char* path, uint8_t** buf_out, uint32_t* siz
     }
     vfs_close(fd);
 
-    if (total < 52 || *(uint32_t*)buf != 0x464C457F) {
-        klog("spawn: bad elf\n");
+    uint32_t magic = total >= 4 ? *(uint32_t*)buf : 0;
+    if (total < 4 || (magic != 0x464C457Fu && magic != NEX_MAGIC)) {
+        klog("spawn: bad executable\n");
         kfree(buf);
         return -1;
     }
@@ -558,7 +655,7 @@ int sys_exec(const char* path)
     uint32_t* new_dir = paging_create_directory();
     if (!new_dir) { kfree(buf); return -1; }
 
-    uint32_t entry = load_elf_into_dir(new_dir, buf, size);
+    uint32_t entry = load_binary_into_dir(new_dir, buf, size);
     kfree(buf);
     if (!entry) return -1;
 

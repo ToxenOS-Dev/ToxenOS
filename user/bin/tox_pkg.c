@@ -11,12 +11,33 @@ static const char* basename(const char* path) {
     return last;
 }
 
-// Package server IP (QEMU host = 10.0.2.2, but packages served on port 8080)
-// User can override with: reg set tox.server 10.0.2.2
-// 10.0.2.2 = host machine in QEMU user networking (SLIRP forwards to 127.0.0.1)
-// Run on host: python3 -m http.server 9000 --directory ~/mypackages
-#define TOX_PKG_SERVER_IP  ((uint32_t)(10<<24|0<<16|2<<8|2))
-#define TOX_PKG_PORT       9000
+// Default package server: QEMU SLIRP host (10.0.2.2) on port 9000
+// Override with: reg set tox.server <hostname-or-ip>
+//                reg set tox.port   <port>
+// Run on host:   python3 -m http.server 9000 --directory ~/mypackages
+#define TOX_PKG_DEFAULT_IP    ((uint32_t)(10<<24|0<<16|2<<8|2))
+#define TOX_PKG_DEFAULT_PORT  9000
+
+static uint32_t pkg_server_ip(void) {
+    char host[128]; host[0] = 0;
+    tox_sysctl("tox.server", host, sizeof(host));
+    if (!host[0]) return TOX_PKG_DEFAULT_IP;
+    uint32_t ip = tox_resolve(host);
+    if (!ip) {
+        set_color(0x0C); print("tox: cannot resolve server: "); print(host); print("\n"); set_color(0x07);
+    }
+    return ip;
+}
+
+static uint16_t pkg_server_port(void) {
+    char portstr[16]; portstr[0] = 0;
+    tox_sysctl("tox.port", portstr, sizeof(portstr));
+    if (!portstr[0]) return TOX_PKG_DEFAULT_PORT;
+    uint32_t p = 0;
+    for (int i = 0; portstr[i] >= '0' && portstr[i] <= '9'; i++)
+        p = p * 10 + (uint32_t)(portstr[i] - '0');
+    return p ? (uint16_t)p : TOX_PKG_DEFAULT_PORT;
+}
 
 static void usage(void) {
     set_color(0x0B); print("tox - ToxenOS Elevated Runner & Package Manager\n"); set_color(0x07);
@@ -190,8 +211,12 @@ void _start() {
         char path[128]; tox_strcpy(path, "/"); tox_strcat(path, name); tox_strcat(path, ".elf");
         char dst[256]; tox_strcpy(dst, "/C:/BSM/usr/lst/"); tox_strcat(dst, name); tox_strcat(dst, ".elf");
 
+        uint32_t srv_ip = pkg_server_ip();
+        uint16_t srv_port = pkg_server_port();
+        if (!srv_ip) tox_exit();
+
         set_color(0x0B); print("tox: downloading "); print(name); print(".elf...\n"); set_color(0x07);
-        int bytes = http_download(TOX_PKG_SERVER_IP, TOX_PKG_PORT, path, dst);
+        int bytes = http_download(srv_ip, srv_port, path, dst);
         if (bytes < 0) {
             set_color(0x0C); print("tox: download failed (is package server running?)\n"); set_color(0x07);
             tox_exit();
@@ -203,7 +228,7 @@ void _start() {
             char meta_url[128], meta_dst[256];
             tox_strcpy(meta_url, "/"); tox_strcat(meta_url, name); tox_strcat(meta_url, ".meta");
             tox_strcpy(meta_dst, "/C:/BSM/usr/lst/"); tox_strcat(meta_dst, name); tox_strcat(meta_dst, ".meta");
-            http_download(TOX_PKG_SERVER_IP, TOX_PKG_PORT, meta_url, meta_dst);
+            http_download(srv_ip, srv_port, meta_url, meta_dst);
         }
         tox_exit();
     }

@@ -330,6 +330,8 @@ static int find_in_path(const char* cmd, char* out) {
     if (cmd[0] == '/') {
         str_copy(out, cmd);
         if (sys_stat(out) >= 0) return 1;
+        str_copy(out, cmd); str_cat(out, ".nex");
+        if (sys_stat(out) >= 0) return 1;
         str_copy(out, cmd); str_cat(out, ".elf");
         if (sys_stat(out) >= 0) return 1;
         return 0;
@@ -363,6 +365,8 @@ static int find_in_path(const char* cmd, char* out) {
         if (!dlen) continue;
 
         str_copy(out, dir); str_cat(out, "/"); str_cat(out, cmd);
+        if (sys_stat(out) >= 0) return 1;
+        str_copy(out, dir); str_cat(out, "/"); str_cat(out, cmd); str_cat(out, ".nex");
         if (sys_stat(out) >= 0) return 1;
         str_copy(out, dir); str_cat(out, "/"); str_cat(out, cmd); str_cat(out, ".elf");
         if (sys_stat(out) >= 0) return 1;
@@ -491,10 +495,16 @@ static void cmd_cd(const char* args) {
 
 // ── Single-command spawner ────────────────────────────────────────────────────
 
+// Resolved path of the most recent spawn_cmd() lookup — kept around purely
+// so a failed spawn can report exactly which file (.nex or .elf) it tried,
+// instead of a generic message that hides which format actually failed.
+static char last_spawn_path[128];
+
 // Returns pid, -2 if not found, -1 on spawn error
 static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout_fd) {
     static char path[128];
     if (!find_in_path(cmd, path)) return -2;
+    str_copy(last_spawn_path, path);
 
     static char full_args[256];
     // Keyword commands take subcommands/text, not file paths — don't use cwd as default arg
@@ -503,10 +513,10 @@ static int spawn_cmd(const char* cmd, const char* args, int stdin_fd, int stdout
                      str_equal(cmd,"passwd")||str_equal(cmd,"usermod")||str_equal(cmd,"sysctl")||
                      str_equal(cmd,"where")||str_equal(cmd,"touch")||str_equal(cmd,"whoami")||str_equal(cmd,"date")||str_equal(cmd,"free")||
                      str_equal(cmd,"df")||str_equal(cmd,"wc")||str_equal(cmd,"syslog")||
-                     str_equal(cmd,"trash")||str_equal(cmd,"help")||str_equal(cmd,"uname")||
+                     str_equal(cmd,"help")||str_equal(cmd,"uname")||
                      str_equal(cmd,"proc")||str_equal(cmd,"top")||str_equal(cmd,"bmsg")||
                      str_equal(cmd,"ts")||str_equal(cmd,"edit")||str_equal(cmd,"run")||
-                     str_equal(cmd,"chmod");
+                     str_equal(cmd,"chmod")||str_equal(cmd,"nexinfo");
     if (args && args[0]) {
         // Only prepend cwd for args that look like relative file paths
         // Don't prepend for IPs (start with digit), hostnames with dots,
@@ -718,8 +728,14 @@ static void run_pipeline(char* line) {
             set_color(0x07); goto cleanup;
         }
         if (pid < 0) {
-            set_color(0x0C); print("Failed to run '"); print(cmd);
-            print("' (out of memory or process slots)\n");
+            // Note: this path can mean a genuine resource exhaustion (no free
+            // process slots / OOM), or that last_spawn_path itself failed to
+            // load (e.g. a corrupt .nex/.elf). We deliberately never retry
+            // with a different extension here — find_in_path already picked
+            // one file, and silently swapping formats on failure would hide
+            // real NEX/ELF bugs instead of reporting them.
+            set_color(0x0C); print("Failed to run '"); print(last_spawn_path);
+            print("' (process could not be created — invalid/corrupt executable, or out of memory)\n");
             set_color(0x07); goto cleanup;
         }
         pids[s] = pid;
@@ -833,8 +849,12 @@ static void run_command(char* input) {
         if (is_sh) { run_sh_script(run_path, run_rest); return; }
         int pid;
         if (is_ts) {
+            static char ts_path[128];
+            if (!find_in_path("ts", ts_path)) {
+                set_color(0x0C); print("run: ts interpreter not found\n"); set_color(0x07); return;
+            }
             int tty = sys_my_tty(); if (tty < 0) tty = 0;
-            pid = sys_spawn_tty_args("/C:/BSM/SystemT/ts.elf", tty, run_path);
+            pid = sys_spawn_tty_args(ts_path, tty, run_path);
         } else {
             pid = spawn_cmd(run_path, run_rest, -1, -1);
         }

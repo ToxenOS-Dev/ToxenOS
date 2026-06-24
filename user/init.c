@@ -5,7 +5,7 @@
 void _start() {
     tox_setenv("PATH",  "/C:/BSM/SystemT:/C:/BSM/usr/lst");
     tox_setenv("HOME",  "/C:");
-    tox_setenv("SHELL", "/shell.elf");
+    tox_setenv("SHELL", "/shell.nex");
     tox_setenv("TERM",  "toxterm");
     tox_setenv("OS",    "ToxenOS");
     tox_setenv("USER",  "toxenos");

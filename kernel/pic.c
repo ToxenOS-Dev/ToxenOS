@@ -20,10 +20,6 @@ static inline void io_wait()
 
 void pic_remap()
 {
-    // save masks
-    uint8_t mask1 = inb(PIC1_DATA);
-    uint8_t mask2 = inb(PIC2_DATA);
-
     // ICW1: start initialization sequence
     outb(PIC1_COMMAND, 0x11); io_wait();
     outb(PIC2_COMMAND, 0x11); io_wait();

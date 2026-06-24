@@ -15,6 +15,8 @@
 #include "../include/process64.h"
 #include "../include/tss64.h"
 #include "../include/ring3_test64.h"
+#include "../include/ata64.h"
+#include "../include/txfs64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
@@ -157,11 +159,32 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     __asm__ volatile ("sti");
     out_line("Interrupts enabled (sti) -- starting kernel tasks");
 
+    ata64_init();
+    out_line("ATA64 initialized");
+
+    if (txfs64_mount() == 0) {
+        out_line("TxFS64 mounted");
+        int fd = txfs64_open("/hello.ts");
+        if (fd >= 0) {
+            uint8_t buf[512];
+            int n = txfs64_read(fd, buf, sizeof(buf) - 1);
+            buf[n > 0 ? (uint32_t)n : 0] = 0;
+            out_kv("/hello.ts size: ", (uint64_t)n);
+            klog((char*)buf);
+            klog("\n");
+            txfs64_close(fd);
+        } else {
+            out_line("/hello.ts: open failed");
+        }
+    } else {
+        out_line("TxFS64 mount failed (bad magic)");
+    }
+
 #ifdef RING3_TEST64_RUN
-    out_line("Entering ring3 smoke test (iretq) -- expect a caught #UD next");
+    out_line("Entering ring3 syscall test (iretq) -- expect sys64_write/sys64_exit next");
     ring3_test64_start();
-    // unreachable: ring3_enter64 ends in iretq, and the deliberate #UD
-    // it triggers is caught by isr64_dispatch, which halts forever.
+    // unreachable: ring3_enter64 ends in iretq, and the stub's sys64_exit
+    // (Milestone 5) halts forever once it's done.
 #else
     process64_init();
     process64_start();

@@ -205,6 +205,11 @@ kernel64:
 	nasm -f elf64 kernel/isr64.asm         -o build/isr64.o
 	nasm -f elf64 kernel/switch64.asm      -o build/switch64.o
 	nasm -f elf64 kernel/ring3_test64.asm  -o build/ring3_test64_asm.o
+	# Milestone 5: ring3 syscall test stub -- flat binary, embedded as a
+	# blob the same way the 32-bit Makefile embeds init.elf/shell.nex.
+	nasm -f bin kernel/ring3_syscall_stub64.asm -o build/ring3_syscall_stub64.bin
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
+		build/ring3_syscall_stub64.bin build/ring3_syscall_stub64_blob.o
 	gcc $(KFLAGS64) -c kernel/kernel64.c     -o build/kernel64.o
 	gcc $(KFLAGS64) -c kernel/klog.c         -o build/klog64.o
 	gcc $(KFLAGS64) -c kernel/idt64.c        -o build/idt64.o
@@ -216,11 +221,16 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/process64.c    -o build/process64.o
 	gcc $(KFLAGS64) -c kernel/tss64.c        -o build/tss64.o
 	gcc $(KFLAGS64) -c kernel/ring3_test64.c -o build/ring3_test64.o
+	gcc $(KFLAGS64) -c kernel/ata64.c        -o build/ata64.o
+	gcc $(KFLAGS64) -c kernel/txfs64.c       -o build/txfs64.o
+	gcc $(KFLAGS64) -c kernel/syscall64.c    -o build/syscall64.o
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
 		build/boot64.o build/isr64.o build/switch64.o build/kernel64.o \
 		build/klog64.o build/idt64.o build/interrupt64.o build/irq64.o \
 		build/timer64.o build/keyboard64.o build/pic64.o build/process64.o \
-		build/tss64.o build/ring3_test64.o build/ring3_test64_asm.o
+		build/tss64.o build/ring3_test64.o build/ring3_test64_asm.o \
+		build/ata64.o build/txfs64.o build/syscall64.o \
+		build/ring3_syscall_stub64_blob.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin
 	@if command -v grub2-mkrescue >/dev/null 2>&1; then \
 		grub2-mkrescue --modules="multiboot2" \
@@ -233,8 +243,14 @@ kernel64:
 		echo "      Install grub2 then run: grub2-mkrescue -o build/ToxenOS64.iso iso64"; \
 	fi
 
-run64: kernel64
-	qemu-system-x86_64 -m 256 -cdrom build/ToxenOS64.iso -serial stdio
+# build/disk.img (GPT + TxFS, containing /hello.ts) comes from the
+# existing `populate` pipeline (same image the 32-bit run targets use,
+# just attached here as legacy IDE instead of NVMe) -- depends on `user`
+# since `populate` writes build/user/*.nex into the image.
+run64: kernel64 user populate
+	qemu-system-x86_64 -m 256 -boot order=d -cdrom build/ToxenOS64.iso \
+		-drive file=build/disk.img,format=raw,if=ide \
+		-serial stdio
 
 run: all build/target.img
 	qemu-system-i386 \

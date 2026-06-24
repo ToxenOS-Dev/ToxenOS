@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include "../include/isr64.h"
 #include "../include/klog.h"
+#include "../include/syscall64.h"
 
 static const char* exception_name(uint64_t vector)
 {
@@ -105,7 +106,8 @@ static void page_fault64_handler(trapframe64_t* tf)
 
 void isr64_dispatch(trapframe64_t* tf)
 {
-    if (tf->vector == 14) { page_fault64_handler(tf); return; }
+    if (tf->vector == 14)  { page_fault64_handler(tf); return; }
+    if (tf->vector == 128) { syscall64_dispatch(tf); return; }
 
     print_report(tf);
 

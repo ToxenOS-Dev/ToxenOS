@@ -164,6 +164,13 @@ IRQ64 13, 45
 IRQ64 14, 46
 IRQ64 15, 47
 
+; ── Syscall gate (int 0x80). DPL=3 in the IDT entry (idt64.c) lets ring3
+; invoke this; mechanically it's just another vector through the same
+; COMMON_TAIL/isr64_dispatch path used by every exception above --
+; isr64_dispatch special-cases vector 128 as resumable (kernel/interrupt64.c)
+; exactly like #BP, dispatching to syscall64_dispatch instead of halting. ──
+ISR64_NOERR 128
+
 ; ── Default catch-all for any vector without an explicit stub (>=48) ──
 ; A single shared stub can't know which of the many unused vectors fired
 ; it — it reports a sentinel vector number rather than the real one.

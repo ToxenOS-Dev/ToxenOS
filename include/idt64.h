@@ -24,6 +24,7 @@ typedef struct {
 } __attribute__((packed)) idt_ptr64_t;
 
 #define IDT64_INTERRUPT_GATE_K 0x8E  // present, ring0, 64-bit interrupt gate
+#define IDT64_INTERRUPT_GATE_U 0xEE  // same, but DPL=3 -- callable from ring3 (int 0x80)
 
 void idt64_set_gate(int n, uint64_t handler, uint8_t ist, uint8_t type_attr);
 void idt64_init(void);

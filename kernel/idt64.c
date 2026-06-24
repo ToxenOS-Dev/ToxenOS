@@ -80,5 +80,9 @@ void idt64_init(void)
     idt64_set_gate(46, (uint64_t)irq64_14, 0, IDT64_INTERRUPT_GATE_K);
     idt64_set_gate(47, (uint64_t)irq64_15, 0, IDT64_INTERRUPT_GATE_K);
 
+    // Syscall gate -- DPL=3 (IDT64_INTERRUPT_GATE_U) so ring3 can invoke
+    // it via `int 0x80` without a #GP.
+    idt64_set_gate(128, (uint64_t)isr64_128, 0, IDT64_INTERRUPT_GATE_U);
+
     __asm__ volatile ("lidt %0" : : "m"(idtp64));
 }

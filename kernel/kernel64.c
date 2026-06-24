@@ -1,12 +1,24 @@
-// kernel/kernel64.c — ToxenOS x86_64 long-mode boot bring-up (Milestone 1).
+// kernel/kernel64.c — ToxenOS x86_64 long-mode boot bring-up.
 //
-// Deliberately tiny and throwaway: proves the boot64.asm long-mode
-// transition genuinely succeeded (VGA + serial output, CR0/CR4/EFER
-// readback including LMA), then halts. Does not call into any existing
+// Milestone 1: proves the boot64.asm long-mode transition genuinely
+// succeeded (VGA + serial output, CR0/CR4/EFER readback including LMA).
+// Milestone 2 (this revision): brings up the 64-bit IDT, optionally
+// exercises int3/ud2 exception handling, then enables PIC/IRQ0/IRQ1 and
+// `sti` before parking in the idle loop. Does not call into any existing
 // 32-bit subsystem (cpu.c/acpi.c/paging.c/fbterm.c/...) — those get
 // ported in their own later migration milestones, not here.
 #include <stdint.h>
 #include "../include/klog.h"
+#include "../include/idt64.h"
+#include "../include/irq64.h"
+#include "../include/pic.h"
+
+// Comment out to skip the deliberate int3/ud2 exception tests — the
+// PIC/IRQ/sti bring-up below always runs regardless of this flag.
+// #define ISR64_RUN_TESTS 1
+
+extern void timer64_handler(void);
+extern void keyboard64_handler(void);
 
 _Static_assert(sizeof(void*) == 8, "kernel64.c must be compiled as 64-bit (-m64)");
 
@@ -109,6 +121,29 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     out_line(flags);
 
     out_line("TOXENOS64 LONGMODE OK");
+
+    idt64_init();
+    out_line("IDT64 initialized");
+
+#ifdef ISR64_RUN_TESTS
+    out_line("Triggering int3 (breakpoint) test...");
+    __asm__ volatile ("int3");
+    out_line("...returned from int3 OK");
+
+    out_line("Triggering ud2 (invalid opcode) test...");
+    __asm__ volatile ("ud2");
+    // unreachable: #UD's saved RIP points at the faulting instruction
+    // itself (no architectural "skip past it"), so the dispatcher halts
+    // instead of returning here.
+#endif
+
+    pic_remap();
+    irq64_register(0, timer64_handler);
+    irq64_register(1, keyboard64_handler);
+    out_line("PIC remapped, IRQ0/IRQ1 registered");
+
+    __asm__ volatile ("sti");
+    out_line("Interrupts enabled (sti) -- entering idle loop");
 
     for (;;) {
         __asm__ volatile("hlt");

@@ -190,18 +190,31 @@ user: tools/elf2nex
 build/target.img:
 	dd if=/dev/zero of=build/target.img bs=1M count=2048
 
-# ── x86_64 long-mode bring-up (Milestone 1) ──────────────────────────────────
-# No disk image involved — there's no filesystem code in this milestone,
-# just boot64.asm's long-mode transition + kernel64.c's VGA/serial proof
-# of life. Lives in its own iso64/ tree so it never touches iso/ (used by
-# the 32-bit `all`/`populate` targets).
+# ── x86_64 long-mode bring-up (Milestones 1-2) ───────────────────────────────
+# No disk image involved — there's no filesystem code yet, just the
+# long-mode transition (boot64.asm), VGA/serial proof of life
+# (kernel64.c), and now 64-bit IDT/exception/PIC/IRQ bring-up. Lives in
+# its own iso64/ tree so it never touches iso/ (used by the 32-bit
+# `all`/`populate` targets).
+# kernel/pic.c is reused VERBATIM here (compiled a second time under
+# KFLAGS64, same precedent as klog.c below) — it's pure port I/O with no
+# 32-bit-specific dependency, so there's no need to fork a pic64.c.
 kernel64:
 	@mkdir -p build iso64/boot
 	nasm -f elf64 kernel/boot64.asm -o build/boot64.o
-	gcc $(KFLAGS64) -c kernel/kernel64.c -o build/kernel64.o
-	gcc $(KFLAGS64) -c kernel/klog.c     -o build/klog64.o
+	nasm -f elf64 kernel/isr64.asm  -o build/isr64.o
+	gcc $(KFLAGS64) -c kernel/kernel64.c     -o build/kernel64.o
+	gcc $(KFLAGS64) -c kernel/klog.c         -o build/klog64.o
+	gcc $(KFLAGS64) -c kernel/idt64.c        -o build/idt64.o
+	gcc $(KFLAGS64) -c kernel/interrupt64.c  -o build/interrupt64.o
+	gcc $(KFLAGS64) -c kernel/irq64.c        -o build/irq64.o
+	gcc $(KFLAGS64) -c kernel/timer64.c      -o build/timer64.o
+	gcc $(KFLAGS64) -c kernel/keyboard64.c   -o build/keyboard64.o
+	gcc $(KFLAGS64) -c kernel/pic.c          -o build/pic64.o
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
-		build/boot64.o build/kernel64.o build/klog64.o
+		build/boot64.o build/isr64.o build/kernel64.o build/klog64.o \
+		build/idt64.o build/interrupt64.o build/irq64.o \
+		build/timer64.o build/keyboard64.o build/pic64.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin
 	@if command -v grub2-mkrescue >/dev/null 2>&1; then \
 		grub2-mkrescue --modules="multiboot2" \

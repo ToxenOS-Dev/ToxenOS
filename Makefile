@@ -201,9 +201,10 @@ build/target.img:
 # 32-bit-specific dependency, so there's no need to fork a pic64.c.
 kernel64:
 	@mkdir -p build iso64/boot
-	nasm -f elf64 kernel/boot64.asm   -o build/boot64.o
-	nasm -f elf64 kernel/isr64.asm    -o build/isr64.o
-	nasm -f elf64 kernel/switch64.asm -o build/switch64.o
+	nasm -f elf64 kernel/boot64.asm        -o build/boot64.o
+	nasm -f elf64 kernel/isr64.asm         -o build/isr64.o
+	nasm -f elf64 kernel/switch64.asm      -o build/switch64.o
+	nasm -f elf64 kernel/ring3_test64.asm  -o build/ring3_test64_asm.o
 	gcc $(KFLAGS64) -c kernel/kernel64.c     -o build/kernel64.o
 	gcc $(KFLAGS64) -c kernel/klog.c         -o build/klog64.o
 	gcc $(KFLAGS64) -c kernel/idt64.c        -o build/idt64.o
@@ -213,10 +214,13 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/keyboard64.c   -o build/keyboard64.o
 	gcc $(KFLAGS64) -c kernel/pic.c          -o build/pic64.o
 	gcc $(KFLAGS64) -c kernel/process64.c    -o build/process64.o
+	gcc $(KFLAGS64) -c kernel/tss64.c        -o build/tss64.o
+	gcc $(KFLAGS64) -c kernel/ring3_test64.c -o build/ring3_test64.o
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
 		build/boot64.o build/isr64.o build/switch64.o build/kernel64.o \
 		build/klog64.o build/idt64.o build/interrupt64.o build/irq64.o \
-		build/timer64.o build/keyboard64.o build/pic64.o build/process64.o
+		build/timer64.o build/keyboard64.o build/pic64.o build/process64.o \
+		build/tss64.o build/ring3_test64.o build/ring3_test64_asm.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin
 	@if command -v grub2-mkrescue >/dev/null 2>&1; then \
 		grub2-mkrescue --modules="multiboot2" \

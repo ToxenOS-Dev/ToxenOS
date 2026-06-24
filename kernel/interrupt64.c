@@ -68,6 +68,14 @@ static void print_report(trapframe64_t* tf)
     kv("  RSP:        ", tf->rsp);
     kv("  SS:         ", tf->ss);
     kv("  error_code: ", tf->error_code);
+
+    // CS bits 0-1 are the CPL the CPU was running at when this trap
+    // landed (the RPL of the saved CS, which the CPU always sets equal
+    // to CPL on any exception/interrupt) -- not to be confused with the
+    // *current* CPL while this handler runs, which is always 0.
+    uint64_t cpl = tf->cs & 3;
+    klog("  CPL:        ");
+    klog(cpl == 3 ? "3 (ring3/user)\n" : "0 (ring0/kernel)\n");
 }
 
 static void halt_forever(void)

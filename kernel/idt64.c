@@ -35,7 +35,10 @@ void idt64_init(void)
     idt64_set_gate(5,  (uint64_t)isr64_5,  0, IDT64_INTERRUPT_GATE_K);
     idt64_set_gate(6,  (uint64_t)isr64_6,  0, IDT64_INTERRUPT_GATE_K);
     idt64_set_gate(7,  (uint64_t)isr64_7,  0, IDT64_INTERRUPT_GATE_K);
-    idt64_set_gate(8,  (uint64_t)isr64_8,  0, IDT64_INTERRUPT_GATE_K);
+    // Double fault gets its own dedicated IST1 stack (set up by
+    // tss64_init()) so a corrupt/overflowed stack can never prevent
+    // double-fault delivery -- every other gate stays IST=0.
+    idt64_set_gate(8,  (uint64_t)isr64_8,  1, IDT64_INTERRUPT_GATE_K);
     idt64_set_gate(9,  (uint64_t)isr64_9,  0, IDT64_INTERRUPT_GATE_K);
     idt64_set_gate(10, (uint64_t)isr64_10, 0, IDT64_INTERRUPT_GATE_K);
     idt64_set_gate(11, (uint64_t)isr64_11, 0, IDT64_INTERRUPT_GATE_K);

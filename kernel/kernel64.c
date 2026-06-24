@@ -13,10 +13,18 @@
 #include "../include/irq64.h"
 #include "../include/pic.h"
 #include "../include/process64.h"
+#include "../include/tss64.h"
+#include "../include/ring3_test64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
 // #define ISR64_RUN_TESTS 1
+
+// Define to run the Milestone 3B hardcoded ring3 smoke test in place of
+// the Milestone 3A kernel-task scheduler -- the two are mutually
+// exclusive (the ring3 test halts forever once it catches the
+// deliberate #UD, so there is no "resume the scheduler afterward").
+// #define RING3_TEST64_RUN 1
 
 extern void timer64_handler(void);
 extern void keyboard64_handler(void);
@@ -126,6 +134,9 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     idt64_init();
     out_line("IDT64 initialized");
 
+    tss64_init();
+    out_line("TSS64 loaded (ltr)");
+
 #ifdef ISR64_RUN_TESTS
     out_line("Triggering int3 (breakpoint) test...");
     __asm__ volatile ("int3");
@@ -146,11 +157,18 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     __asm__ volatile ("sti");
     out_line("Interrupts enabled (sti) -- starting kernel tasks");
 
+#ifdef RING3_TEST64_RUN
+    out_line("Entering ring3 smoke test (iretq) -- expect a caught #UD next");
+    ring3_test64_start();
+    // unreachable: ring3_enter64 ends in iretq, and the deliberate #UD
+    // it triggers is caught by isr64_dispatch, which halts forever.
+#else
     process64_init();
     process64_start();
     // Reached only if the scheduler later switches back to the boot
     // task (e.g. if both demo tasks ever died) — falls into the same
     // idle loop as before.
+#endif
 
     for (;;) {
         __asm__ volatile("hlt");

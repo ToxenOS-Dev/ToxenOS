@@ -49,17 +49,37 @@ align 4
 ; convention to kernel/boot.asm's .boot section.
 section .boot exec alloc
 
+; Exported so kernel/tss64.c can write the TSS descriptor's two qwords
+; (.tss_lo/.tss_hi below) at runtime, once the TSS struct's link-time
+; address is known -- this file is assembled before that address exists,
+; so the GDT slot is reserved here but filled in later, not statically.
+global gdt64
+
 align 8
 gdt64:
     dq 0x0000000000000000      ; 0x00 null descriptor
 .code: equ $ - gdt64
-    dq 0x00209A0000000000      ; 0x08 64-bit code: P=1,S=1,Type=Exec/Read,L=1,D=0
+    dq 0x00209A0000000000      ; 0x08 kernel code64: P=1,S=1,Type=Exec/Read,DPL=0,L=1,D=0
 .data: equ $ - gdt64
-    dq 0x0000920000000000      ; 0x10 data: P=1,S=1,Type=Read/Write
+    dq 0x0000920000000000      ; 0x10 kernel data: P=1,S=1,Type=Read/Write,DPL=0
+.ucode: equ $ - gdt64
+    dq 0x0020FA0000000000      ; 0x18 user code64: same as kernel code, DPL=3 (access=0xFA)
+.udata: equ $ - gdt64
+    dq 0x0000F20000000000      ; 0x20 user data: same as kernel data, DPL=3 (access=0xF2)
+.tss_lo: equ $ - gdt64
+    dq 0x0000000000000000      ; 0x28 TSS descriptor, low qword (filled at runtime)
+.tss_hi: equ $ - gdt64
+    dq 0x0000000000000000      ; 0x30 TSS descriptor, high qword (base bits 63:32)
 gdt64_end:
 
-CODE64_SEL equ 0x08
-DATA64_SEL equ 0x10
+; Milestone 3B selectors. Must stay in sync with include/gdt64.h (NASM
+; can't include that C header directly) and with the user-selector
+; copies in kernel/ring3_test64.asm.
+CODE64_SEL      equ 0x08
+DATA64_SEL      equ 0x10
+USER_CODE64_SEL equ 0x18
+USER_DATA64_SEL equ 0x20
+TSS64_SEL       equ 0x28
 
 ; GDT descriptor — physical address. gdt64 lives in .boot (identity-mapped
 ; low memory) so this stays valid even after CR0.PG is set, since the
@@ -97,7 +117,13 @@ print_no_long_mode:
 ; physical frames, so there is no need for two separate PD tables.
 section .bootdata
 align 4096
+; pdpt_high/pd exported for kernel/ring3_test64.c, which carves one PD
+; entry's flat 2MB leaf into a 4KB page table for the hardcoded ring3
+; stub and needs to flip the PAGE_USER bit on the high-half walk above
+; it (pml4[511]/pdpt_high[510]) without disturbing the low identity alias.
 global pml4
+global pdpt_high
+global pd
 pml4:      times 512 dq 0
 pdpt_low:  times 512 dq 0
 pdpt_high: times 512 dq 0

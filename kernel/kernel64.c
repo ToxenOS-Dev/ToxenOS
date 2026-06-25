@@ -34,9 +34,15 @@
 // Define to run the Milestone 7 user process lifecycle test in place of
 // both of the above -- loads a real compiled program from TxFS64,
 // tracks it as a real process, runs it in ring3, and returns control to
-// the kernel scheduler once it exits/faults. All three test modes are
+// the kernel scheduler once it exits/faults. All four test modes are
 // mutually exclusive.
 // #define EXEC64_TEST_RUN 1
+
+// Define to launch /init64.nex64 as the first real userland process
+// (Milestone 9) in place of all of the above -- exercises the new
+// file/spawn/wait syscall API end-to-end, then falls through to the
+// Milestone 3A scheduler exactly like EXEC64_TEST_RUN does.
+// #define INIT64_RUN 1
 
 extern void timer64_handler(void);
 extern void keyboard64_handler(void);
@@ -193,13 +199,22 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
         out_line("TxFS64 mount failed (bad magic)");
     }
 
-#if defined(EXEC64_TEST_RUN)
+#if defined(INIT64_RUN)
+    out_line("Launching /init64.nex64 as the first real userland process...");
+    int init_code = userproc64_run("/init64.nex64", 0);
+    out_kv("userproc64: init64 returned to kernel, exit code: ", (uint64_t)(int64_t)init_code);
+    process64_init();
+    process64_start();
+    // Reached only if the scheduler later switches back to the boot
+    // task -- proves control genuinely returned to the kernel.
+#elif defined(EXEC64_TEST_RUN)
     // Path is a literal here on purpose, swapped by hand between
     // /exec64_test.nex64 (primary), /exec64_test.elf64 (fallback proof),
     // /exec64_fault_test.nex64 (pid-aware fault termination proof),
     // /exec64_isolation_test.nex64 (per-process memory isolation proof),
-    // and /hello.nex (wrong-arch rejection proof) during verification --
-    // see the Milestone 8 plan's test matrix. Run TWICE in a row: proves
+    // /exec64_badptr_test.nex64 (user-pointer validation proof), and
+    // /hello.nex (wrong-arch rejection proof) during verification -- see
+    // the Milestone 8/9 plans' test matrices. Run TWICE in a row: proves
     // two distinct, incrementing real pids, and that the second run's
     // address space is freshly created/torn down rather than erroring on
     // stale state left over from the first.
@@ -208,7 +223,7 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
         out_kv("userproc64: run #", (uint64_t)run);
         klog(exec64_test_path);
         klog("\n");
-        int code = userproc64_run(exec64_test_path);
+        int code = userproc64_run(exec64_test_path, 0);
         out_kv("userproc64: returned to kernel, exit code: ", (uint64_t)(int64_t)code);
     }
     process64_init();

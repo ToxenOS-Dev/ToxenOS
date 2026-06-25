@@ -10,23 +10,29 @@
 // before the slot is reclaimed. Still strictly one-process-at-a-time
 // (cooperative, run-to-exit) -- this milestone adds isolation, not
 // concurrency.
+//
+// Milestone 9: userproc64_run is now explicitly safe to call NESTED --
+// sys_spawn (kernel/syscall64.c) calls it from inside a running
+// process's own syscall handler, while that process is still "current".
+// Each invocation saves and restores its OWN caller's CR3/RSP0/
+// current_idx (not a hardcoded boot value), so nesting one level
+// (parent spawns child, child runs to completion, parent resumes) just
+// works -- the same way ordinary nested C function calls share one
+// stack. Per-process fds are closed here too, uniformly for both clean
+// exit and fault, since it's a resource-cleanup step, not user-visible
+// behavior that belongs in userproc64_exit_current/_fault_current.
 #include <stdint.h>
 #include "../include/userproc64.h"
 #include "../include/exec64.h"
 #include "../include/paging64.h"
 #include "../include/tss64.h"
-#include "../include/memmap64.h"
+#include "../include/txfs64.h"
 #include "../include/klog.h"
 
 #define USERPROC64_KSTACK_SIZE (16u * 1024u)
 
 extern void userproc64_enter(uint64_t* resume_rsp_out, uint64_t user_rip, uint64_t user_rsp);
 extern void userproc64_return_to_kernel(uint64_t resume_rsp);
-
-// boot64.asm's static, identity-mapped (VA==PA) boot pml4 -- the address
-// space every process's table is built from a copy of, and the address
-// space control returns to whenever no process is running.
-extern uint64_t pml4[512];
 
 static userproc64_t procs[MAX_USERPROCS64];
 static uint8_t kernel_stacks[MAX_USERPROCS64][USERPROC64_KSTACK_SIZE] __attribute__((aligned(16)));
@@ -60,11 +66,18 @@ int userproc64_current_pid(void) {
     return (int)procs[current_idx].pid;
 }
 
-int userproc64_run(const char* path) {
-    if (current_idx >= 0) {
-        klog("userproc64: reentrant userproc64_run call -- refusing\n");
-        return -1;
-    }
+int userproc64_run(const char* path, uint32_t* pid_out) {
+    if (pid_out) *pid_out = 0;
+
+    // Captured BEFORE touching anything else -- restored at the very end
+    // instead of a hardcoded boot value, so a nested call (sys_spawn,
+    // called from inside the PARENT's own syscall handler) correctly
+    // hands control back to whatever was active when THIS call started
+    // (the parent's own address space/kernel stack), not the boot one.
+    // For the existing top-level call sites this is a no-op generalization
+    // -- CR3/RSP0 there are already the boot values when they call in.
+    uint64_t prev_pml4_phys = paging64_current_cr3();
+    uint64_t prev_rsp0      = tss64_get_kernel_stack();
 
     int idx = -1;
     for (int i = 0; i < MAX_USERPROCS64; i++) {
@@ -98,6 +111,10 @@ int userproc64_run(const char* path) {
     p->path              = path;
     p->heap_start        = heap_start;
     p->heap_end          = heap_start;
+    for (int i = 0; i < USERPROC64_MAX_FDS; i++) p->fds[i] = -1;
+    p->has_child_result  = 0;
+
+    if (pid_out) *pid_out = p->pid;
 
     int prev_idx = current_idx;
     current_idx  = idx;
@@ -133,18 +150,24 @@ int userproc64_run(const char* path) {
     // once the process exits or faults.
     userproc64_enter(&p->kernel_resume_rsp, p->entry, p->user_stack_top);
 
-    // The process is done (exited or faulted). Restore the kernel's own
-    // address space BEFORE freeing the process's now-unloaded tables --
-    // switching CR3 away from p->as is also the TLB flush that makes
-    // freeing its pages safe (no stale entry can reference them
+    // The process is done (exited or faulted). Restore whatever address
+    // space and kernel stack were active before THIS call started --
+    // the boot pml4/RSP0 for a top-level call, or the PARENT's own for a
+    // nested sys_spawn call -- BEFORE freeing the process's now-unloaded
+    // tables. Switching CR3 away from p->as is also the TLB flush that
+    // makes freeing its pages safe (no stale entry can reference them
     // afterward, since every MOV CR3 on this kernel is an unconditional
     // full flush -- PCID is never enabled).
-    // pml4 is a .bootdata-section global -- already VA==PA (identity-
-    // mapped), unlike every other phys_of() argument in this codebase.
-    // Do NOT phys_of() it (that subtracts KERNEL_VIRT_BASE64 from an
-    // already-physical address and produces garbage) -- same convention
-    // kernel/ring3_test64.c's own CR3 reload already uses.
-    paging64_switch_to((uint64_t)pml4);
+    paging64_switch_to(prev_pml4_phys);
+    tss64_set_kernel_stack(prev_rsp0);
+
+    // Resource cleanup, not user-visible behavior -- close any fds the
+    // process left open, regardless of whether it exited cleanly or
+    // faulted.
+    for (int i = 0; i < USERPROC64_MAX_FDS; i++) {
+        if (p->fds[i] >= 0) { txfs64_close(p->fds[i]); p->fds[i] = -1; }
+    }
+
     paging64_destroy_as(&p->as);
 
     int code = p->exit_code;

@@ -52,7 +52,15 @@ KFLAGS64 := -ffreestanding -fno-stack-protector -fno-pic -fno-pie -m64 \
 # Milestone 6: 64-bit userspace test program flags -- the 64-bit
 # analogue of UFLAGS above (-m64 plus the same SSE/red-zone-avoidance
 # flags KFLAGS64 already needs for freestanding x86_64 code).
+# -mcmodel=large (Milestone 9): USER64_ELF_BASE is a high canonical
+# address (0xFFFFFFFF83C00000), far outside the default "small" code
+# model's assumption that static data fits a 32-bit absolute relocation
+# -- harmless for small test programs that only ever address one or two
+# string literals via RIP-relative LEA, but a real program with more
+# string literals (user64/init64.c) needs every address materialized as
+# a full 64-bit absolute load instead of an R_X86_64_32 relocation.
 UFLAGS64 := -ffreestanding -fno-stack-protector -fno-pic -m64 \
+            -mcmodel=large \
             -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
             -nostdlib -nostartfiles \
             -Ttext=$(USER64_ELF_BASE) \
@@ -246,6 +254,7 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/userproc64.c   -o build/userproc64.o
 	gcc $(KFLAGS64) -c kernel/physmem64.c    -o build/physmem64.o
 	gcc $(KFLAGS64) -c kernel/paging64.c     -o build/paging64.o
+	gcc $(KFLAGS64) -c kernel/usercopy64.c   -o build/usercopy64.o
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
 		build/boot64.o build/isr64.o build/switch64.o build/kernel64.o \
 		build/klog64.o build/idt64.o build/interrupt64.o build/irq64.o \
@@ -253,7 +262,7 @@ kernel64:
 		build/tss64.o build/ring3_test64.o build/ring3_test64_asm.o \
 		build/ata64.o build/txfs64.o build/syscall64.o build/exec64.o \
 		build/userproc64.o build/userproc64_asm.o \
-		build/physmem64.o build/paging64.o \
+		build/physmem64.o build/paging64.o build/usercopy64.o \
 		build/ring3_syscall_stub64_blob.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin
 	@if command -v grub2-mkrescue >/dev/null 2>&1; then \
@@ -357,6 +366,10 @@ user64: tools/elf2nex64
 	tools/elf2nex64 build/user64/exec_fault_test.elf64 build/user64/exec_fault_test.nex64
 	gcc $(UFLAGS64) user64/exec_isolation_test.c -o build/user64/exec_isolation_test.elf64
 	tools/elf2nex64 build/user64/exec_isolation_test.elf64 build/user64/exec_isolation_test.nex64
+	gcc $(UFLAGS64) user64/exec_badptr_test.c -o build/user64/exec_badptr_test.elf64
+	tools/elf2nex64 build/user64/exec_badptr_test.elf64 build/user64/exec_badptr_test.nex64
+	gcc $(UFLAGS64) user64/init64.c -o build/user64/init64.elf64
+	tools/elf2nex64 build/user64/init64.elf64 build/user64/init64.nex64
 
 populate: tools/txfs_write tools/patch_diskboot user64
 	dd if=/dev/zero of=build/fs.img bs=4096 count=2048
@@ -395,6 +408,10 @@ populate: tools/txfs_write tools/patch_diskboot user64
 	# Milestone 8: per-process memory isolation proof binary -- see
 	# kernel/paging64.c/kernel/userproc64.c.
 	tools/txfs_write build/fs.img build/user64/exec_isolation_test.nex64 /exec64_isolation_test.nex64
+	# Milestone 9: user-pointer validation proof binary, and the first
+	# real userland process (file/spawn/wait syscall API end-to-end).
+	tools/txfs_write build/fs.img build/user64/exec_badptr_test.nex64 /exec64_badptr_test.nex64
+	tools/txfs_write build/fs.img build/user64/init64.nex64 /init64.nex64
 	@tools/txfs_write build/fs.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true
 	@tools/txfs_write build/fs.img /dev/null /etc/.keep 2>/dev/null || true
 	# ── Assemble bootable disk.img (GPT — BIOS + UEFI dual-boot) ────────────────

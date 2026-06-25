@@ -11,7 +11,17 @@
 // the time ring3 resumes.
 #define SYS64_WRITE  1   // (const char* buf, uint64_t len) -> bytes written
 #define SYS64_EXIT   2   // (int code) -> never returns
-#define SYS64_GETPID 3   // () -> pid (hardcoded 1 for now)
+#define SYS64_GETPID 3   // () -> real pid, or -1 if no current process
+
+// Milestone 9: first userland file/process API. All pointer args are
+// user pointers, validated by kernel/usercopy64.c before use -- a bad
+// pointer fails the syscall (-1), it never reaches the kernel raw.
+#define SYS64_OPEN   4   // (const char* path)                      -> per-process fd (0..3) or -1
+#define SYS64_READ   5   // (int fd, char* buf, uint64_t len)       -> bytes read, 0=EOF, -1=error
+#define SYS64_CLOSE  6   // (int fd)                                -> 0 or -1
+#define SYS64_STAT   7   // (const char* path, uint64_t* size_out)  -> 0 or -1
+#define SYS64_SPAWN  8   // (const char* path)                      -> child pid or -1
+#define SYS64_WAIT   9   // (uint32_t pid)                          -> child exit code or -1
 
 void syscall64_dispatch(trapframe64_t* tf);
 

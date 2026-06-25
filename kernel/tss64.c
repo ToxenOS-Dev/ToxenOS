@@ -60,3 +60,7 @@ void tss64_init(void) {
 void tss64_set_kernel_stack(uint64_t rsp0) {
     tss64.rsp0 = rsp0;
 }
+
+uint64_t tss64_get_kernel_stack(void) {
+    return tss64.rsp0;
+}

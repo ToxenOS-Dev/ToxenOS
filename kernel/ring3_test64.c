@@ -55,10 +55,6 @@ static uint8_t  ring3_stack_page[4096] __attribute__((aligned(4096)));
 extern const uint8_t _binary_build_ring3_syscall_stub64_bin_start[];
 extern const uint8_t _binary_build_ring3_syscall_stub64_bin_end[];
 
-static inline uint64_t phys_of(const void* high_half_ptr) {
-    return (uint64_t)high_half_ptr - KERNEL_VIRT_BASE64;
-}
-
 static void ring3_map_init(void) {
     for (uint32_t i = 0; i < sizeof(ring3_code_page); i++) ring3_code_page[i] = 0;
     uint32_t stub_size = (uint32_t)(_binary_build_ring3_syscall_stub64_bin_end -

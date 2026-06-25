@@ -73,7 +73,7 @@ void _start(void) {
     put(pidbuf);
 
     uint64_t size = 0;
-    if (sys_stat("/hello.ts", &size) == 0) {
+    if (sys_stat("/hello.ts", &size, 0) == 0) {
         put_line_int("init64: /hello.ts size = ", (int64_t)size);
     } else {
         put("init64: sys_stat(/hello.ts) failed\n");
@@ -95,7 +95,7 @@ void _start(void) {
     }
 
 #if defined(INIT64_SHELL_RUN)
-    int64_t shell_pid = sys_spawn("/shell64.nex64");
+    int64_t shell_pid = sys_spawn("/shell64.nex64", 0);
     if (shell_pid >= 0) {
         put_line_int("init64: spawned shell64, pid=", shell_pid);
         int64_t code = sys_wait((uint32_t)shell_pid);
@@ -104,7 +104,7 @@ void _start(void) {
         put("init64: sys_spawn(/shell64.nex64) failed\n");
     }
 #else
-    int64_t child_pid = sys_spawn("/exec64_test.nex64");
+    int64_t child_pid = sys_spawn("/exec64_test.nex64", 0);
     if (child_pid >= 0) {
         put_line_int("init64: spawned child pid=", child_pid);
         int64_t code = sys_wait((uint32_t)child_pid);

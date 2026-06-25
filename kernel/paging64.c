@@ -99,6 +99,35 @@ void paging64_switch_to(uint64_t pml4_phys) {
     __asm__ volatile ("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
 }
 
+int paging64_check_user_range(const paging64_as_t* as, uint64_t vaddr,
+                               uint64_t len, int need_write) {
+    if (len == 0) return 0;
+    // Reject up front rather than letting vaddr+len wrap around uint64_t
+    // for a hostile huge length, and cap to one user region's worth --
+    // no syscall this milestone ever legitimately needs more.
+    if (len > 0x200000ULL || vaddr + len < vaddr) return -1;
+    if (vaddr < USER64_ELF_BASE || vaddr + len > USER64_ELF_BASE + 0x200000ULL) return -1;
+    if (!as->pt_phys) return -1;
+
+    uint64_t* pt = (uint64_t*)phys_to_ptr(as->pt_phys);
+    uint64_t start = vaddr & ~0xFFFULL;
+    uint64_t end   = (vaddr + len + 0xFFFULL) & ~0xFFFULL;
+
+    for (uint64_t page_va = start; page_va < end; page_va += 0x1000) {
+        uint64_t slot = (page_va - USER64_ELF_BASE) / 0x1000;
+        if (slot >= 512) return -1;
+        if (!(pt[slot] & PAGE_PRESENT)) return -1;
+        if (need_write && !(pt[slot] & PAGE_WRITABLE)) return -1;
+    }
+    return 0;
+}
+
+uint64_t paging64_current_cr3(void) {
+    uint64_t v;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(v));
+    return v;
+}
+
 void paging64_destroy_as(paging64_as_t* as) {
     if (as->pt_phys) {
         uint64_t* pt = (uint64_t*)phys_to_ptr(as->pt_phys);

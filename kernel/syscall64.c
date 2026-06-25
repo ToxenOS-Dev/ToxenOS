@@ -21,6 +21,7 @@
 #define SYS64_WRITE_MAX 256
 #define SYS64_READ_MAX  1024
 #define SYS64_PATH_MAX  256
+#define SYS64_ARGS_MAX  USERPROC64_ARGS_MAX
 
 // Deliberately does NOT gate on userproc64_current() the way every other
 // Milestone 9 syscall does: writing to the kernel log has no
@@ -99,15 +100,17 @@ static uint64_t sys64_close(int pfd) {
     return 0;
 }
 
-static uint64_t sys64_stat(uint64_t path_ptr, uint64_t size_out_ptr) {
+static uint64_t sys64_stat(uint64_t path_ptr, uint64_t size_out_ptr, uint64_t type_out_ptr) {
     if (!userproc64_current()) return (uint64_t)-1;
 
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
 
     uint64_t size;
-    if (txfs64_stat(path, &size) < 0) return (uint64_t)-1;
+    int is_dir;
+    if (txfs64_stat_type(path, &size, &is_dir) < 0) return (uint64_t)-1;
     if (copy_to_user64(size_out_ptr, &size, sizeof(size)) < 0) return (uint64_t)-1;
+    if (type_out_ptr && copy_to_user64(type_out_ptr, &is_dir, sizeof(is_dir)) < 0) return (uint64_t)-1;
     return 0;
 }
 
@@ -116,15 +119,19 @@ static uint64_t sys64_stat(uint64_t path_ptr, uint64_t size_out_ptr) {
 // no concurrent scheduling of multiple user processes exists yet). The
 // exit code is therefore already known and stashed on the PARENT for
 // sys64_wait to retrieve, rather than anything actually blocking.
-static uint64_t sys64_spawn(uint64_t path_ptr) {
+static uint64_t sys64_spawn(uint64_t path_ptr, uint64_t args_ptr) {
     userproc64_t* parent = userproc64_current();
     if (!parent) return (uint64_t)-1;
 
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
 
+    char args[SYS64_ARGS_MAX];
+    args[0] = 0;
+    if (args_ptr && copy_user_cstr64(args, args_ptr, sizeof(args), 0) < 0) return (uint64_t)-1;
+
     uint32_t child_pid = 0;
-    int exit_code = userproc64_run(path, &child_pid);
+    int exit_code = userproc64_run(path, &child_pid, args);
     if (child_pid == 0) return (uint64_t)-1;  // load failed -- no process created
 
     parent->last_child_pid      = child_pid;
@@ -149,6 +156,31 @@ static uint64_t sys64_getch(void) {
     return (c < 0) ? (uint64_t)-1 : (uint64_t)c;
 }
 
+// Milestone 11: retrieves the single raw argument string sys_spawn
+// stashed on this process at creation time (see userproc64_run/
+// copy_args). Truncates to max_len if the caller's buffer is smaller
+// than the stored args -- never overruns the user buffer either way,
+// since copy_to_user64 itself validates it first.
+static uint64_t sys64_get_args(uint64_t buf_ptr, uint64_t max_len) {
+    userproc64_t* cur = userproc64_current();
+    if (!cur) return (uint64_t)-1;
+    if (max_len == 0) return (uint64_t)-1;
+
+    uint64_t len = 0;
+    while (cur->args[len] && len < (uint64_t)USERPROC64_ARGS_MAX - 1) len++;
+    if (len > max_len - 1) len = max_len - 1;  // truncate to fit the caller's buffer
+
+    // Truncating cur->args[] directly would cut it off mid-string without
+    // a NUL where we clamped -- build the (possibly shorter) terminated
+    // copy here instead, then copy that out.
+    char tmp[USERPROC64_ARGS_MAX];
+    for (uint64_t i = 0; i < len; i++) tmp[i] = cur->args[i];
+    tmp[len] = 0;
+
+    if (copy_to_user64(buf_ptr, tmp, len + 1) < 0) return (uint64_t)-1;
+    return len;
+}
+
 void syscall64_dispatch(trapframe64_t* tf) {
     switch (tf->rax) {
     case SYS64_WRITE:
@@ -170,16 +202,19 @@ void syscall64_dispatch(trapframe64_t* tf) {
         tf->rax = sys64_close((int)tf->rdi);
         break;
     case SYS64_STAT:
-        tf->rax = sys64_stat(tf->rdi, tf->rsi);
+        tf->rax = sys64_stat(tf->rdi, tf->rsi, tf->rdx);
         break;
     case SYS64_SPAWN:
-        tf->rax = sys64_spawn(tf->rdi);
+        tf->rax = sys64_spawn(tf->rdi, tf->rsi);
         break;
     case SYS64_WAIT:
         tf->rax = sys64_wait((uint32_t)tf->rdi);
         break;
     case SYS64_GETCH:
         tf->rax = sys64_getch();
+        break;
+    case SYS64_GET_ARGS:
+        tf->rax = sys64_get_args(tf->rdi, tf->rsi);
         break;
     default:
         tf->rax = (uint64_t)-1;

@@ -15,6 +15,7 @@
 #define SYS64_SPAWN  8
 #define SYS64_WAIT   9
 #define SYS64_GETCH  10
+#define SYS64_GET_ARGS 11
 
 // ABI: rax = syscall number, rdi/rsi/rdx = up to 3 args (see
 // kernel/syscall64.c). Return value comes back in rax.
@@ -57,15 +58,19 @@ static inline int64_t sys_close(int fd) {
     return (int64_t)SYSCALL1(SYS64_CLOSE, fd);
 }
 
-static inline int64_t sys_stat(const char* path, uint64_t* size_out) {
-    return (int64_t)SYSCALL2(SYS64_STAT, path, size_out);
+// Milestone 11: is_dir_out may be NULL if the caller doesn't care about
+// the entry's type, just its size.
+static inline int64_t sys_stat(const char* path, uint64_t* size_out, int* is_dir_out) {
+    return (int64_t)SYSCALL3(SYS64_STAT, path, size_out, is_dir_out);
 }
 
 // Synchronous -- by the time this returns, the child has already run to
 // completion (see kernel/syscall64.c's sys64_spawn). Returns the child's
 // pid on success, -1 on failure (wrong arch, missing file, etc.).
-static inline int64_t sys_spawn(const char* path) {
-    return (int64_t)SYSCALL1(SYS64_SPAWN, path);
+// Milestone 11: args is a single raw string the child can retrieve via
+// sys_get_args -- may be NULL, meaning "no args" (not real argv[]).
+static inline int64_t sys_spawn(const char* path, const char* args) {
+    return (int64_t)SYSCALL2(SYS64_SPAWN, path, args);
 }
 
 // Retrieves the cached exit code of the most recently completed child
@@ -80,6 +85,14 @@ static inline int64_t sys_wait(uint32_t pid) {
 // is currently buffered (kernel/keyboard_buffer64.c, filled by IRQ1).
 static inline int64_t sys_getch(void) {
     return (int64_t)SYSCALL0(SYS64_GETCH);
+}
+
+// Milestone 11: retrieves the single raw argument string this process
+// was spawned with (mirrors the 32-bit tox_get_args model -- ToxenOS has
+// never had a real argv[]). Returns the copied length, or -1 on failure
+// (no current process, or max_len == 0).
+static inline int64_t sys_get_args(char* buf, uint64_t max_len) {
+    return (int64_t)SYSCALL2(SYS64_GET_ARGS, buf, max_len);
 }
 
 // Composed userland helper, not a 1:1 syscall wrapper -- hence "tox_"

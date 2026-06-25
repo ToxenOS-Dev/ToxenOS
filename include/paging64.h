@@ -46,4 +46,20 @@ void paging64_switch_to(uint64_t pml4_phys);
 // no longer points at this address space.
 void paging64_destroy_as(paging64_as_t* as);
 
+// Milestone 9: validates that every 4KB page covering [vaddr, vaddr+len)
+// already has PAGE_PRESENT set (and PAGE_WRITABLE, if need_write) in
+// `as`'s page table -- the opposite of paging64_map_user_page's "map on
+// first touch": this NEVER allocates. A syscall handed a garbage user
+// pointer must fail here, not silently get a fresh page mapped for it.
+// Returns 0 if the whole range is already validly mapped, -1 otherwise
+// (out of the user region, length overflow, or any touched page missing
+// the required PRESENT/WRITABLE bits).
+int paging64_check_user_range(const paging64_as_t* as, uint64_t vaddr,
+                               uint64_t len, int need_write);
+
+// Reads CR3. Needed so a nested userproc64_run (Milestone 9's sys_spawn)
+// can restore exactly whatever address space was active before IT was
+// called, rather than unconditionally the boot pml4.
+uint64_t paging64_current_cr3(void);
+
 #endif // PAGING64_H

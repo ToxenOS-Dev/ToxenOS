@@ -1,4 +1,4 @@
-.PHONY: all user install run disk clean populate kernel64 run64 user64
+.PHONY: all user install run disk clean populate kernel64 run64 user64 cmdtools64
 
 # ── Address space layout — must match include/memmap.h ───────────────────────
 USER_ELF_BASE := 0x10000000
@@ -65,7 +65,8 @@ UFLAGS64 := -ffreestanding -fno-stack-protector -fno-pic -m64 \
             -nostdlib -nostartfiles \
             -Ttext=$(USER64_ELF_BASE) \
             -no-pie -static \
-            -Wall -Wextra -Wno-unused-parameter
+            -Wall -Wextra -Wno-unused-parameter \
+            -I user64
 
 # ── Kernel object files ───────────────────────────────────────────────────────
 KOBJS := \
@@ -374,7 +375,23 @@ user64: tools/elf2nex64
 	gcc $(UFLAGS64) user64/shell64.c -o build/user64/shell64.elf64
 	tools/elf2nex64 build/user64/shell64.elf64 build/user64/shell64.nex64
 
-populate: tools/txfs_write tools/patch_diskboot user64
+# Milestone 11: first standalone ToxenOS64 command programs. Deliberately
+# NOT under user64/ -- a brand-new top-level tree (sibling to user64/),
+# mirroring (spelled out in full this time) the spirit of the 32-bit
+# /C:/BSM/SystemT/ convention. See Makefile's populate: target for where
+# these land in TxFS64.
+cmdtools64: tools/elf2nex64
+	@mkdir -p build/cmdtools64
+	gcc $(UFLAGS64) system_manager/system_tools/command_tools/shw.c -o build/cmdtools64/shw.elf64
+	tools/elf2nex64 build/cmdtools64/shw.elf64 build/cmdtools64/shw.nex64
+	gcc $(UFLAGS64) system_manager/system_tools/command_tools/stat.c -o build/cmdtools64/stat.elf64
+	tools/elf2nex64 build/cmdtools64/stat.elf64 build/cmdtools64/stat.nex64
+	gcc $(UFLAGS64) system_manager/system_tools/command_tools/where.c -o build/cmdtools64/where.elf64
+	tools/elf2nex64 build/cmdtools64/where.elf64 build/cmdtools64/where.nex64
+	gcc $(UFLAGS64) system_manager/system_tools/command_tools/nexinfo.c -o build/cmdtools64/nexinfo.elf64
+	tools/elf2nex64 build/cmdtools64/nexinfo.elf64 build/cmdtools64/nexinfo.nex64
+
+populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 	dd if=/dev/zero of=build/fs.img bs=4096 count=2048
 	# Bundled commands: .nex is the packaged default. Pass PACKAGE_ELF=1 to
 	# also ship the .elf copies (dev/debug builds only — see note up top).
@@ -417,6 +434,16 @@ populate: tools/txfs_write tools/patch_diskboot user64
 	tools/txfs_write build/fs.img build/user64/init64.nex64 /init64.nex64
 	# Milestone 10: ToxenOS64's first interactive shell.
 	tools/txfs_write build/fs.img build/user64/shell64.nex64 /shell64.nex64
+	# Milestone 11: first standalone ToxenOS64 command programs. Path is
+	# a stand-in for the aspirational C:\System Manager\System Tools\
+	# Command Tools\ visible path -- no drive letter, no spaces, until
+	# 64-bit gets a real drive-letter root and a quoting-aware shell
+	# parser (see user64/shell64.c's CMDTOOLS_PATH comment).
+	# tools/txfs_write auto-creates the intermediate directories.
+	tools/txfs_write build/fs.img build/cmdtools64/shw.nex64 /system_manager/system_tools/command_tools/shw.nex64
+	tools/txfs_write build/fs.img build/cmdtools64/stat.nex64 /system_manager/system_tools/command_tools/stat.nex64
+	tools/txfs_write build/fs.img build/cmdtools64/where.nex64 /system_manager/system_tools/command_tools/where.nex64
+	tools/txfs_write build/fs.img build/cmdtools64/nexinfo.nex64 /system_manager/system_tools/command_tools/nexinfo.nex64
 	@tools/txfs_write build/fs.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true
 	@tools/txfs_write build/fs.img /dev/null /etc/.keep 2>/dev/null || true
 	# ── Assemble bootable disk.img (GPT — BIOS + UEFI dual-boot) ────────────────

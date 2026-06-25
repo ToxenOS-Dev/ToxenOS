@@ -34,4 +34,16 @@ _Static_assert(sizeof(tss64_t) == 104, "tss64_t must be exactly 104 bytes");
 // descriptor rebuild needed once this has run once.
 void tss64_init(void);
 
+// Milestone 7: per-process RSP0 update -- the 64-bit analogue of the
+// 32-bit tss_set_kernel_stack(). Called before each ring3 entry so the
+// CPU loads the CURRENT process's own kernel stack on the next
+// privilege-raising interrupt/exception/syscall, not whichever stack
+// happened to be RSP0 last.
+void tss64_set_kernel_stack(uint64_t rsp0);
+
+// Milestone 9: reads the current RSP0 -- needed so a nested
+// userproc64_run (sys_spawn) can restore the caller's own kernel stack
+// after the nested child's own kernel stack is torn down.
+uint64_t tss64_get_kernel_stack(void);
+
 #endif // TSS64_H

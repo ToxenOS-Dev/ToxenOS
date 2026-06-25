@@ -56,6 +56,17 @@ static void hex_to_str(uint64_t val, char* out) {
     out[18] = 0;
 }
 
+// Milestone 11: bounded copy into a process's own args[] -- by value,
+// never a stored pointer (see userproc64_run's doc comment in the
+// header for why).
+static void copy_args(char* dst, const char* src, int max) {
+    int i = 0;
+    if (src) {
+        while (src[i] && i < max - 1) { dst[i] = src[i]; i++; }
+    }
+    dst[i] = 0;
+}
+
 userproc64_t* userproc64_current(void) {
     if (current_idx < 0) return 0;
     return &procs[current_idx];
@@ -66,7 +77,7 @@ int userproc64_current_pid(void) {
     return (int)procs[current_idx].pid;
 }
 
-int userproc64_run(const char* path, uint32_t* pid_out) {
+int userproc64_run(const char* path, uint32_t* pid_out, const char* args) {
     if (pid_out) *pid_out = 0;
 
     // Captured BEFORE touching anything else -- restored at the very end
@@ -113,6 +124,7 @@ int userproc64_run(const char* path, uint32_t* pid_out) {
     p->heap_end          = heap_start;
     for (int i = 0; i < USERPROC64_MAX_FDS; i++) p->fds[i] = -1;
     p->has_child_result  = 0;
+    copy_args(p->args, args, USERPROC64_ARGS_MAX);
 
     if (pid_out) *pid_out = p->pid;
 

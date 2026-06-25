@@ -34,6 +34,10 @@ extern void irq64_12(void), irq64_13(void), irq64_14(void), irq64_15(void);
 
 extern void isr64_default(void);
 
+// Syscall gate (vector 128 / int 0x80). DPL=3 in its IDT entry lets ring3
+// invoke it directly; see kernel/idt64.c and kernel/interrupt64.c.
+extern void isr64_128(void);
+
 // C-side dispatchers called from the asm stubs with rdi = &trapframe64_t.
 void isr64_dispatch(trapframe64_t* tf);
 void irq64_dispatch(trapframe64_t* tf);

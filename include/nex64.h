@@ -32,12 +32,13 @@ typedef struct {
     uint64_t flags;      // NEX64_PF_*
 } __attribute__((packed)) nex64_seg_t;
 
-// Milestone 6 user address layout: one carved-out 2MB PD entry, shared
-// with no other process (no per-process address space yet). PD_EXEC_IDX
-// must differ from kernel/ring3_test64.c's PD_RING3_IDX (31, Milestones
-// 3B/5) so the two carve-outs never collide -- they are mutually
-// exclusive test modes, but both must be safe to build even if only one
-// runs in a given boot.
+// Milestone 6/8 user address layout: every process gets its OWN carved-out
+// 2MB PD entry at this same fixed index (kernel/paging64.c gives each
+// process a private PD_EXEC_IDX page table, not a shared one -- see
+// paging64_create_as). PD_EXEC_IDX must differ from kernel/ring3_test64.c's
+// PD_RING3_IDX (31, Milestones 3B/5) so the two carve-outs never collide --
+// they are mutually exclusive test modes, but both must be safe to build
+// even if only one runs in a given boot.
 #define PD_EXEC_IDX 30
 #define USER64_ELF_BASE (KERNEL_VIRT_BASE64 + (uint64_t)PD_EXEC_IDX * 0x200000ULL)
 // Top of the carved 2MB region, minus the last page (reserved for the

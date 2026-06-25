@@ -201,7 +201,7 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
 
 #if defined(INIT64_RUN)
     out_line("Launching /init64.nex64 as the first real userland process...");
-    int init_code = userproc64_run("/init64.nex64", 0);
+    int init_code = userproc64_run("/init64.nex64", 0, 0);
     out_kv("userproc64: init64 returned to kernel, exit code: ", (uint64_t)(int64_t)init_code);
     process64_init();
     process64_start();
@@ -223,7 +223,7 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
         out_kv("userproc64: run #", (uint64_t)run);
         klog(exec64_test_path);
         klog("\n");
-        int code = userproc64_run(exec64_test_path, 0);
+        int code = userproc64_run(exec64_test_path, 0, 0);
         out_kv("userproc64: returned to kernel, exit code: ", (uint64_t)(int64_t)code);
     }
     process64_init();

@@ -13,11 +13,26 @@
 // read for design inspiration only (the "first word is the command, the
 // rest is one argument string" parsing shape) -- nothing here is a port
 // of it; this shell uses the current 64-bit syscall API throughout.
+//
+// Milestone 11: builtins trimmed to just help/exit -- cat and stat are
+// now real standalone commands (shw/stat under CMDTOOLS_PATH below),
+// using ToxenOS's own naming instead of Unix's. resolve_and_spawn now
+// threads the args string through to sys_spawn.
 #include <stdint.h>
 #include "tox64.h"
 
 #define LINE_MAX 128
-#define PATH_MAX 96
+#define PATH_MAX 128
+
+// Milestone 11: "real" external ToxenOS64 commands live here. No /bin,
+// no user64/bin -- mirrors (spelled out in full, this time) the spirit
+// of the 32-bit /C:/BSM/SystemT/ convention. No drive letter and no
+// spaces yet: this is a documented stand-in for the aspirational
+// C:\System Manager\System Tools\Command Tools\ visible path, deferred
+// until 64-bit gets a real drive-letter root and split_cmd() below gets
+// a quoting-aware parser (it currently splits on the first space, so a
+// space-containing path would be silently truncated).
+#define CMDTOOLS_PATH "/system_manager/system_tools/command_tools/"
 
 static int my_strlen(const char* s) {
     int i = 0;
@@ -81,73 +96,61 @@ static void split_cmd(char* line, char** cmd, char** args) {
 }
 
 static void builtin_help(void) {
-    put("ToxenOS64 shell64 -- Milestone 10, early interactive userland\n");
-    put("Builtins: help, exit, cat <file>, stat <file>\n");
-    put("Anything else is spawned as a program: an exact path (e.g.\n");
-    put("/exec64_test.nex64) is used as-is; a bare name is tried as\n");
-    put("/<name>.nex64 first, then /<name>.elf64.\n");
+    put("ToxenOS64 shell64 -- Milestone 11, early interactive userland\n");
+    put("Builtins: help, exit\n");
+    put("Commands: shw <file>, stat <file>, where <cmd>, nexinfo <file>\n");
+    put("A bare command name is tried as " CMDTOOLS_PATH "<name>.nex64,\n");
+    put("then .elf64, then (legacy test binaries) /<name>.nex64/.elf64.\n");
+    put("An exact path (starting with /) is always used as-is.\n");
     put("Wrong-architecture or malformed binaries are rejected, not run.\n");
     put("No pipes, redirection, aliases, history, env vars, or scripting yet.\n");
 }
 
-static void builtin_cat(const char* path) {
-    if (!*path) { put("cat: missing file name\n"); return; }
-    int64_t fd = sys_open(path);
-    if (fd < 0) { put("cat: cannot open "); put(path); put("\n"); return; }
-
-    char buf[256];
-    for (;;) {
-        int64_t n = sys_read((int)fd, buf, sizeof(buf) - 1);
-        if (n <= 0) break;
-        buf[n] = 0;
-        put(buf);
-    }
-    sys_close((int)fd);
-}
-
-static void builtin_stat(const char* path) {
-    if (!*path) { put("stat: missing file name\n"); return; }
-    uint64_t size = 0;
-    if (sys_stat(path, &size) < 0) {
-        put("stat: cannot stat "); put(path); put("\n");
-        return;
-    }
-    put(path);
-    put(": ");
-    put_int((int64_t)size);
-    put(" bytes\n");
-}
-
-// Resolves a bare command name to a spawnable path and spawns it: an
-// exact path (starts with '/') is used as-is; anything else is tried as
-// /<name>.nex64 first (NEX64 preferred), then /<name>.elf64 (development
-// fallback) -- kernel/exec64.c already rejects anything that isn't a
-// real NEX64/ELF64-x86_64 binary, loudly and safely, regardless of which
-// path got it there. No /bin or /System lookup yet: the 64-bit disk
-// image only has root-level binaries so far (see the Makefile's
-// populate target). Returns the child's pid, or -1 if nothing could be
+// Resolves a bare command name to a spawnable path and spawns it (with
+// `args` passed through as the single raw argument string -- may be
+// empty, never NULL here): an exact path (starts with '/') is used
+// as-is, no fallback, forcing the external command regardless of any
+// builtin/name collision; anything else is tried, in order, as
+// CMDTOOLS_PATH<name>.nex64 (real installed commands, preferred), then
+// .elf64, then (unchanged, backward-compat with existing root-level
+// test fixtures like exec64_test) /<name>.nex64, then .elf64.
+// kernel/exec64.c already rejects anything that isn't a real
+// NEX64/ELF64-x86_64 binary, loudly and safely, regardless of which
+// path got it there. Returns the child's pid, or -1 if nothing could be
 // spawned (already reported to the user).
-static int64_t resolve_and_spawn(const char* cmd) {
+static int64_t resolve_and_spawn(const char* cmd, const char* args) {
     char path[PATH_MAX];
     int64_t pid;
 
     if (cmd[0] == '/') {
-        pid = sys_spawn(cmd);
+        pid = sys_spawn(cmd, args);
         if (pid >= 0) return pid;
         put("shell64: cannot run "); put(cmd); put("\n");
         return -1;
     }
 
+    str_copy(path, CMDTOOLS_PATH, sizeof(path));
+    str_cat(path, cmd, sizeof(path));
+    str_cat(path, ".nex64", sizeof(path));
+    pid = sys_spawn(path, args);
+    if (pid >= 0) return pid;
+
+    str_copy(path, CMDTOOLS_PATH, sizeof(path));
+    str_cat(path, cmd, sizeof(path));
+    str_cat(path, ".elf64", sizeof(path));
+    pid = sys_spawn(path, args);
+    if (pid >= 0) return pid;
+
     str_copy(path, "/", sizeof(path));
     str_cat(path, cmd, sizeof(path));
     str_cat(path, ".nex64", sizeof(path));
-    pid = sys_spawn(path);
+    pid = sys_spawn(path, args);
     if (pid >= 0) return pid;
 
     str_copy(path, "/", sizeof(path));
     str_cat(path, cmd, sizeof(path));
     str_cat(path, ".elf64", sizeof(path));
-    pid = sys_spawn(path);
+    pid = sys_spawn(path, args);
     if (pid >= 0) return pid;
 
     put("shell64: command not found: "); put(cmd); put("\n");
@@ -162,10 +165,8 @@ static void run_line(char* line) {
 
     if (str_eq(cmd, "help")) { builtin_help(); return; }
     if (str_eq(cmd, "exit")) { sys_exit(0); }
-    if (str_eq(cmd, "cat"))  { builtin_cat(args); return; }
-    if (str_eq(cmd, "stat")) { builtin_stat(args); return; }
 
-    int64_t pid = resolve_and_spawn(cmd);
+    int64_t pid = resolve_and_spawn(cmd, args);
     if (pid < 0) return;  // already reported
 
     // sys_spawn is synchronous (the child has already run to completion

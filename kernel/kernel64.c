@@ -18,6 +18,7 @@
 #include "../include/ata64.h"
 #include "../include/txfs64.h"
 #include "../include/exec64.h"
+#include "../include/userproc64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
@@ -29,9 +30,11 @@
 // deliberate #UD, so there is no "resume the scheduler afterward").
 // #define RING3_TEST64_RUN 1
 
-// Define to run the Milestone 6 NEX64/ELF64 exec test in place of both
-// of the above -- loads a real compiled program from TxFS64 and runs
-// it in ring3. All three test modes are mutually exclusive.
+// Define to run the Milestone 7 user process lifecycle test in place of
+// both of the above -- loads a real compiled program from TxFS64,
+// tracks it as a real process, runs it in ring3, and returns control to
+// the kernel scheduler once it exits/faults. All three test modes are
+// mutually exclusive.
 // #define EXEC64_TEST_RUN 1
 
 extern void timer64_handler(void);
@@ -73,7 +76,7 @@ static void hex64(uint64_t val, char* out) {
 }
 
 static void out_kv(const char* label, uint64_t val) {
-    char line[48];
+    char line[96];
     int i = 0;
     while (label[i]) { line[i] = label[i]; i++; }
     char hex[19];
@@ -189,16 +192,21 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
 #if defined(EXEC64_TEST_RUN)
     // Path is a literal here on purpose, swapped by hand between
     // /exec64_test.nex64 (primary), /exec64_test.elf64 (fallback proof),
-    // and /hello.nex (wrong-arch rejection proof) during verification --
-    // see the Milestone 6 plan's test matrix.
+    // /exec64_fault_test.nex64 (pid-aware fault termination proof), and
+    // /hello.nex (wrong-arch rejection proof) during verification -- see
+    // the Milestone 7 plan's test matrix.
     const char* exec64_test_path = "/exec64_test.nex64";
-    out_line("Loading via exec64...");
+    out_line("Running via userproc64...");
     klog(exec64_test_path);
     klog("\n");
-    if (exec64_load_and_run(exec64_test_path) < 0)
-        out_line("exec64: load failed -- see above");
-    // unreachable on success: ring3_enter64 ends in iretq, and the
-    // loaded program's own sys64_exit halts forever once it's done.
+    int code = userproc64_run(exec64_test_path);
+    out_kv("userproc64: returned to kernel, exit code: ", (uint64_t)(int64_t)code);
+    process64_init();
+    process64_start();
+    // Reached only if the scheduler later switches back to the boot
+    // task -- proves control genuinely returned to the kernel (it
+    // doesn't matter whether userproc64_run succeeded or failed; either
+    // way execution falls through here).
 #elif defined(RING3_TEST64_RUN)
     out_line("Entering ring3 syscall test (iretq) -- expect sys64_write/sys64_exit next");
     ring3_test64_start();

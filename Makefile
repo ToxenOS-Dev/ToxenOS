@@ -222,6 +222,7 @@ kernel64:
 	nasm -f elf64 kernel/isr64.asm         -o build/isr64.o
 	nasm -f elf64 kernel/switch64.asm      -o build/switch64.o
 	nasm -f elf64 kernel/ring3_test64.asm  -o build/ring3_test64_asm.o
+	nasm -f elf64 kernel/userproc64.asm    -o build/userproc64_asm.o
 	# Milestone 5: ring3 syscall test stub -- flat binary, embedded as a
 	# blob the same way the 32-bit Makefile embeds init.elf/shell.nex.
 	nasm -f bin kernel/ring3_syscall_stub64.asm -o build/ring3_syscall_stub64.bin
@@ -242,12 +243,14 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/txfs64.c       -o build/txfs64.o
 	gcc $(KFLAGS64) -c kernel/syscall64.c    -o build/syscall64.o
 	gcc $(KFLAGS64) -c kernel/exec64.c       -o build/exec64.o
+	gcc $(KFLAGS64) -c kernel/userproc64.c   -o build/userproc64.o
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
 		build/boot64.o build/isr64.o build/switch64.o build/kernel64.o \
 		build/klog64.o build/idt64.o build/interrupt64.o build/irq64.o \
 		build/timer64.o build/keyboard64.o build/pic64.o build/process64.o \
 		build/tss64.o build/ring3_test64.o build/ring3_test64_asm.o \
 		build/ata64.o build/txfs64.o build/syscall64.o build/exec64.o \
+		build/userproc64.o build/userproc64_asm.o \
 		build/ring3_syscall_stub64_blob.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin
 	@if command -v grub2-mkrescue >/dev/null 2>&1; then \
@@ -347,6 +350,8 @@ user64: tools/elf2nex64
 	@mkdir -p build/user64
 	gcc $(UFLAGS64) user64/exec_test.c -o build/user64/exec_test.elf64
 	tools/elf2nex64 build/user64/exec_test.elf64 build/user64/exec_test.nex64
+	gcc $(UFLAGS64) user64/exec_fault_test.c -o build/user64/exec_fault_test.elf64
+	tools/elf2nex64 build/user64/exec_fault_test.elf64 build/user64/exec_fault_test.nex64
 
 populate: tools/txfs_write tools/patch_diskboot user64
 	dd if=/dev/zero of=build/fs.img bs=4096 count=2048
@@ -379,6 +384,9 @@ populate: tools/txfs_write tools/patch_diskboot user64
 	# kernel/exec64.c via the same shared disk image.
 	tools/txfs_write build/fs.img build/user64/exec_test.nex64 /exec64_test.nex64
 	tools/txfs_write build/fs.img build/user64/exec_test.elf64 /exec64_test.elf64
+	# Milestone 7: deliberate-fault test binary, exercises the pid-aware
+	# fault termination path (kernel/interrupt64.c -> kernel/userproc64.c).
+	tools/txfs_write build/fs.img build/user64/exec_fault_test.nex64 /exec64_fault_test.nex64
 	@tools/txfs_write build/fs.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true
 	@tools/txfs_write build/fs.img /dev/null /etc/.keep 2>/dev/null || true
 	# ── Assemble bootable disk.img (GPT — BIOS + UEFI dual-boot) ────────────────

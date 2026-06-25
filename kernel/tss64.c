@@ -56,3 +56,7 @@ void tss64_init(void) {
 
     ltr(TSS64_SEL);
 }
+
+void tss64_set_kernel_stack(uint64_t rsp0) {
+    tss64.rsp0 = rsp0;
+}

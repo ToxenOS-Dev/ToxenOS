@@ -1,12 +1,16 @@
 // kernel/exec64.c — Milestone 6: load a real NEX64 (primary) or ELF64
-// (fallback) binary from TxFS64 and run it in ring3.
+// (fallback) binary from TxFS64 into the carved PD_EXEC_IDX region.
 //
 // Reuses Milestone 3B's carved-PD-entry technique (kernel/ring3_test64.c)
 // exactly, just at a different PD index (PD_EXEC_IDX, not PD_RING3_IDX
 // -- the two test modes are mutually exclusive but both must be safe to
 // build) and with a real, validated segment table instead of 2
-// hardcoded pages. ring3_enter64 (kernel/ring3_test64.asm) is reused
-// completely unchanged.
+// hardcoded pages.
+//
+// Milestone 7: stops at "parsed, mapped, CR3 reloaded" -- entering
+// ring3 is now kernel/userproc64.c's job (it needs to create a tracked
+// process and point TSS RSP0 at that process's own kernel stack first).
+// ring3_enter64 is no longer called from here.
 #include <stdint.h>
 #include "../include/exec64.h"
 #include "../include/nex64.h"
@@ -29,7 +33,6 @@
 extern uint64_t pml4[512];
 extern uint64_t pdpt_high[512];
 extern uint64_t pd[512];
-extern void ring3_enter64(uint64_t user_rip, uint64_t user_rsp);
 
 static uint8_t  file_buf[EXEC64_FILE_MAX];
 static uint64_t exec64_pt[512] __attribute__((aligned(4096)));
@@ -117,7 +120,7 @@ static int load_segment(const seg_t* seg, const uint8_t* file_buf_base, uint64_t
     return 0;
 }
 
-static int finish_mapping_and_enter(uint64_t entry) {
+static int finish_mapping(uint64_t entry, uint64_t* entry_out, uint64_t* stack_top_out) {
     // Stack: always the fixed last slot, independent of how many
     // segment pages were used -- segments are bounds-checked to stay
     // below EXEC64_STACK_SLOT specifically so they can never collide.
@@ -132,12 +135,12 @@ static int finish_mapping_and_enter(uint64_t entry) {
 
     __asm__ volatile ("mov %0, %%cr3" : : "r"((uint64_t)pml4) : "memory");
 
-    uint64_t stack_top = USER64_ELF_BASE + (uint64_t)(EXEC64_STACK_SLOT + 1) * 0x1000;
-    ring3_enter64(entry, stack_top);
-    return 0;  // unreachable -- ring3_enter64 ends in iretq
+    *entry_out      = entry;
+    *stack_top_out  = USER64_ELF_BASE + (uint64_t)(EXEC64_STACK_SLOT + 1) * 0x1000;
+    return 0;
 }
 
-static int load_nex64(uint32_t file_size) {
+static int load_nex64(uint32_t file_size, uint64_t* entry_out, uint64_t* stack_top_out) {
     nex64_header_t* nh = (nex64_header_t*)file_buf;
     if (file_size < sizeof(nex64_header_t)) {
         klog("exec64: file too small to be a NEX64 header\n");
@@ -160,10 +163,10 @@ static int load_nex64(uint32_t file_size) {
     }
 
     klog("exec64: NEX64 loaded\n");
-    return finish_mapping_and_enter(nh->entry);
+    return finish_mapping(nh->entry, entry_out, stack_top_out);
 }
 
-static int load_elf64(uint32_t file_size) {
+static int load_elf64(uint32_t file_size, uint64_t* entry_out, uint64_t* stack_top_out) {
     elf64_header_t* eh = (elf64_header_t*)file_buf;
     if (file_size < sizeof(elf64_header_t)) {
         klog("exec64: file too small to be an ELF64 header\n");
@@ -185,10 +188,10 @@ static int load_elf64(uint32_t file_size) {
     }
 
     klog("exec64: ELF64 loaded (fallback path)\n");
-    return finish_mapping_and_enter(eh->entry);
+    return finish_mapping(eh->entry, entry_out, stack_top_out);
 }
 
-int exec64_load_and_run(const char* path) {
+int exec64_load(const char* path, uint64_t* entry_out, uint64_t* stack_top_out) {
     uint64_t size;
     if (txfs64_stat(path, &size) < 0 || size == 0 || size > EXEC64_FILE_MAX) {
         klog("exec64: file missing, empty, or too large for the static buffer: ");
@@ -218,12 +221,12 @@ int exec64_load_and_run(const char* path) {
     }
 
     uint32_t magic = *(uint32_t*)file_buf;
-    if (magic == NEX64_MAGIC) return load_nex64((uint32_t)size);
+    if (magic == NEX64_MAGIC) return load_nex64((uint32_t)size, entry_out, stack_top_out);
 
     if (magic == ELF64_MAGIC && size >= sizeof(elf64_header_t)) {
         elf64_header_t* eh = (elf64_header_t*)file_buf;
         if (eh->bits == ELFCLASS64 && eh->endian == ELFDATA2LSB && eh->machine == EM_X86_64)
-            return load_elf64((uint32_t)size);
+            return load_elf64((uint32_t)size, entry_out, stack_top_out);
     }
 
     klog("exec64: unrecognized format / wrong architecture -- refusing to load\n");

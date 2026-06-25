@@ -9,6 +9,7 @@
 #include "../include/isr64.h"
 #include "../include/klog.h"
 #include "../include/syscall64.h"
+#include "../include/userproc64.h"
 
 static const char* exception_name(uint64_t vector)
 {
@@ -86,6 +87,30 @@ static void halt_forever(void)
     for (;;) { __asm__ volatile ("hlt"); }
 }
 
+// Milestone 7: if this fault happened in ring3 (CPL==3) AND there is a
+// tracked current user process, report its pid and terminate just that
+// process via userproc64_fault_current() -- never returns. Otherwise
+// (kernel-mode fault, or a ring3 fault with no tracked process e.g. the
+// Milestone 3B/5 RING3_TEST64_RUN stub) falls through to the existing
+// halt_forever() -- there's no recovering from a genuinely broken
+// kernel context, and an untracked ring3 fault has nowhere safe to jump
+// back to.
+static void terminate_faulting_user_or_halt(trapframe64_t* tf)
+{
+    if ((tf->cs & 3) == 3) {
+        int pid = userproc64_current_pid();
+        if (pid >= 0) {
+            char numbuf[24];
+            dec_to_str((uint64_t)pid, numbuf);
+            klog("  pid: ");
+            klog(numbuf);
+            klog("\n");
+            userproc64_fault_current();  // never returns
+        }
+    }
+    halt_forever();
+}
+
 // error_code bit layout matches the 32-bit page_fault_handler:
 // bit0=present, bit1=write, bit2=user, bit4=instruction fetch.
 static void page_fault64_handler(trapframe64_t* tf)
@@ -101,7 +126,7 @@ static void page_fault64_handler(trapframe64_t* tf)
     klog(tf->error_code & 4 ? ", user\n" : ", kernel\n");
     if (tf->error_code & 16) klog("  (instruction fetch)\n");
 
-    halt_forever();
+    terminate_faulting_user_or_halt(tf);
 }
 
 void isr64_dispatch(trapframe64_t* tf)
@@ -123,5 +148,5 @@ void isr64_dispatch(trapframe64_t* tf)
         return;
     }
 
-    halt_forever();
+    terminate_faulting_user_or_halt(tf);
 }

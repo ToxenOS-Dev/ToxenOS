@@ -27,12 +27,21 @@ void _start(void) {
     int sum = 0;
     for (int i = 1; i <= 10; i++) sum += i;
 
-    char msg[64] = "hello from a real ELF64 program, sum(1..10)=";
+    char msg[96] = "hello from a real ELF64 program, sum(1..10)=";
     int prefix_len = my_strlen(msg);
-    itoa10(sum, msg + prefix_len);
-    int total_len = my_strlen(msg);
-    msg[total_len]     = '\n';
-    msg[total_len + 1] = 0;
+    int n = itoa10(sum, msg + prefix_len);
+
+    // Milestone 7: also print the real pid (not a fake hardcoded
+    // constant) so userproc64's tracking is directly checkable from the
+    // serial log -- this is the same _start every NEX64/ELF64 build of
+    // this program runs, no separate "process-aware" variant needed.
+    const char* pid_label = ", pid=";
+    int j = prefix_len + n;
+    for (int i = 0; pid_label[i]; i++) msg[j++] = pid_label[i];
+    j += itoa10((int)sys_getpid(), msg + j);
+
+    msg[j]     = '\n';
+    msg[j + 1] = 0;
 
     sys_write(msg, (uint64_t)my_strlen(msg));
     sys_exit(0);

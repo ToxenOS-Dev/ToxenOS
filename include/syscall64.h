@@ -23,6 +23,11 @@
 #define SYS64_SPAWN  8   // (const char* path)                      -> child pid or -1
 #define SYS64_WAIT   9   // (uint32_t pid)                          -> child exit code or -1
 
+// Milestone 10: minimal stdin path. No pointer args, so no
+// usercopy64 validation is needed here -- the only thing crossing the
+// boundary is a single integer return value.
+#define SYS64_GETCH  10  // () -> next buffered ASCII char (0-255), or -1 if none available yet
+
 void syscall64_dispatch(trapframe64_t* tf);
 
 #endif // SYSCALL64_H

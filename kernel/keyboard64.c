@@ -1,10 +1,12 @@
-// kernel/keyboard64.c — Milestone 2 minimal IRQ1 handler.
-// No shift/ctrl tracking, no scancode-to-ASCII table, no input buffer,
-// no process coupling (kernel/keyboard.c's full version is none of those
-// things at this milestone — there's no scheduler/processes yet). Just
-// reads the raw scancode and prints it.
+// kernel/keyboard64.c — IRQ1 handler.
+// Milestone 2: just read the raw scancode and log its hex value (no
+// scancode-to-ASCII table, no input buffer, no process coupling -- there
+// was no scheduler/processes yet).
+// Milestone 10: forwards every scancode into kernel/keyboard_buffer64.c,
+// which does the actual translation/buffering -- this file is now just
+// "read port 0x60, hand it off."
 #include <stdint.h>
-#include "../include/klog.h"
+#include "../include/keyboard_buffer64.h"
 
 static inline uint8_t inb(uint16_t port)
 {
@@ -13,21 +15,8 @@ static inline uint8_t inb(uint16_t port)
     return ret;
 }
 
-static void hex8_to_str(uint8_t val, char* out)
-{
-    const char* h = "0123456789ABCDEF";
-    out[0] = '0'; out[1] = 'x';
-    out[2] = h[(val >> 4) & 0xF];
-    out[3] = h[val & 0xF];
-    out[4] = 0;
-}
-
 void keyboard64_handler(void)
 {
     uint8_t sc = inb(0x60);
-    char hex[5];
-    hex8_to_str(sc, hex);
-    klog("[keyboard64] scancode ");
-    klog(hex);
-    klog("\n");
+    keyboard_buffer64_on_scancode(sc);
 }

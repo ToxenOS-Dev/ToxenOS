@@ -243,6 +243,7 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/irq64.c        -o build/irq64.o
 	gcc $(KFLAGS64) -c kernel/timer64.c      -o build/timer64.o
 	gcc $(KFLAGS64) -c kernel/keyboard64.c   -o build/keyboard64.o
+	gcc $(KFLAGS64) -c kernel/keyboard_buffer64.c -o build/keyboard_buffer64.o
 	gcc $(KFLAGS64) -c kernel/pic.c          -o build/pic64.o
 	gcc $(KFLAGS64) -c kernel/process64.c    -o build/process64.o
 	gcc $(KFLAGS64) -c kernel/tss64.c        -o build/tss64.o
@@ -258,7 +259,7 @@ kernel64:
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
 		build/boot64.o build/isr64.o build/switch64.o build/kernel64.o \
 		build/klog64.o build/idt64.o build/interrupt64.o build/irq64.o \
-		build/timer64.o build/keyboard64.o build/pic64.o build/process64.o \
+		build/timer64.o build/keyboard64.o build/keyboard_buffer64.o build/pic64.o build/process64.o \
 		build/tss64.o build/ring3_test64.o build/ring3_test64_asm.o \
 		build/ata64.o build/txfs64.o build/syscall64.o build/exec64.o \
 		build/userproc64.o build/userproc64_asm.o \
@@ -370,6 +371,8 @@ user64: tools/elf2nex64
 	tools/elf2nex64 build/user64/exec_badptr_test.elf64 build/user64/exec_badptr_test.nex64
 	gcc $(UFLAGS64) user64/init64.c -o build/user64/init64.elf64
 	tools/elf2nex64 build/user64/init64.elf64 build/user64/init64.nex64
+	gcc $(UFLAGS64) user64/shell64.c -o build/user64/shell64.elf64
+	tools/elf2nex64 build/user64/shell64.elf64 build/user64/shell64.nex64
 
 populate: tools/txfs_write tools/patch_diskboot user64
 	dd if=/dev/zero of=build/fs.img bs=4096 count=2048
@@ -412,6 +415,8 @@ populate: tools/txfs_write tools/patch_diskboot user64
 	# real userland process (file/spawn/wait syscall API end-to-end).
 	tools/txfs_write build/fs.img build/user64/exec_badptr_test.nex64 /exec64_badptr_test.nex64
 	tools/txfs_write build/fs.img build/user64/init64.nex64 /init64.nex64
+	# Milestone 10: ToxenOS64's first interactive shell.
+	tools/txfs_write build/fs.img build/user64/shell64.nex64 /shell64.nex64
 	@tools/txfs_write build/fs.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true
 	@tools/txfs_write build/fs.img /dev/null /etc/.keep 2>/dev/null || true
 	# ── Assemble bootable disk.img (GPT — BIOS + UEFI dual-boot) ────────────────

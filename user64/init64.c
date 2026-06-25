@@ -8,6 +8,13 @@
 #include <stdint.h>
 #include "tox64.h"
 
+// Milestone 10: define to have init64 launch /shell64.nex64 instead of
+// the Milestone 9 exec64_test smoke test below -- mutually exclusive for
+// now. Default off so the already-verified Milestone 9 happy path stays
+// the reproducible reference; flip this on for the Milestone 10
+// "init64 launches a real interactive shell" verification run.
+// #define INIT64_SHELL_RUN 1
+
 static int my_strlen(const char* s) {
     int i = 0;
     while (s[i]) i++;
@@ -87,6 +94,16 @@ void _start(void) {
         put("init64: sys_open(/hello.ts) failed\n");
     }
 
+#if defined(INIT64_SHELL_RUN)
+    int64_t shell_pid = sys_spawn("/shell64.nex64");
+    if (shell_pid >= 0) {
+        put_line_int("init64: spawned shell64, pid=", shell_pid);
+        int64_t code = sys_wait((uint32_t)shell_pid);
+        put_line_int("init64: shell64 exited, code=", code);
+    } else {
+        put("init64: sys_spawn(/shell64.nex64) failed\n");
+    }
+#else
     int64_t child_pid = sys_spawn("/exec64_test.nex64");
     if (child_pid >= 0) {
         put_line_int("init64: spawned child pid=", child_pid);
@@ -95,6 +112,7 @@ void _start(void) {
     } else {
         put("init64: sys_spawn(/exec64_test.nex64) failed\n");
     }
+#endif
 
     put("init64: done\n");
     sys_exit(0);

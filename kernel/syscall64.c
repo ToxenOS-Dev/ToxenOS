@@ -15,6 +15,7 @@
 #include "../include/userproc64.h"
 #include "../include/usercopy64.h"
 #include "../include/txfs64.h"
+#include "../include/keyboard_buffer64.h"
 #include "../include/klog.h"
 
 #define SYS64_WRITE_MAX 256
@@ -141,6 +142,13 @@ static uint64_t sys64_wait(uint32_t pid) {
     return (uint64_t)(int64_t)cur->last_child_exit_code;
 }
 
+// Milestone 10: non-blocking by design -- see keyboard_buffer64.h for
+// why blocking belongs in userland (tox_readline), not here.
+static uint64_t sys64_getch(void) {
+    int c = keyboard_buffer64_getch();
+    return (c < 0) ? (uint64_t)-1 : (uint64_t)c;
+}
+
 void syscall64_dispatch(trapframe64_t* tf) {
     switch (tf->rax) {
     case SYS64_WRITE:
@@ -169,6 +177,9 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_WAIT:
         tf->rax = sys64_wait((uint32_t)tf->rdi);
+        break;
+    case SYS64_GETCH:
+        tf->rax = sys64_getch();
         break;
     default:
         tf->rax = (uint64_t)-1;

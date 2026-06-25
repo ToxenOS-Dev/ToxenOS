@@ -14,6 +14,7 @@
 #define SYS64_STAT   7
 #define SYS64_SPAWN  8
 #define SYS64_WAIT   9
+#define SYS64_GETCH  10
 
 // ABI: rax = syscall number, rdi/rsi/rdx = up to 3 args (see
 // kernel/syscall64.c). Return value comes back in rax.
@@ -73,6 +74,57 @@ static inline int64_t sys_spawn(const char* path) {
 // match the last completed child.
 static inline int64_t sys_wait(uint32_t pid) {
     return (int64_t)SYSCALL1(SYS64_WAIT, pid);
+}
+
+// Milestone 10: minimal stdin path. Non-blocking -- returns -1 if no key
+// is currently buffered (kernel/keyboard_buffer64.c, filled by IRQ1).
+static inline int64_t sys_getch(void) {
+    return (int64_t)SYSCALL0(SYS64_GETCH);
+}
+
+// Composed userland helper, not a 1:1 syscall wrapper -- hence "tox_"
+// instead of "sys_", to keep that distinction visible at call sites.
+// Blocks by polling sys_getch (safe: ring3 always resumes with IF=1
+// after int 0x80's iretq, so IRQ1 keeps filling the kernel-side buffer
+// between polls even though this spins). Echoes each accepted character
+// back via sys_write, and handles Enter/Backspace itself:
+//   - Enter ('\n'/'\r') ends the line.
+//   - Backspace (8 or 127/DEL) erases the previous character; a no-op
+//     on an empty line instead of underflowing.
+//   - Any other control character (Tab, Esc, ...) is ignored -- no line
+//     editing beyond Backspace yet.
+//   - Once `max - 1` characters have been accepted, further characters
+//     are silently dropped (not written past the buffer) until
+//     Enter/Backspace.
+// Always NUL-terminates buf and returns the number of characters read
+// (not counting the NUL).
+static inline int tox_readline(char* buf, int max) {
+    int n = 0;
+    for (;;) {
+        int64_t ci;
+        do { ci = sys_getch(); } while (ci < 0);
+        char c = (char)ci;
+
+        if (c == '\n' || c == '\r') {
+            sys_write("\n", 1);
+            break;
+        }
+        if (c == 8 || c == 127) {
+            if (n > 0) {
+                n--;
+                sys_write("\b \b", 3);
+            }
+            continue;
+        }
+        if (c < 32) continue;
+
+        if (n < max - 1) {
+            buf[n++] = c;
+            sys_write(&c, 1);
+        }
+    }
+    buf[n] = 0;
+    return n;
 }
 
 #endif // TOX64_H

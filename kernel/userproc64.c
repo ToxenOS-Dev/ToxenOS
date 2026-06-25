@@ -1,27 +1,32 @@
 // kernel/userproc64.c — Milestone 7: real user process lifecycle.
 //
-// Owns process tracking, per-process kernel stacks (RSP0), and the
-// asymmetric enter/resume jump (kernel/userproc64.asm). Loading is
-// still Milestone 6's exec64_load() (parse+map+CR3 reload only, no
-// jump) -- this file just decides what to do with the resulting
-// entry/stack_top: create a tracked process, point TSS RSP0 at its own
-// stack, and enter ring3.
+// Owns process tracking, per-process kernel stacks (RSP0), per-process
+// address spaces (Milestone 8: kernel/paging64.c), and the asymmetric
+// enter/resume jump (kernel/userproc64.asm).
 //
-// Still single-shared-address-space (Milestone 6's carved PD_EXEC_IDX,
-// not a real per-process PML4) and one-process-at-a-time -- loading a
-// second binary over a still-"running" one would silently overwrite
-// the first one's pages. Fine for this milestone's cooperative,
-// run-to-exit model; a documented limitation, not a bug.
+// Milestone 8: each process now gets its own paging64_as_t -- created
+// before loading, activated (CR3) right before ring3 entry, and
+// deactivated+destroyed immediately after the process exits or faults,
+// before the slot is reclaimed. Still strictly one-process-at-a-time
+// (cooperative, run-to-exit) -- this milestone adds isolation, not
+// concurrency.
 #include <stdint.h>
 #include "../include/userproc64.h"
 #include "../include/exec64.h"
+#include "../include/paging64.h"
 #include "../include/tss64.h"
+#include "../include/memmap64.h"
 #include "../include/klog.h"
 
 #define USERPROC64_KSTACK_SIZE (16u * 1024u)
 
 extern void userproc64_enter(uint64_t* resume_rsp_out, uint64_t user_rip, uint64_t user_rsp);
 extern void userproc64_return_to_kernel(uint64_t resume_rsp);
+
+// boot64.asm's static, identity-mapped (VA==PA) boot pml4 -- the address
+// space every process's table is built from a copy of, and the address
+// space control returns to whenever no process is running.
+extern uint64_t pml4[512];
 
 static userproc64_t procs[MAX_USERPROCS64];
 static uint8_t kernel_stacks[MAX_USERPROCS64][USERPROC64_KSTACK_SIZE] __attribute__((aligned(16)));
@@ -38,6 +43,13 @@ static void dec_to_str(uint64_t val, char* out) {
     out[j] = 0;
 }
 
+static void hex_to_str(uint64_t val, char* out) {
+    const char* h = "0123456789ABCDEF";
+    out[0] = '0'; out[1] = 'x';
+    for (int i = 0; i < 16; i++) { out[2 + (15 - i)] = h[val & 0xF]; val >>= 4; }
+    out[18] = 0;
+}
+
 userproc64_t* userproc64_current(void) {
     if (current_idx < 0) return 0;
     return &procs[current_idx];
@@ -49,8 +61,10 @@ int userproc64_current_pid(void) {
 }
 
 int userproc64_run(const char* path) {
-    uint64_t entry, stack_top;
-    if (exec64_load(path, &entry, &stack_top) < 0) return -1;
+    if (current_idx >= 0) {
+        klog("userproc64: reentrant userproc64_run call -- refusing\n");
+        return -1;
+    }
 
     int idx = -1;
     for (int i = 0; i < MAX_USERPROCS64; i++) {
@@ -62,6 +76,18 @@ int userproc64_run(const char* path) {
     }
 
     userproc64_t* p = &procs[idx];
+
+    if (paging64_create_as(&p->as) < 0) {
+        klog("userproc64: failed to create address space\n");
+        return -1;
+    }
+
+    uint64_t entry, stack_top, heap_start;
+    if (exec64_load(&p->as, path, &entry, &stack_top, &heap_start) < 0) {
+        paging64_destroy_as(&p->as);
+        return -1;
+    }
+
     p->pid               = next_pid++;
     p->state             = USERPROC64_READY;
     p->entry             = entry;
@@ -70,24 +96,35 @@ int userproc64_run(const char* path) {
     p->kernel_stack_size = USERPROC64_KSTACK_SIZE;
     p->exit_code         = 0;
     p->path              = path;
+    p->heap_start        = heap_start;
+    p->heap_end          = heap_start;
 
     int prev_idx = current_idx;
     current_idx  = idx;
     p->state     = USERPROC64_RUNNING;
 
-    char pidbuf[24];
+    char pidbuf[24], physbuf[19];
     dec_to_str(p->pid, pidbuf);
+    hex_to_str(p->as.pt_phys, physbuf);
     klog("userproc64: starting pid=");
     klog(pidbuf);
     klog(" path=");
     klog(path);
+    klog(" pt_phys=");
+    klog(physbuf);
     klog("\n");
 
     // RSP0 must point at THIS process's own kernel stack before ring3
-    // entry -- Milestone 3B/6 only ever had one fixed, never-updated
-    // RSP0 stack, which is unsafe once more than one process can exist
-    // across the lifetime of the kernel.
+    // entry -- a single, never-updated RSP0 stack is unsafe once more
+    // than one process can exist across the lifetime of the kernel.
     tss64_set_kernel_stack((uint64_t)(p->kernel_stack + p->kernel_stack_size));
+
+    // Activate the process's own address space right before entering
+    // ring3 -- everything up to here (slot bookkeeping, tss64 update)
+    // ran under whatever address space was already active (the boot one,
+    // or a previous process's about to be restored below), which is
+    // always safe since every table carries the same kernel mappings.
+    paging64_switch_to(p->as.pml4_phys);
 
     // Saves the launcher's (this function's) callee-saved regs + rsp
     // into p->kernel_resume_rsp, then iretq's into ring3. Execution
@@ -96,11 +133,21 @@ int userproc64_run(const char* path) {
     // once the process exits or faults.
     userproc64_enter(&p->kernel_resume_rsp, p->entry, p->user_stack_top);
 
+    // The process is done (exited or faulted). Restore the kernel's own
+    // address space BEFORE freeing the process's now-unloaded tables --
+    // switching CR3 away from p->as is also the TLB flush that makes
+    // freeing its pages safe (no stale entry can reference them
+    // afterward, since every MOV CR3 on this kernel is an unconditional
+    // full flush -- PCID is never enabled).
+    // pml4 is a .bootdata-section global -- already VA==PA (identity-
+    // mapped), unlike every other phys_of() argument in this codebase.
+    // Do NOT phys_of() it (that subtracts KERNEL_VIRT_BASE64 from an
+    // already-physical address and produces garbage) -- same convention
+    // kernel/ring3_test64.c's own CR3 reload already uses.
+    paging64_switch_to((uint64_t)pml4);
+    paging64_destroy_as(&p->as);
+
     int code = p->exit_code;
-    // Slot reclaimed; pages and the kernel stack itself are not freed
-    // (no per-process address space teardown yet) -- documented TODO,
-    // matches Milestone 6/7's "no heap, no real memory management"
-    // constraint rather than silently leaking the slot forever.
     p->state    = USERPROC64_UNUSED;
     current_idx = prev_idx;
     return code;

@@ -19,6 +19,7 @@
 #include "../include/txfs64.h"
 #include "../include/exec64.h"
 #include "../include/userproc64.h"
+#include "../include/physmem64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
@@ -148,6 +149,9 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     tss64_init();
     out_line("TSS64 loaded (ltr)");
 
+    physmem64_init();
+    out_line("physmem64 pool initialized");
+
 #ifdef ISR64_RUN_TESTS
     out_line("Triggering int3 (breakpoint) test...");
     __asm__ volatile ("int3");
@@ -192,15 +196,21 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
 #if defined(EXEC64_TEST_RUN)
     // Path is a literal here on purpose, swapped by hand between
     // /exec64_test.nex64 (primary), /exec64_test.elf64 (fallback proof),
-    // /exec64_fault_test.nex64 (pid-aware fault termination proof), and
-    // /hello.nex (wrong-arch rejection proof) during verification -- see
-    // the Milestone 7 plan's test matrix.
+    // /exec64_fault_test.nex64 (pid-aware fault termination proof),
+    // /exec64_isolation_test.nex64 (per-process memory isolation proof),
+    // and /hello.nex (wrong-arch rejection proof) during verification --
+    // see the Milestone 8 plan's test matrix. Run TWICE in a row: proves
+    // two distinct, incrementing real pids, and that the second run's
+    // address space is freshly created/torn down rather than erroring on
+    // stale state left over from the first.
     const char* exec64_test_path = "/exec64_test.nex64";
-    out_line("Running via userproc64...");
-    klog(exec64_test_path);
-    klog("\n");
-    int code = userproc64_run(exec64_test_path);
-    out_kv("userproc64: returned to kernel, exit code: ", (uint64_t)(int64_t)code);
+    for (int run = 1; run <= 2; run++) {
+        out_kv("userproc64: run #", (uint64_t)run);
+        klog(exec64_test_path);
+        klog("\n");
+        int code = userproc64_run(exec64_test_path);
+        out_kv("userproc64: returned to kernel, exit code: ", (uint64_t)(int64_t)code);
+    }
     process64_init();
     process64_start();
     // Reached only if the scheduler later switches back to the boot

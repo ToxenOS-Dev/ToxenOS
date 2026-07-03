@@ -11,5 +11,7 @@
 // Primary channel (0x1F0-0x1F7/0x3F6), master drive only.
 void ata64_init(void);
 int  ata64_read(uint32_t lba, uint8_t* buf, uint32_t sectors);
+// Milestone 19: write path (mirrors read; blocks/sectors same layout).
+int  ata64_write(uint32_t lba, const uint8_t* buf, uint32_t sectors);
 
 #endif // ATA64_H

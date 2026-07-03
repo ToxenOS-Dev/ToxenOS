@@ -308,6 +308,59 @@ static void run_line(char* line) {
         }
     }
 
+    // Milestone 17-19: all single-path commands resolve relative paths
+    // against cwd before spawning -- child processes have no cwd access.
+    // The resolved form is always an internal slash path so the command's
+    // own toxpath64_to_internal call passes it through unchanged.
+    // `where` is deliberately excluded (its arg is a command NAME, not a
+    // path -- resolving it against cwd would break its probe logic).
+    char wcmd_args[PATH_MAX];
+    if (str_eq(cmd, "shw")   || str_eq(cmd, "stat")  ||
+        str_eq(cmd, "nexinfo")|| str_eq(cmd, "mkdir") ||
+        str_eq(cmd, "mkfile") || str_eq(cmd, "del")) {
+        if (*args && !toxpath64_looks_like_path(args)) {
+            char stripped[PATH_MAX];
+            str_copy(stripped, args, sizeof(stripped));
+            toxpath64_strip_quotes(stripped);
+            toxpath64_resolve_cwd(cwd, stripped, wcmd_args, sizeof(wcmd_args));
+            args = wcmd_args;
+        }
+    }
+    if (str_eq(cmd, "write") && *args) {
+        // Split off first token (path) from rest (content).
+        char path_tok[PATH_MAX];
+        const char* content = args;
+        if (*content == '"') {
+            content++;
+            int i = 0;
+            while (*content && *content != '"' && i < (int)sizeof(path_tok)-1)
+                path_tok[i++] = *content++;
+            path_tok[i] = 0;
+            if (*content == '"') content++;
+        } else {
+            int i = 0;
+            while (*content && *content != ' ' && i < (int)sizeof(path_tok)-1)
+                path_tok[i++] = *content++;
+            path_tok[i] = 0;
+        }
+        while (*content == ' ') content++;
+
+        if (!toxpath64_looks_like_path(path_tok)) {
+            char resolved[PATH_MAX];
+            toxpath64_resolve_cwd(cwd, path_tok, resolved, sizeof(resolved));
+            str_copy(wcmd_args, resolved, sizeof(wcmd_args));
+        } else {
+            char internal[PATH_MAX];
+            toxpath64_to_internal(path_tok, internal, sizeof(internal));
+            str_copy(wcmd_args, internal, sizeof(wcmd_args));
+        }
+        if (*content) {
+            str_cat(wcmd_args, " ", sizeof(wcmd_args));
+            str_cat(wcmd_args, content, sizeof(wcmd_args));
+        }
+        args = wcmd_args;
+    }
+
     int64_t pid = resolve_and_spawn(cmd, args);
     if (pid < 0) return;  // already reported
 

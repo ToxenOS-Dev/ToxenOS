@@ -42,6 +42,16 @@
 #define SYS64_SETCOLOR 13 // (uint8_t color) -> always 0
 #define SYS64_READDIR  14 // (const char* path, char* out [>=256 bytes], uint32_t index) -> 0 or -1
 
+// Milestone 19: write/create/delete filesystem operations. All paths
+// are user pointers validated before use. Protected system paths return
+// -2 (caller should print a "path is protected" error). -1 = generic
+// failure (path not found, dir not empty, disk full, etc.).
+#define SYS64_MKDIR      15 // (const char* path) -> 0, -1, or -2
+#define SYS64_MKFILE     16 // (const char* path) -> 0, -1, or -2
+#define SYS64_WRITE_FILE 17 // (const char* path, const char* data, uint64_t len) -> 0, -1, or -2
+#define SYS64_DELETE     18 // (const char* path) -> 0, -1, or -2
+#define SYS64_RMDIR      19 // (const char* path) -> 0, -1, or -2
+
 void syscall64_dispatch(trapframe64_t* tf);
 
 #endif // SYSCALL64_H

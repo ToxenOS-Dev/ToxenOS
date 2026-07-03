@@ -19,6 +19,15 @@
 #define SYS64_CLEAR 12
 #define SYS64_SETCOLOR 13
 #define SYS64_READDIR 14
+#define SYS64_MKDIR      15
+#define SYS64_MKFILE     16
+#define SYS64_WRITE_FILE 17
+#define SYS64_DELETE     18
+#define SYS64_RMDIR      19
+// Return value -2 means the path is protected (kernel refused the op).
+#define SYS64_ERR_PROTECTED ((int64_t)-2)
+// Return value -3 from SYS64_DELETE means the folder is not empty.
+#define SYS64_ERR_NOTEMPTY  ((int64_t)-3)
 
 // ABI: rax = syscall number, rdi/rsi/rdx = up to 3 args (see
 // kernel/syscall64.c). Return value comes back in rax.
@@ -118,6 +127,20 @@ static inline int64_t sys_readdir(const char* path, char* out, uint32_t index) {
     return (int64_t)SYSCALL3(SYS64_READDIR, path, out, index);
 }
 
+// Milestone 19: write/create/delete. Return 0 = success, -1 = generic
+// failure, SYS64_ERR_PROTECTED (-2) = path is kernel-protected.
+static inline int64_t sys_mkdir(const char* path) {
+    return (int64_t)SYSCALL1(SYS64_MKDIR, path);
+}
+static inline int64_t sys_mkfile(const char* path) {
+    return (int64_t)SYSCALL1(SYS64_MKFILE, path);
+}
+static inline int64_t sys_write_file(const char* path, const char* data, uint64_t len) {
+    return (int64_t)SYSCALL3(SYS64_WRITE_FILE, path, data, len);
+}
+static inline int64_t sys_delete(const char* path) {
+    return (int64_t)SYSCALL1(SYS64_DELETE, path);
+}
 // Composed userland helper, not a 1:1 syscall wrapper -- hence "tox_"
 // instead of "sys_", to keep that distinction visible at call sites.
 // Blocks by polling sys_getch (safe: ring3 always resumes with IF=1

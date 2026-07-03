@@ -222,6 +222,109 @@ static uint64_t sys64_get_args(uint64_t buf_ptr, uint64_t max_len) {
     return len;
 }
 
+// ── Milestone 19: protected-path check + write/create/delete syscalls ────
+//
+// These paths cannot be deleted, renamed, or overwritten by normal user
+// commands. Anything matching the protected_exact list (exact match) or
+// the protected_prefix list (path starts with the prefix + "/" or is the
+// prefix itself) is refused with return value -2 so callers can print a
+// distinct "path is protected" error instead of a generic failure.
+//
+// Note: exec64 loader messages ("exec64: NEX64 loaded"), userproc64 lifecycle
+// messages ("userproc64: starting..."), and timer heartbeats go through
+// klog() which writes to the serial ring buffer ONLY -- never to vgaterm64.
+// The VGA user-facing shell already stays clean without any additional gating
+// on the kernel write path.
+
+#define SYS64_PATH_PROTECTED ((uint64_t)-2)
+
+static int txfs64_str_starts_with(const char* s, const char* pre) {
+    int i = 0;
+    while (pre[i] && s[i] == pre[i]) i++;
+    return pre[i] == 0 && (s[i] == 0 || s[i] == '/');
+}
+
+static int txfs64_str_eq_k(const char* a, const char* b) {
+    int i = 0;
+    while (a[i] && b[i]) { if (a[i] != b[i]) return 0; i++; }
+    return a[i] == b[i];
+}
+
+static int sys64_is_protected(const char* path) {
+    static const char* exact[] = {
+        "/",
+        "/system_manager",
+        "/system_manager/system_tools",
+        "/system_manager/user",
+        "/system_manager/user/profiles",
+        "/system_manager/user/profiles/default",
+        "/init64.nex64",
+        "/shell64.nex64",
+        0
+    };
+    static const char* prefix[] = {
+        // Everything under Command Tools is protected (can't delete binaries)
+        "/system_manager/system_tools/command_tools",
+        0
+    };
+    for (int i = 0; exact[i]; i++)
+        if (txfs64_str_eq_k(path, exact[i])) return 1;
+    for (int i = 0; prefix[i]; i++)
+        if (txfs64_str_starts_with(path, prefix[i])) return 1;
+    return 0;
+}
+
+#define SYS64_WRITE_FILE_MAX 4096  // max content per write call this milestone
+
+static uint64_t sys64_mkdir(uint64_t path_ptr) {
+    if (!userproc64_current()) return (uint64_t)-1;
+    char path[SYS64_PATH_MAX];
+    if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
+    if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
+    return txfs64_mkdir(path) < 0 ? (uint64_t)-1 : 0;
+}
+
+static uint64_t sys64_mkfile(uint64_t path_ptr) {
+    if (!userproc64_current()) return (uint64_t)-1;
+    char path[SYS64_PATH_MAX];
+    if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
+    if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
+    return txfs64_create_file(path) < 0 ? (uint64_t)-1 : 0;
+}
+
+static uint64_t sys64_write_file(uint64_t path_ptr, uint64_t data_ptr, uint64_t len) {
+    if (!userproc64_current()) return (uint64_t)-1;
+    char path[SYS64_PATH_MAX];
+    if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
+    if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
+    if (len > SYS64_WRITE_FILE_MAX) return (uint64_t)-1;
+    uint8_t data[SYS64_WRITE_FILE_MAX];
+    if (len > 0 && copy_from_user64(data, data_ptr, len) < 0) return (uint64_t)-1;
+    return txfs64_write_file(path, data, (uint32_t)len) < 0 ? (uint64_t)-1 : 0;
+}
+
+static uint64_t sys64_delete(uint64_t path_ptr) {
+    if (!userproc64_current()) return (uint64_t)-1;
+    char path[SYS64_PATH_MAX];
+    if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
+    if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
+    int r = txfs64_unlink(path);
+    if (r == 0) return 0;
+    if (r == -2) {
+        // target is a directory — remove it only if empty
+        return txfs64_rmdir(path) == 0 ? 0 : (uint64_t)-3;
+    }
+    return (uint64_t)-1;
+}
+
+static uint64_t sys64_rmdir(uint64_t path_ptr) {
+    if (!userproc64_current()) return (uint64_t)-1;
+    char path[SYS64_PATH_MAX];
+    if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
+    if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
+    return txfs64_rmdir(path) < 0 ? (uint64_t)-1 : 0;
+}
+
 void syscall64_dispatch(trapframe64_t* tf) {
     switch (tf->rax) {
     case SYS64_WRITE:
@@ -265,6 +368,21 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_READDIR:
         tf->rax = sys64_readdir(tf->rdi, tf->rsi, (uint32_t)tf->rdx);
+        break;
+    case SYS64_MKDIR:
+        tf->rax = sys64_mkdir(tf->rdi);
+        break;
+    case SYS64_MKFILE:
+        tf->rax = sys64_mkfile(tf->rdi);
+        break;
+    case SYS64_WRITE_FILE:
+        tf->rax = sys64_write_file(tf->rdi, tf->rsi, tf->rdx);
+        break;
+    case SYS64_DELETE:
+        tf->rax = sys64_delete(tf->rdi);
+        break;
+    case SYS64_RMDIR:
+        tf->rax = sys64_rmdir(tf->rdi);
         break;
     default:
         tf->rax = (uint64_t)-1;

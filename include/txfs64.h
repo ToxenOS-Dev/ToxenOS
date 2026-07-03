@@ -14,7 +14,12 @@
 #define TXFS64_BLOCK_SIZE    4096
 #define TXFS64_DIRECT_BLOCKS 12
 #define TXFS64_BLOCK_SUPER   1
-#define TXFS64_BLOCK_INODES  4
+#define TXFS64_BLOCK_IBITMAP 2           // inode allocation bitmap
+#define TXFS64_BLOCK_BBITMAP 3           // data-block allocation bitmap
+#define TXFS64_BLOCK_INODES  4           // first inode table block
+#define TXFS64_BLOCK_DATA    36          // first data block (32 inode table blocks)
+#define TXFS64_MAX_INODES    256         // max allocated inodes (bitmap limit)
+#define TXFS64_TYPE_FILE     0x1
 #define TXFS64_TYPE_DIR      0x2
 
 typedef struct {
@@ -67,9 +72,21 @@ int txfs64_readdir(const char* path, char* out, uint32_t index);
 int txfs64_stat(const char* path, uint64_t* size_out);
 
 // Milestone 11: same lookup as txfs64_stat, plus the entry's type.
-// is_dir_out may be NULL (txfs64_stat is now a thin wrapper around this
-// with is_dir_out == NULL). *is_dir_out is set to 1 for a directory, 0
-// for a regular file.
 int txfs64_stat_type(const char* path, uint64_t* size_out, int* is_dir_out);
+
+// Milestone 19: write/create/delete operations. All validate their
+// arguments and return 0 on success, -1 on failure. txfs64_write_file
+// replaces the entire contents of an existing file; it does NOT create
+// the file (call txfs64_create_file first if needed). File data is
+// limited to TXFS64_DIRECT_BLOCKS * TXFS64_BLOCK_SIZE = 48KB per file
+// for this milestone (indirect block allocation not yet implemented).
+// txfs64_rmdir refuses non-empty directories (returns -1).
+int txfs64_mkdir(const char* path);
+int txfs64_create_file(const char* path);
+int txfs64_write_file(const char* path, const uint8_t* data, uint32_t len);
+int txfs64_unlink(const char* path);
+int txfs64_rmdir(const char* path);
+// Returns 1 if the directory at path has zero live entries (safe to rmdir).
+int txfs64_dir_is_empty(const char* path);
 
 #endif // TXFS64_H

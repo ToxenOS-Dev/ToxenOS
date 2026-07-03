@@ -16,6 +16,7 @@
 #include "../include/usercopy64.h"
 #include "../include/txfs64.h"
 #include "../include/keyboard_buffer64.h"
+#include "../include/vgaterm64.h"
 #include "../include/klog.h"
 
 #define SYS64_WRITE_MAX 256
@@ -45,6 +46,10 @@ static uint64_t sys64_write(const char* buf, uint64_t len) {
 
     tmp[len] = 0;
     klog(tmp);
+    // Milestone 13: also mirror to the VGA console -- otherwise
+    // userland output (shell64, shw, etc.) is only ever visible in the
+    // serial log, never in the QEMU graphical window.
+    vgaterm64_write(tmp, len);
     return len;
 }
 
@@ -114,6 +119,25 @@ static uint64_t sys64_stat(uint64_t path_ptr, uint64_t size_out_ptr, uint64_t ty
     return 0;
 }
 
+// Milestone 15: exposes the already-existing txfs64_readdir to
+// userland (the new `ls` command) -- same validated-pointer shape as
+// every other M9 file syscall. out_ptr must point at a user buffer of
+// at least 256 bytes (txfs64_readdir's own contract).
+static uint64_t sys64_readdir(uint64_t path_ptr, uint64_t out_ptr, uint32_t index) {
+    if (!userproc64_current()) return (uint64_t)-1;
+
+    char path[SYS64_PATH_MAX];
+    if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
+
+    char name[256];
+    if (txfs64_readdir(path, name, index) < 0) return (uint64_t)-1;
+
+    uint64_t len = 0;
+    while (name[len] && len < sizeof(name) - 1) len++;
+    if (copy_to_user64(out_ptr, name, len + 1) < 0) return (uint64_t)-1;
+    return 0;
+}
+
 // Synchronous: by the time this returns, the child has already run to
 // completion (kernel/userproc64.c's userproc64_run is fully blocking --
 // no concurrent scheduling of multiple user processes exists yet). The
@@ -154,6 +178,23 @@ static uint64_t sys64_wait(uint32_t pid) {
 static uint64_t sys64_getch(void) {
     int c = keyboard_buffer64_getch();
     return (c < 0) ? (uint64_t)-1 : (uint64_t)c;
+}
+
+// Milestone 14: no process-state dependency (same reasoning as
+// sys64_write) -- clearing the screen has nothing to do with which
+// process is current, so this works even from the untracked
+// RING3_TEST64_RUN stub.
+static uint64_t sys64_clear(void) {
+    vgaterm64_clear();
+    return 0;
+}
+
+// Milestone 15: same no-process-state-dependency reasoning as
+// sys64_clear -- setting the active color has nothing to do with which
+// process is current.
+static uint64_t sys64_setcolor(uint8_t color) {
+    vgaterm64_set_color(color);
+    return 0;
 }
 
 // Milestone 11: retrieves the single raw argument string sys_spawn
@@ -215,6 +256,15 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_GET_ARGS:
         tf->rax = sys64_get_args(tf->rdi, tf->rsi);
+        break;
+    case SYS64_CLEAR:
+        tf->rax = sys64_clear();
+        break;
+    case SYS64_SETCOLOR:
+        tf->rax = sys64_setcolor((uint8_t)tf->rdi);
+        break;
+    case SYS64_READDIR:
+        tf->rax = sys64_readdir(tf->rdi, tf->rsi, (uint32_t)tf->rdx);
         break;
     default:
         tf->rax = (uint64_t)-1;

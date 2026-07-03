@@ -16,6 +16,9 @@
 #define SYS64_WAIT   9
 #define SYS64_GETCH  10
 #define SYS64_GET_ARGS 11
+#define SYS64_CLEAR 12
+#define SYS64_SETCOLOR 13
+#define SYS64_READDIR 14
 
 // ABI: rax = syscall number, rdi/rsi/rdx = up to 3 args (see
 // kernel/syscall64.c). Return value comes back in rax.
@@ -93,6 +96,26 @@ static inline int64_t sys_getch(void) {
 // (no current process, or max_len == 0).
 static inline int64_t sys_get_args(char* buf, uint64_t max_len) {
     return (int64_t)SYSCALL2(SYS64_GET_ARGS, buf, max_len);
+}
+
+// Milestone 14: clears the VGA text console (the shell's `clear`/`cls`
+// builtin) -- no args, no failure case.
+static inline void sys_clear(void) {
+    SYSCALL0(SYS64_CLEAR);
+}
+
+// Milestone 15: sets the active VGA text attribute (fg low nibble, bg
+// high nibble) used by every subsequent sys_write call -- mirrors
+// 32-bit ToxenOS's stateful set_color(). No failure case.
+static inline void sys_set_color(uint8_t color) {
+    SYSCALL1(SYS64_SETCOLOR, color);
+}
+
+// Milestone 15: retrieves the name of the index'th non-empty entry of
+// the directory at path into out (>=256 bytes). Returns 0 on success,
+// -1 once index runs past the last entry or path isn't a directory.
+static inline int64_t sys_readdir(const char* path, char* out, uint32_t index) {
+    return (int64_t)SYSCALL3(SYS64_READDIR, path, out, index);
 }
 
 // Composed userland helper, not a 1:1 syscall wrapper -- hence "tox_"

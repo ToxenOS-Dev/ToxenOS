@@ -1,19 +1,28 @@
 // ToxenOS/user64/init64.c — Milestone 9: the first real userland
 // program. Not the real init64 yet (no argument parsing, no real
-// service startup) -- it's plumbing that proves the new syscall API
-// (file read, spawn, wait) works end-to-end from a real user process:
-// prints a banner, stats and reads /hello.ts through the new file
-// syscalls, spawns /exec64_test.nex64, waits for it, and prints its
-// exit code.
+// service startup) -- originally plumbing that proved the new syscall
+// API (file read, spawn, wait) works end-to-end from a real user
+// process.
+//
+// Milestone 13: normal boot now means "launch the interactive shell
+// immediately, with no diagnostic banner of its own" -- the kernel
+// already cleared the VGA screen right before spawning init64
+// (kernel/kernel64.c), so the first thing the user should see is
+// shell64's own banner and prompt, not init64's old Milestone 9 debug
+// spew. That original banner/file-read/exec64_test smoke test is kept
+// as a debug alternative behind INIT64_TEST_MODE, not deleted.
 #include <stdint.h>
 #include "tox64.h"
 
-// Milestone 10: define to have init64 launch /shell64.nex64 instead of
-// the Milestone 9 exec64_test smoke test below -- mutually exclusive for
-// now. Default off so the already-verified Milestone 9 happy path stays
-// the reproducible reference; flip this on for the Milestone 10
-// "init64 launches a real interactive shell" verification run.
-// #define INIT64_SHELL_RUN 1
+// Define to run the original Milestone 9 diagnostic banner (pid, stat+
+// read /hello.ts, spawn /exec64_test.nex64, wait, print exit code)
+// instead of launching the shell -- useful for re-verifying the file/
+// spawn/wait syscall path in isolation. Default off: normal boot always
+// launches /shell64.nex64.
+// Milestone 16: /exec64_test.nex64 is no longer on the disk image by
+// default -- rebuild it with `make populate PACKAGE_DEBUG64=1` before
+// re-enabling this flag, or the sys_spawn below will fail.
+// #define INIT64_TEST_MODE 1
 
 static int my_strlen(const char* s) {
     int i = 0;
@@ -41,6 +50,7 @@ static void put(const char* s) {
 // Milestone 5. Chunk a longer buffer (e.g. a whole file's contents)
 // across multiple calls instead of silently showing only the first 256
 // bytes of it.
+__attribute__((unused))
 static void put_buf(const char* buf, int len) {
     const int chunk = 200;
     int off = 0;
@@ -52,6 +62,7 @@ static void put_buf(const char* buf, int len) {
     }
 }
 
+__attribute__((unused))
 static void put_line_int(const char* prefix, int64_t v) {
     char buf[64];
     int n = 0;
@@ -65,6 +76,7 @@ static void put_line_int(const char* prefix, int64_t v) {
 }
 
 void _start(void) {
+#if defined(INIT64_TEST_MODE)
     put("init64: starting, pid=");
     char pidbuf[24];
     int n = itoa10((int)sys_getpid(), pidbuf);
@@ -94,16 +106,6 @@ void _start(void) {
         put("init64: sys_open(/hello.ts) failed\n");
     }
 
-#if defined(INIT64_SHELL_RUN)
-    int64_t shell_pid = sys_spawn("/shell64.nex64", 0);
-    if (shell_pid >= 0) {
-        put_line_int("init64: spawned shell64, pid=", shell_pid);
-        int64_t code = sys_wait((uint32_t)shell_pid);
-        put_line_int("init64: shell64 exited, code=", code);
-    } else {
-        put("init64: sys_spawn(/shell64.nex64) failed\n");
-    }
-#else
     int64_t child_pid = sys_spawn("/exec64_test.nex64", 0);
     if (child_pid >= 0) {
         put_line_int("init64: spawned child pid=", child_pid);
@@ -112,9 +114,18 @@ void _start(void) {
     } else {
         put("init64: sys_spawn(/exec64_test.nex64) failed\n");
     }
+    put("init64: done\n");
+#else
+    // Milestone 13: normal boot -- no banner of our own, just hand off
+    // straight to the shell.
+    int64_t shell_pid = sys_spawn("/shell64.nex64", 0);
+    if (shell_pid < 0) {
+        put("init64: sys_spawn(/shell64.nex64) failed\n");
+    } else {
+        sys_wait((uint32_t)shell_pid);
+    }
 #endif
 
-    put("init64: done\n");
     sys_exit(0);
 
     for (;;) { }  // unreachable

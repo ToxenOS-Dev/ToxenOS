@@ -33,6 +33,15 @@
 // 64-bit). A process retrieves whatever sys_spawn passed it.
 #define SYS64_GET_ARGS 11 // (char* buf, uint64_t max_len) -> length copied, or -1
 
+// Milestone 14: lets userland (the shell's `clear`/`cls` builtin) clear
+// the VGA text console -- no pointer args, just forwards to
+// vgaterm64_clear().
+#define SYS64_CLEAR 12 // () -> always 0
+
+// Milestone 15: colored terminal + directory listing.
+#define SYS64_SETCOLOR 13 // (uint8_t color) -> always 0
+#define SYS64_READDIR  14 // (const char* path, char* out [>=256 bytes], uint32_t index) -> 0 or -1
+
 void syscall64_dispatch(trapframe64_t* tf);
 
 #endif // SYSCALL64_H

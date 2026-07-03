@@ -17,6 +17,16 @@ USER64_ELF_BASE := 0xFFFFFFFF83C00000
 # manually installs (e.g. /C:/tools/test.elf).
 PACKAGE_ELF ?= 0
 
+# Milestone 16: set PACKAGE_DEBUG64=1 (e.g. `make populate PACKAGE_DEBUG64=1`)
+# to also write the 64-bit debug/test fixture binaries (exec64_test,
+# exec64_fault_test, exec64_isolation_test, exec64_badptr_test) into the
+# TxFS image at root. Normal images omit them -- they're only consumed
+# by kernel/kernel64.c's EXEC64_TEST_RUN and user64/init64.c's
+# INIT64_TEST_MODE debug flags (both off by default); re-enabling either
+# one now also requires this populate flag, or the fixture it spawns
+# won't be on the disk image.
+PACKAGE_DEBUG64 ?= 0
+
 # ── Compiler flags ────────────────────────────────────────────────────────────
 # -MMD -MP: generate .d dependency files for incremental builds
 # -Wall -Wextra: catch real bugs for free
@@ -252,6 +262,7 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/ata64.c        -o build/ata64.o
 	gcc $(KFLAGS64) -c kernel/txfs64.c       -o build/txfs64.o
 	gcc $(KFLAGS64) -c kernel/syscall64.c    -o build/syscall64.o
+	gcc $(KFLAGS64) -c kernel/vgaterm64.c    -o build/vgaterm64.o
 	gcc $(KFLAGS64) -c kernel/exec64.c       -o build/exec64.o
 	gcc $(KFLAGS64) -c kernel/userproc64.c   -o build/userproc64.o
 	gcc $(KFLAGS64) -c kernel/physmem64.c    -o build/physmem64.o
@@ -265,6 +276,7 @@ kernel64:
 		build/ata64.o build/txfs64.o build/syscall64.o build/exec64.o \
 		build/userproc64.o build/userproc64_asm.o \
 		build/physmem64.o build/paging64.o build/usercopy64.o \
+		build/vgaterm64.o \
 		build/ring3_syscall_stub64_blob.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin
 	@if command -v grub2-mkrescue >/dev/null 2>&1; then \
@@ -390,61 +402,84 @@ cmdtools64: tools/elf2nex64
 	tools/elf2nex64 build/cmdtools64/where.elf64 build/cmdtools64/where.nex64
 	gcc $(UFLAGS64) system_manager/system_tools/command_tools/nexinfo.c -o build/cmdtools64/nexinfo.elf64
 	tools/elf2nex64 build/cmdtools64/nexinfo.elf64 build/cmdtools64/nexinfo.nex64
+	gcc $(UFLAGS64) system_manager/system_tools/command_tools/ls.c -o build/cmdtools64/ls.elf64
+	tools/elf2nex64 build/cmdtools64/ls.elf64 build/cmdtools64/ls.nex64
+	gcc $(UFLAGS64) system_manager/system_tools/command_tools/help.c -o build/cmdtools64/help.elf64
+	tools/elf2nex64 build/cmdtools64/help.elf64 build/cmdtools64/help.nex64
 
 populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 	dd if=/dev/zero of=build/fs.img bs=4096 count=2048
-	# Bundled commands: .nex is the packaged default. Pass PACKAGE_ELF=1 to
-	# also ship the .elf copies (dev/debug builds only — see note up top).
-	for f in build/user/bin/*.nex; do \
-		name=$$(basename $$f); \
-		tools/txfs_write build/fs.img $$f /BSM/SystemT/$$name || exit 1; \
-	done
-	if [ "$(PACKAGE_ELF)" = "1" ]; then \
-		for f in build/user/bin/*.elf; do \
-			name=$$(basename $$f); \
-			tools/txfs_write build/fs.img $$f /BSM/SystemT/$$name || exit 1; \
-		done; \
-	fi
-	tools/txfs_write build/fs.img build/user/hello.nex /hello.nex
-	tools/txfs_write build/fs.img build/user/shell.nex /shell.nex
-	tools/txfs_write build/fs.img build/user/init.nex /init.nex
-	tools/txfs_write build/fs.img build/user/login.nex /BSM/SystemT/login.nex
-	if [ "$(PACKAGE_ELF)" = "1" ]; then \
-		tools/txfs_write build/fs.img build/user/hello.elf /hello.elf; \
-		tools/txfs_write build/fs.img build/user/shell.elf /shell.elf; \
-		tools/txfs_write build/fs.img build/user/init.elf /init.elf; \
-		tools/txfs_write build/fs.img build/user/login.elf /BSM/SystemT/login.elf; \
-	fi
-	tools/txfs_write build/fs.img user/system/users /etc/users
-	tools/txfs_write build/fs.img user/system/hello.ts /hello.ts
-	# Milestone 6: 64-bit exec test binaries -- inert to the 32-bit
-	# kernel (just two more files it never looks at), read by
-	# kernel/exec64.c via the same shared disk image.
-	tools/txfs_write build/fs.img build/user64/exec_test.nex64 /exec64_test.nex64
-	tools/txfs_write build/fs.img build/user64/exec_test.elf64 /exec64_test.elf64
-	# Milestone 7: deliberate-fault test binary, exercises the pid-aware
-	# fault termination path (kernel/interrupt64.c -> kernel/userproc64.c).
-	tools/txfs_write build/fs.img build/user64/exec_fault_test.nex64 /exec64_fault_test.nex64
-	# Milestone 8: per-process memory isolation proof binary -- see
-	# kernel/paging64.c/kernel/userproc64.c.
-	tools/txfs_write build/fs.img build/user64/exec_isolation_test.nex64 /exec64_isolation_test.nex64
-	# Milestone 9: user-pointer validation proof binary, and the first
-	# real userland process (file/spawn/wait syscall API end-to-end).
-	tools/txfs_write build/fs.img build/user64/exec_badptr_test.nex64 /exec64_badptr_test.nex64
-	tools/txfs_write build/fs.img build/user64/init64.nex64 /init64.nex64
-	# Milestone 10: ToxenOS64's first interactive shell.
-	tools/txfs_write build/fs.img build/user64/shell64.nex64 /shell64.nex64
-	# Milestone 11: first standalone ToxenOS64 command programs. Path is
-	# a stand-in for the aspirational C:\System Manager\System Tools\
-	# Command Tools\ visible path -- no drive letter, no spaces, until
-	# 64-bit gets a real drive-letter root and a quoting-aware shell
-	# parser (see user64/shell64.c's CMDTOOLS_PATH comment).
-	# tools/txfs_write auto-creates the intermediate directories.
+	# Milestone 16: ToxenOS64's own visible tree is written FIRST, before
+	# any 32-bit legacy content below -- TxFS's on-disk directory format
+	# is strictly append-only (tools/txfs_write.c's dir_append), so
+	# listing order is exactly write order, not sorted. Writing System
+	# Manager's tree (and the 64-bit boot binaries) before /BSM and the
+	# rest of the 32-bit root content is what makes `ls C:\` in the
+	# 64-bit shell show "System Manager\" first instead of "BSM\" first.
+	# 32-bit's own root files below are NOT moved or touched -- they stay
+	# exactly where the 32-bit kernel needs them to boot.
+	#
+	# Placeholder folders from the planned ToxenOS64 tree -- empty today
+	# (no code creates/reads anything in them yet), kept on disk via the
+	# same zero-byte ".keep" marker convention already used below for
+	# /BSM/usr/lst and /etc (tools/txfs_write auto-creates each leaf's
+	# parent directories; true leaves need an explicit marker file or
+	# they wouldn't exist as a directory at all).
+	# Milestone 17: a temporary "default" user profile (real per-user
+	# accounts don't exist yet for the 64-bit side -- shell64.c's `cd`
+	# with no argument lands here, see HOME_PATH_INTERNAL) with its own
+	# Desktop/Documents/Downloads/Pictures/Trash placeholder folders.
+	tools/txfs_write build/fs.img /dev/null /system_manager/user/profiles/default/desktop/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/user/profiles/default/documents/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/user/profiles/default/downloads/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/user/profiles/default/pictures/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/user/profiles/default/trash/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/programs/apps/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/programs/system_programs/terminal/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/programs/system_programs/settings/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/programs/system_programs/file_manager/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/programs/system_programs/task_manager/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/programs/system_programs/control_center/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/programs/program_data/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/system_data/display_interface/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/system_data/system_backend/.keep
+	# Milestone 11/15/16: real standalone ToxenOS64 command programs --
+	# visible path C:\System Manager\System Tools\Command Tools\<name>.nex
+	# (see user64/toxpath64.h for the internal<->visible translation).
 	tools/txfs_write build/fs.img build/cmdtools64/shw.nex64 /system_manager/system_tools/command_tools/shw.nex64
 	tools/txfs_write build/fs.img build/cmdtools64/stat.nex64 /system_manager/system_tools/command_tools/stat.nex64
 	tools/txfs_write build/fs.img build/cmdtools64/where.nex64 /system_manager/system_tools/command_tools/where.nex64
 	tools/txfs_write build/fs.img build/cmdtools64/nexinfo.nex64 /system_manager/system_tools/command_tools/nexinfo.nex64
-	@tools/txfs_write build/fs.img /dev/null /BSM/usr/lst/.keep 2>/dev/null || true
+	tools/txfs_write build/fs.img build/cmdtools64/ls.nex64 /system_manager/system_tools/command_tools/ls.nex64
+	tools/txfs_write build/fs.img build/cmdtools64/help.nex64 /system_manager/system_tools/command_tools/help.nex64
+	tools/txfs_write build/fs.img /dev/null /system_manager/system_tools/boot/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/system_tools/logs/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/drivers/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/temp/.keep
+	tools/txfs_write build/fs.img build/user64/init64.nex64 /init64.nex64
+	# Milestone 10: ToxenOS64's first interactive shell.
+	tools/txfs_write build/fs.img build/user64/shell64.nex64 /shell64.nex64
+	# Milestone 16: the four 64-bit debug/test fixtures below are no
+	# longer on the disk image by default -- they're root-level clutter
+	# with zero relevance to normal boot, only ever consumed by
+	# kernel/kernel64.c's EXEC64_TEST_RUN and user64/init64.c's
+	# INIT64_TEST_MODE debug flags (both off by default). Pass
+	# PACKAGE_DEBUG64=1 to re-include them, e.g. when re-enabling either
+	# debug flag for testing.
+	if [ "$(PACKAGE_DEBUG64)" = "1" ]; then \
+		tools/txfs_write build/fs.img build/user64/exec_test.nex64 /exec64_test.nex64; \
+		tools/txfs_write build/fs.img build/user64/exec_test.elf64 /exec64_test.elf64; \
+		tools/txfs_write build/fs.img build/user64/exec_fault_test.nex64 /exec64_fault_test.nex64; \
+		tools/txfs_write build/fs.img build/user64/exec_isolation_test.nex64 /exec64_isolation_test.nex64; \
+		tools/txfs_write build/fs.img build/user64/exec_badptr_test.nex64 /exec64_badptr_test.nex64; \
+	fi
+	# 32-bit root boot files (not in BSM -- the 32-bit kernel loads
+	# /init.nex and /shell.nex directly from the TxFS root).
+	tools/txfs_write build/fs.img build/user/hello.nex /hello.nex
+	tools/txfs_write build/fs.img build/user/shell.nex /shell.nex
+	tools/txfs_write build/fs.img build/user/init.nex /init.nex
+	tools/txfs_write build/fs.img user/system/users /etc/users
+	tools/txfs_write build/fs.img user/system/hello.ts /hello.ts
 	@tools/txfs_write build/fs.img /dev/null /etc/.keep 2>/dev/null || true
 	# ── Assemble bootable disk.img (GPT — BIOS + UEFI dual-boot) ────────────────
 	# Layout: LBA 0:        Protective MBR + boot.img code

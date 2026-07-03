@@ -20,29 +20,44 @@
 #include "../include/exec64.h"
 #include "../include/userproc64.h"
 #include "../include/physmem64.h"
+#include "../include/vgaterm64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
 // #define ISR64_RUN_TESTS 1
 
 // Define to run the Milestone 3B hardcoded ring3 smoke test in place of
-// the Milestone 3A kernel-task scheduler -- the two are mutually
-// exclusive (the ring3 test halts forever once it catches the
-// deliberate #UD, so there is no "resume the scheduler afterward").
+// the normal interactive boot below -- the two are mutually exclusive
+// (the ring3 test halts forever once it catches the deliberate #UD, so
+// there is no "resume the scheduler afterward").
 // #define RING3_TEST64_RUN 1
 
 // Define to run the Milestone 7 user process lifecycle test in place of
-// both of the above -- loads a real compiled program from TxFS64,
-// tracks it as a real process, runs it in ring3, and returns control to
-// the kernel scheduler once it exits/faults. All four test modes are
-// mutually exclusive.
+// the normal interactive boot -- loads a real compiled program from
+// TxFS64, tracks it as a real process, runs it in ring3, and returns
+// control to the kernel scheduler once it exits/faults. All debug modes
+// below are mutually exclusive with each other and with the default.
+// Milestone 16: the exec64_test*/exec64_fault_test/etc. fixtures this
+// loads are no longer on the disk image by default -- rebuild it with
+// `make populate PACKAGE_DEBUG64=1` before re-enabling this flag, or
+// userproc64_run below will fail to find the binary.
 // #define EXEC64_TEST_RUN 1
 
-// Define to launch /init64.nex64 as the first real userland process
-// (Milestone 9) in place of all of the above -- exercises the new
-// file/spawn/wait syscall API end-to-end, then falls through to the
-// Milestone 3A scheduler exactly like EXEC64_TEST_RUN does.
-// #define INIT64_RUN 1
+// Define to stop right after the boot diagnostics below and fall into
+// the Milestone 3A kernel-task scheduler WITHOUT ever launching
+// userland -- this was the default before Milestone 13. Useful for
+// debugging boot/IDT/TSS/ATA/TxFS bring-up by itself, without a
+// process/shell on top, while keeping the diagnostics on screen.
+// #define KERNEL64_DIAG_ONLY 1
+
+// Milestone 13: the NORMAL boot path (none of the debug flags above
+// defined) launches /init64.nex64, which launches /shell64.nex64 by
+// default (see user64/init64.c's own INIT64_TEST_MODE flag for its
+// debug alternative) -- instead of leaving the user stuck on the boot
+// diagnostics screen with no prompt. The diagnostics below still run
+// and still go to klog/serial either way; only the VGA screen gets
+// cleared (vgaterm64_clear, right before the handoff) so the user lands
+// on a clean shell prompt instead of a wall of boot text.
 
 extern void timer64_handler(void);
 extern void keyboard64_handler(void);
@@ -199,14 +214,11 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
         out_line("TxFS64 mount failed (bad magic)");
     }
 
-#if defined(INIT64_RUN)
-    out_line("Launching /init64.nex64 as the first real userland process...");
-    int init_code = userproc64_run("/init64.nex64", 0, 0);
-    out_kv("userproc64: init64 returned to kernel, exit code: ", (uint64_t)(int64_t)init_code);
-    process64_init();
-    process64_start();
-    // Reached only if the scheduler later switches back to the boot
-    // task -- proves control genuinely returned to the kernel.
+#if defined(RING3_TEST64_RUN)
+    out_line("Entering ring3 syscall test (iretq) -- expect sys64_write/sys64_exit next");
+    ring3_test64_start();
+    // unreachable: ring3_enter64 ends in iretq, and the stub's sys64_exit
+    // (Milestone 5) halts forever once it's done.
 #elif defined(EXEC64_TEST_RUN)
     // Path is a literal here on purpose, swapped by hand between
     // /exec64_test.nex64 (primary), /exec64_test.elf64 (fallback proof),
@@ -232,17 +244,27 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     // task -- proves control genuinely returned to the kernel (it
     // doesn't matter whether userproc64_run succeeded or failed; either
     // way execution falls through here).
-#elif defined(RING3_TEST64_RUN)
-    out_line("Entering ring3 syscall test (iretq) -- expect sys64_write/sys64_exit next");
-    ring3_test64_start();
-    // unreachable: ring3_enter64 ends in iretq, and the stub's sys64_exit
-    // (Milestone 5) halts forever once it's done.
-#else
+#elif defined(KERNEL64_DIAG_ONLY)
     process64_init();
     process64_start();
     // Reached only if the scheduler later switches back to the boot
     // task (e.g. if both demo tasks ever died) — falls into the same
-    // idle loop as before.
+    // idle loop as before. Diagnostics stay on screen -- no userland,
+    // no VGA clear.
+#else
+    // Milestone 13: normal interactive boot. One last line on the
+    // diagnostics screen, then clear it before init64/shell64 ever get
+    // a chance to print anything -- the user should land on a clean
+    // shell prompt, not a wall of boot text (which is still fully
+    // logged to klog/serial regardless).
+    out_line("Launching ToxenOS64 interactive shell...");
+    vgaterm64_clear();
+    int init_code = userproc64_run("/init64.nex64", 0, 0);
+    klog_hex("userproc64: init64 returned to kernel, exit code: ", (uint32_t)(int64_t)init_code);
+    process64_init();
+    process64_start();
+    // Reached only if the scheduler later switches back to the boot
+    // task -- proves control genuinely returned to the kernel.
 #endif
 
     for (;;) {

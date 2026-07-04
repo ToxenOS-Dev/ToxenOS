@@ -86,6 +86,10 @@ int txfs64_create_file(const char* path);
 int txfs64_write_file(const char* path, const uint8_t* data, uint32_t len);
 int txfs64_unlink(const char* path);
 int txfs64_rmdir(const char* path);
+// Rename/move src_path to dest_path on the same volume. Handles same-dir
+// (rename-in-place) and cross-dir (relink). Returns 0, -1 (not found /
+// bad path), or -4 (dest already exists).
+int txfs64_rename(const char* src_path, const char* dest_path);
 // Returns 1 if the directory at path has zero live entries (safe to rmdir).
 int txfs64_dir_is_empty(const char* path);
 

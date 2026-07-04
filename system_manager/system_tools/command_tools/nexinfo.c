@@ -8,8 +8,12 @@
 // reads into a static buffer instead (kernel/exec64.c's own EXEC64_FILE_MAX
 // load cap is 64KB, but nexinfo only ever needs the header + segment
 // table, comfortably under the 4KB read here).
+// Milestone 12: the argument may be a visible/quoted ToxenOS path or
+// the legacy internal slash form -- see toxpath64_to_internal.
 #include <stdint.h>
 #include "tox64.h"
+#include "toxpath64.h"
+#include "toxcolor64.h"
 
 #define NEX64_MAGIC 0x0258454Eu  // must match include/nex64.h
 #define ELF64_MAGIC 0x464C457Fu  // must match include/elf64.h
@@ -68,6 +72,26 @@ static void put_hex(uint64_t v) {
     put(out);
 }
 
+// Milestone 15: bright red, reset to default after -- same convention
+// as every other command_tools program and shell64.c. put_err2 handles
+// this file's "<arg><suffix>\n" error shape (the variable part comes
+// first, not after a fixed prefix).
+static void put_err(const char* prefix, const char* arg) {
+    sys_set_color(TC64_RED_BRIGHT);
+    put(prefix);
+    put(arg);
+    put("\n");
+    sys_set_color(TC64_DEFAULT);
+}
+
+static void put_err2(const char* arg, const char* suffix) {
+    sys_set_color(TC64_RED_BRIGHT);
+    put(arg);
+    put(suffix);
+    put("\n");
+    sys_set_color(TC64_DEFAULT);
+}
+
 static void put_flags(uint64_t flags) {
     char s[4];
     s[0] = (flags & NEX64_PF_R) ? 'R' : '-';
@@ -81,15 +105,19 @@ void _start(void) {
     char args[128];
     int64_t n = sys_get_args(args, sizeof(args));
     if (n < 0) args[0] = 0;
+    toxpath64_strip_quotes(args);
 
     if (!args[0]) {
-        put("nexinfo: missing argument\n");
+        put_err("nexinfo: missing argument", "");
         sys_exit(1);
     }
 
-    int64_t fd = sys_open(args);
+    char path[128];
+    toxpath64_to_internal(args, path, sizeof(path));
+
+    int64_t fd = sys_open(path);
     if (fd < 0) {
-        put("nexinfo: cannot open "); put(args); put("\n");
+        put_err("nexinfo: cannot open ", args);
         sys_exit(1);
     }
 
@@ -103,19 +131,19 @@ void _start(void) {
     sys_close((int)fd);
 
     if (total < 4) {
-        put("nexinfo: unrecognized format\n");
+        put_err("nexinfo: unrecognized format", "");
         sys_exit(1);
     }
 
     uint32_t magic = ((uint32_t*)buf)[0];
 
     if (magic == ELF64_MAGIC) {
-        put(args); put(": not NEX64 -- ELF64 executable\n");
+        put_err2(args, ": not NEX64 -- ELF64 executable");
         sys_exit(1);
     }
 
     if (magic != NEX64_MAGIC || total < sizeof(nex64_header_t)) {
-        put(args); put(": unrecognized format\n");
+        put_err2(args, ": unrecognized format");
         sys_exit(1);
     }
 
@@ -123,7 +151,7 @@ void _start(void) {
     uint64_t seg_table_off = sizeof(nex64_header_t);
     uint64_t seg_table_sz  = (uint64_t)hdr->seg_count * sizeof(nex64_seg_t);
     if (seg_table_off + seg_table_sz > total) {
-        put(args); put(": invalid file -- segment table runs past what was read\n");
+        put_err2(args, ": invalid file -- segment table runs past what was read");
         sys_exit(1);
     }
 

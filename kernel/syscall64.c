@@ -325,6 +325,17 @@ static uint64_t sys64_rmdir(uint64_t path_ptr) {
     return txfs64_rmdir(path) < 0 ? (uint64_t)-1 : 0;
 }
 
+static uint64_t sys64_rename(uint64_t src_ptr, uint64_t dest_ptr) {
+    if (!userproc64_current()) return (uint64_t)-1;
+    char src[SYS64_PATH_MAX], dest[SYS64_PATH_MAX];
+    if (copy_user_cstr64(src,  src_ptr,  sizeof(src),  0) < 0) return (uint64_t)-1;
+    if (copy_user_cstr64(dest, dest_ptr, sizeof(dest),  0) < 0) return (uint64_t)-1;
+    if (sys64_is_protected(src) || sys64_is_protected(dest)) return SYS64_PATH_PROTECTED;
+    int r = txfs64_rename(src, dest);
+    if (r == -4) return (uint64_t)-4;
+    return r < 0 ? (uint64_t)-1 : 0;
+}
+
 void syscall64_dispatch(trapframe64_t* tf) {
     switch (tf->rax) {
     case SYS64_WRITE:
@@ -383,6 +394,9 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_RMDIR:
         tf->rax = sys64_rmdir(tf->rdi);
+        break;
+    case SYS64_RENAME:
+        tf->rax = sys64_rename(tf->rdi, tf->rsi);
         break;
     default:
         tf->rax = (uint64_t)-1;

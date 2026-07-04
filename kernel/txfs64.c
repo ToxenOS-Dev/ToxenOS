@@ -606,6 +606,67 @@ int txfs64_unlink(const char* path) {
     return 0;
 }
 
+// Rename one directory entry in place without touching the inode or data blocks.
+static int txfs64_dir_rename_entry(uint32_t dir_inum,
+                                   const char* old_name, const char* new_name) {
+    txfs64_inode_t dir;
+    if (txfs64_read_inode(dir_inum, &dir) < 0) return -1;
+
+    uint8_t buf[TXFS64_BLOCK_SIZE];
+    uint32_t entries_total = (uint32_t)(dir.size / sizeof(txfs64_dirent_t));
+    uint32_t checked = 0;
+
+    for (uint32_t b = 0; checked < entries_total; b++) {
+        uint32_t blk = txfs64_get_block(&dir, b);
+        if (!blk) break;
+        if (txfs64_read_block(blk, buf) < 0) break;
+
+        uint32_t per_block = TXFS64_BLOCK_SIZE / sizeof(txfs64_dirent_t);
+        uint32_t in_this   = entries_total - checked;
+        if (in_this > per_block) in_this = per_block;
+
+        for (uint32_t i = 0; i < in_this; i++) {
+            txfs64_dirent_t* de = (txfs64_dirent_t*)(buf + i * sizeof(txfs64_dirent_t));
+            if (de->inode && !txfs64_strcmp(de->name, old_name)) {
+                txfs64_strcpy(de->name, new_name, 255);
+                return txfs64_write_block(blk, buf);
+            }
+        }
+        checked += in_this;
+    }
+    return -1;
+}
+
+int txfs64_rename(const char* src_path, const char* dest_path) {
+    int src_inum = txfs64_resolve_path(src_path);
+    if (src_inum < 0) return -1;
+
+    if (txfs64_resolve_path(dest_path) >= 0) return -4;  // dest already exists
+
+    char src_parent[256], src_leaf[256];
+    char dest_parent[256], dest_leaf[256];
+    if (txfs64_split_path(src_path,  src_parent,  256, src_leaf,  256) < 0) return -1;
+    if (txfs64_split_path(dest_path, dest_parent, 256, dest_leaf, 256) < 0) return -1;
+    if (!src_leaf[0] || !dest_leaf[0]) return -1;
+
+    int src_pinum  = txfs64_resolve_path(src_parent);
+    int dest_pinum = txfs64_resolve_path(dest_parent);
+    if (src_pinum < 0 || dest_pinum < 0) return -1;
+
+    if (src_pinum == dest_pinum)
+        return txfs64_dir_rename_entry((uint32_t)src_pinum, src_leaf, dest_leaf);
+
+    // Cross-directory: relink the inode under the new parent and unlink old entry.
+    txfs64_inode_t inode;
+    if (txfs64_read_inode((uint32_t)src_inum, &inode) < 0) return -1;
+    uint8_t type = (uint8_t)((inode.mode >> 12) & 0xF);
+
+    if (txfs64_dir_append((uint32_t)dest_pinum, (uint32_t)src_inum,
+                          type, dest_leaf) < 0) return -1;
+    txfs64_dir_remove_entry((uint32_t)src_pinum, src_leaf);
+    return 0;
+}
+
 int txfs64_dir_is_empty(const char* path) {
     int inum = txfs64_resolve_path(path);
     if (inum < 0) return 0;

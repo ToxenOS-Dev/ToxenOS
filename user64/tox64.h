@@ -24,10 +24,13 @@
 #define SYS64_WRITE_FILE 17
 #define SYS64_DELETE     18
 #define SYS64_RMDIR      19
+#define SYS64_RENAME     20
 // Return value -2 means the path is protected (kernel refused the op).
 #define SYS64_ERR_PROTECTED ((int64_t)-2)
 // Return value -3 from SYS64_DELETE means the folder is not empty.
 #define SYS64_ERR_NOTEMPTY  ((int64_t)-3)
+// Return value -4 from SYS64_RENAME means the destination already exists.
+#define SYS64_ERR_EXISTS    ((int64_t)-4)
 
 // ABI: rax = syscall number, rdi/rsi/rdx = up to 3 args (see
 // kernel/syscall64.c). Return value comes back in rax.
@@ -140,6 +143,9 @@ static inline int64_t sys_write_file(const char* path, const char* data, uint64_
 }
 static inline int64_t sys_delete(const char* path) {
     return (int64_t)SYSCALL1(SYS64_DELETE, path);
+}
+static inline int64_t sys_rename(const char* src, const char* dest) {
+    return (int64_t)SYSCALL2(SYS64_RENAME, src, dest);
 }
 // Composed userland helper, not a 1:1 syscall wrapper -- hence "tox_"
 // instead of "sys_", to keep that distinction visible at call sites.

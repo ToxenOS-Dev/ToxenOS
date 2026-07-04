@@ -49,8 +49,11 @@
 #define SYS64_MKDIR      15 // (const char* path) -> 0, -1, or -2
 #define SYS64_MKFILE     16 // (const char* path) -> 0, -1, or -2
 #define SYS64_WRITE_FILE 17 // (const char* path, const char* data, uint64_t len) -> 0, -1, or -2
-#define SYS64_DELETE     18 // (const char* path) -> 0, -1, or -2
+#define SYS64_DELETE     18 // (const char* path) -> 0, -1, -2, or -3
 #define SYS64_RMDIR      19 // (const char* path) -> 0, -1, or -2
+
+// Milestone 20: rename/move. Both src and dest are validated; -4 if dest exists.
+#define SYS64_RENAME     20 // (const char* src, const char* dest) -> 0, -1, -2, or -4
 
 void syscall64_dispatch(trapframe64_t* tf);
 

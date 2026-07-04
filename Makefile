@@ -414,6 +414,12 @@ cmdtools64: tools/elf2nex64
 	tools/elf2nex64 build/cmdtools64/write.elf64 build/cmdtools64/write.nex64
 	gcc $(UFLAGS64) system_manager/system_tools/command_tools/del.c -o build/cmdtools64/del.elf64
 	tools/elf2nex64 build/cmdtools64/del.elf64 build/cmdtools64/del.nex64
+	gcc $(UFLAGS64) system_manager/system_tools/command_tools/ren.c -o build/cmdtools64/ren.elf64
+	tools/elf2nex64 build/cmdtools64/ren.elf64 build/cmdtools64/ren.nex64
+	gcc $(UFLAGS64) system_manager/system_tools/command_tools/copy.c -o build/cmdtools64/copy.elf64
+	tools/elf2nex64 build/cmdtools64/copy.elf64 build/cmdtools64/copy.nex64
+	gcc $(UFLAGS64) system_manager/system_tools/command_tools/move.c -o build/cmdtools64/move.elf64
+	tools/elf2nex64 build/cmdtools64/move.elf64 build/cmdtools64/move.nex64
 
 populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 	dd if=/dev/zero of=build/fs.img bs=4096 count=2048
@@ -465,6 +471,9 @@ populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 	tools/txfs_write build/fs.img build/cmdtools64/mkfile.nex64 /system_manager/system_tools/command_tools/mkfile.nex64
 	tools/txfs_write build/fs.img build/cmdtools64/write.nex64 /system_manager/system_tools/command_tools/write.nex64
 	tools/txfs_write build/fs.img build/cmdtools64/del.nex64 /system_manager/system_tools/command_tools/del.nex64
+	tools/txfs_write build/fs.img build/cmdtools64/ren.nex64 /system_manager/system_tools/command_tools/ren.nex64
+	tools/txfs_write build/fs.img build/cmdtools64/copy.nex64 /system_manager/system_tools/command_tools/copy.nex64
+	tools/txfs_write build/fs.img build/cmdtools64/move.nex64 /system_manager/system_tools/command_tools/move.nex64
 	tools/txfs_write build/fs.img /dev/null /system_manager/system_tools/boot/.keep
 	tools/txfs_write build/fs.img /dev/null /system_manager/system_tools/logs/.keep
 	tools/txfs_write build/fs.img /dev/null /system_manager/drivers/.keep

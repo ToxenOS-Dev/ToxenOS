@@ -326,6 +326,49 @@ static void run_line(char* line) {
             args = wcmd_args;
         }
     }
+    // Two-path commands: resolve each token against cwd independently.
+    // Shell delivers two internal absolute paths (space-separated) so the
+    // child doesn't need cwd access at all.
+    if ((str_eq(cmd, "ren") || str_eq(cmd, "copy") || str_eq(cmd, "move")) && *args) {
+        char t1[PATH_MAX], t2[PATH_MAX];
+        // Quote-aware split of the raw user input
+        const char* p = args;
+        while (*p == ' ') p++;
+        int i = 0;
+        if (*p == '"') { p++;
+            while (*p && *p != '"' && i < (int)sizeof(t1)-1) t1[i++] = *p++;
+            if (*p == '"') p++;
+        } else {
+            while (*p && *p != ' ' && i < (int)sizeof(t1)-1) t1[i++] = *p++;
+        }
+        t1[i] = 0;
+        while (*p == ' ') p++;
+        i = 0;
+        if (*p == '"') { p++;
+            while (*p && *p != '"' && i < (int)sizeof(t2)-1) t2[i++] = *p++;
+            if (*p == '"') p++;
+        } else {
+            while (*p && *p != ' ' && i < (int)sizeof(t2)-1) t2[i++] = *p++;
+        }
+        t2[i] = 0;
+
+        if (t1[0] && t2[0]) {
+            char r1[PATH_MAX], r2[PATH_MAX];
+            if (toxpath64_looks_like_path(t1))
+                toxpath64_to_internal(t1, r1, sizeof(r1));
+            else
+                toxpath64_resolve_cwd(cwd, t1, r1, sizeof(r1));
+            if (toxpath64_looks_like_path(t2))
+                toxpath64_to_internal(t2, r2, sizeof(r2));
+            else
+                toxpath64_resolve_cwd(cwd, t2, r2, sizeof(r2));
+            // Rebuild as "r1 r2" (internal paths have no spaces)
+            str_copy(wcmd_args, r1, sizeof(wcmd_args));
+            str_cat(wcmd_args, " ", sizeof(wcmd_args));
+            str_cat(wcmd_args, r2, sizeof(wcmd_args));
+            args = wcmd_args;
+        }
+    }
     if (str_eq(cmd, "write") && *args) {
         // Split off first token (path) from rest (content).
         char path_tok[PATH_MAX];

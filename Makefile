@@ -263,6 +263,8 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/txfs64.c       -o build/txfs64.o
 	gcc $(KFLAGS64) -c kernel/syscall64.c    -o build/syscall64.o
 	gcc $(KFLAGS64) -c kernel/vgaterm64.c    -o build/vgaterm64.o
+	gcc $(KFLAGS64) -c kernel/fbterm64.c     -o build/fbterm64.o
+	gcc $(KFLAGS64) -c kernel/console64.c    -o build/console64.o
 	gcc $(KFLAGS64) -c kernel/exec64.c       -o build/exec64.o
 	gcc $(KFLAGS64) -c kernel/userproc64.c   -o build/userproc64.o
 	gcc $(KFLAGS64) -c kernel/physmem64.c    -o build/physmem64.o
@@ -276,14 +278,14 @@ kernel64:
 		build/ata64.o build/txfs64.o build/syscall64.o build/exec64.o \
 		build/userproc64.o build/userproc64_asm.o \
 		build/physmem64.o build/paging64.o build/usercopy64.o \
-		build/vgaterm64.o \
+		build/vgaterm64.o build/fbterm64.o build/console64.o \
 		build/ring3_syscall_stub64_blob.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin
 	@if command -v grub2-mkrescue >/dev/null 2>&1; then \
-		grub2-mkrescue --modules="multiboot2" \
+		grub2-mkrescue --modules="multiboot2 all_video" \
 			-o build/ToxenOS64.iso iso64; \
 	elif command -v grub-mkrescue >/dev/null 2>&1; then \
-		grub-mkrescue --modules="multiboot2" \
+		grub-mkrescue --modules="multiboot2 all_video" \
 			-o build/ToxenOS64.iso iso64; \
 	else \
 		echo "NOTE: grub2-mkrescue not found — kernel64.bin built but ISO not created."; \

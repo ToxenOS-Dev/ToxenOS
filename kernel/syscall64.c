@@ -16,7 +16,7 @@
 #include "../include/usercopy64.h"
 #include "../include/txfs64.h"
 #include "../include/keyboard_buffer64.h"
-#include "../include/vgaterm64.h"
+#include "../include/console64.h"
 #include "../include/klog.h"
 
 #define SYS64_WRITE_MAX 256
@@ -49,7 +49,7 @@ static uint64_t sys64_write(const char* buf, uint64_t len) {
     // Milestone 13: also mirror to the VGA console -- otherwise
     // userland output (shell64, shw, etc.) is only ever visible in the
     // serial log, never in the QEMU graphical window.
-    vgaterm64_write(tmp, len);
+    console64_write(tmp, len);
     return len;
 }
 
@@ -185,7 +185,7 @@ static uint64_t sys64_getch(void) {
 // process is current, so this works even from the untracked
 // RING3_TEST64_RUN stub.
 static uint64_t sys64_clear(void) {
-    vgaterm64_clear();
+    console64_clear();
     return 0;
 }
 
@@ -193,7 +193,7 @@ static uint64_t sys64_clear(void) {
 // sys64_clear -- setting the active color has nothing to do with which
 // process is current.
 static uint64_t sys64_setcolor(uint8_t color) {
-    vgaterm64_set_color(color);
+    console64_set_color(color);
     return 0;
 }
 

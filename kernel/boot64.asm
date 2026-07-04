@@ -32,6 +32,18 @@ align 8
     dd (mb2_end - mb2_start)
     dd -(0xE85250D6 + 0 + (mb2_end - mb2_start))
 mb2_start:
+    ; Framebuffer request tag (type 5): ask GRUB for 1024x768x32 direct-color
+    ; mode. GRUB will try to honor this and pass the actual framebuffer info
+    ; back via a type-8 tag in the multiboot2 info struct. If GRUB cannot
+    ; satisfy the request, it falls back to whatever mode it chose.
+    align 8
+    dw 5                    ; type: framebuffer
+    dw 0                    ; flags: non-optional
+    dd 20                   ; size (8-byte header + 12 bytes of data)
+    dd 1024                 ; preferred width
+    dd 768                  ; preferred height
+    dd 32                   ; preferred depth (bits per pixel)
+    ; End tag
     align 8
     dw 0                    ; end tag
     dw 0
@@ -122,6 +134,7 @@ align 4096
 ; stub and needs to flip the PAGE_USER bit on the high-half walk above
 ; it (pml4[511]/pdpt_high[510]) without disturbing the low identity alias.
 global pml4
+global pdpt_low
 global pdpt_high
 global pd
 pml4:      times 512 dq 0

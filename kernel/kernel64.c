@@ -20,7 +20,7 @@
 #include "../include/exec64.h"
 #include "../include/userproc64.h"
 #include "../include/physmem64.h"
-#include "../include/vgaterm64.h"
+#include "../include/console64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
@@ -64,27 +64,58 @@ extern void keyboard64_handler(void);
 
 _Static_assert(sizeof(void*) == 8, "kernel64.c must be compiled as 64-bit (-m64)");
 
-static uint16_t* const VGA = (uint16_t*)0xB8000;
-#define VGA_COLS 80
-#define VGA_ROWS 25
+static int my_kstrlen(const char* s) { int i = 0; while (s[i]) i++; return i; }
 
-static int vga_row = 0;
-
-static void vga_puts(const char* s, uint8_t color) {
-    if (vga_row >= VGA_ROWS) return;
-    int col = 0;
-    for (int i = 0; s[i] && col < VGA_COLS; i++) {
-        VGA[vga_row * VGA_COLS + col] = ((uint16_t)color << 8) | (uint8_t)s[i];
-        col++;
-    }
-    vga_row++;
-}
-
-// Writes one line to both VGA text memory and the serial/klog ring buffer.
+// Writes one line to both the console (FB or VGA) and the serial/klog
+// ring buffer.  Replaces the old vga_puts()-based path: output now goes
+// through console64 so it appears on whichever backend is active.
 static void out_line(const char* s) {
-    vga_puts(s, 0x0F);
+    console64_write(s, (uint64_t)my_kstrlen(s));
+    console64_write("\n", 1);
     klog(s);
     klog("\n");
+}
+
+// Parse the multiboot2 info struct for a framebuffer tag (type 8).
+// The mb_info_addr block is in low physical memory, which is identity-
+// mapped (VA == PA) so the pointer is valid without any translation.
+// Returns without modifying the out-parameters if no framebuffer tag is
+// found or if the reported framebuffer type is not 2 (direct RGB color).
+static void mb2_find_fb(uint64_t mb_info_addr,
+    uint64_t* fb_addr, uint32_t* fb_width, uint32_t* fb_height,
+    uint32_t* fb_pitch, uint8_t* fb_bpp)
+{
+    *fb_addr = 0;
+    if (!mb_info_addr) return;
+
+    uint32_t total = *(uint32_t*)(uintptr_t)mb_info_addr;
+    uint8_t* p   = (uint8_t*)(uintptr_t)(mb_info_addr + 8);
+    uint8_t* end = (uint8_t*)(uintptr_t)(mb_info_addr + (uint64_t)total);
+
+    while (p + 8 <= end) {
+        uint32_t type = *(uint32_t*)p;
+        uint32_t size = *(uint32_t*)(p + 4);
+        if (type == 0) break; // end tag
+
+        if (type == 8) {
+            // Accept type 1 (RGB) or type 0 (indexed — QEMU's Bochs VGA
+            // reports type 1 for 32bpp direct-color mode). 32bpp only.
+            if (size >= 31 && *(uint8_t*)(p + 28) == 32 &&
+                (*(uint8_t*)(p + 29) == 2 || *(uint8_t*)(p + 29) == 1)) {
+                *fb_addr   = *(uint64_t*)(p + 8);
+                *fb_pitch  = *(uint32_t*)(p + 16);
+                *fb_width  = *(uint32_t*)(p + 20);
+                *fb_height = *(uint32_t*)(p + 24);
+                *fb_bpp    = 32;
+            }
+            break;
+        }
+
+        // Advance to next tag (each tag is 8-byte aligned)
+        uint32_t skip = (size + 7u) & ~7u;
+        if (!skip) break;
+        p += skip;
+    }
 }
 
 static void hex64(uint64_t val, char* out) {
@@ -136,7 +167,19 @@ static inline uint64_t read_efer(void) {
 }
 
 void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
-    vga_row = 0;
+    // Milestone 21: parse framebuffer info from multiboot2 before any output
+    // so that boot diagnostics appear on the framebuffer when available.
+    uint64_t fb_addr = 0;
+    uint32_t fb_width = 0, fb_height = 0, fb_pitch = 0;
+    uint8_t  fb_bpp = 0;
+    mb2_find_fb(mb_info_addr, &fb_addr, &fb_width, &fb_height, &fb_pitch, &fb_bpp);
+    klog_hex("fb_addr:", (uint32_t)fb_addr);
+    // physmem64_init MUST come before console64_init: the framebuffer
+    // mapping allocates a PD page via physmem64_alloc_page, and physmem64_init
+    // resets used_bitmap to 0 — if called after, it un-tracks that page and
+    // subsequent allocs zero it, destroying the FB page table entries.
+    physmem64_init();
+    console64_init(fb_addr, fb_width, fb_height, fb_pitch, fb_bpp);
 
     out_line("ToxenOS64 -- Milestone 1: long-mode boot");
     out_kv("multiboot magic: ", magic);
@@ -170,7 +213,6 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     tss64_init();
     out_line("TSS64 loaded (ltr)");
 
-    physmem64_init();
     out_line("physmem64 pool initialized");
 
 #ifdef ISR64_RUN_TESTS
@@ -258,7 +300,7 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     // shell prompt, not a wall of boot text (which is still fully
     // logged to klog/serial regardless).
     out_line("Launching ToxenOS64 interactive shell...");
-    vgaterm64_clear();
+    console64_clear();
     int init_code = userproc64_run("/init64.nex64", 0, 0);
     klog_hex("userproc64: init64 returned to kernel, exit code: ", (uint32_t)(int64_t)init_code);
     process64_init();

@@ -20,11 +20,19 @@
 #include "../include/exec64.h"
 #include "../include/userproc64.h"
 #include "../include/physmem64.h"
+#include "../include/heap64.h"
 #include "../include/console64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
 // #define ISR64_RUN_TESTS 1
+
+// Define to run the Milestone 22 kernel heap self-test suite right
+// after heap64_init(), before anything else ever calls kmalloc/kfree --
+// its span-count assertions require starting from an idle heap. Leaves
+// the heap fully released (zero spans) on a full pass, so the rest of
+// boot proceeds with an untouched physmem64 pool either way.
+// #define HEAP64_RUN_TESTS 1
 
 // Define to run the Milestone 3B hardcoded ring3 smoke test in place of
 // the normal interactive boot below -- the two are mutually exclusive
@@ -181,6 +189,7 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     // resets used_bitmap to 0 — if called after, it un-tracks that page and
     // subsequent allocs zero it, destroying the FB page table entries.
     physmem64_init();
+    heap64_init();
     console64_init(fb_addr, fb_width, fb_height, fb_pitch, fb_bpp);
 
     out_line("ToxenOS64 -- Milestone 1: long-mode boot");
@@ -216,6 +225,11 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     out_line("TSS64 loaded (ltr)");
 
     out_line("physmem64 pool initialized");
+    out_line("heap64 initialized");
+
+#ifdef HEAP64_RUN_TESTS
+    out_kv("heap64_selftest: all passed = ", (uint64_t)heap64_selftest());
+#endif
 
 #ifdef ISR64_RUN_TESTS
     out_line("Triggering int3 (breakpoint) test...");

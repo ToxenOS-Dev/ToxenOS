@@ -270,6 +270,7 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/physmem64.c    -o build/physmem64.o
 	gcc $(KFLAGS64) -c kernel/paging64.c     -o build/paging64.o
 	gcc $(KFLAGS64) -c kernel/usercopy64.c   -o build/usercopy64.o
+	gcc $(KFLAGS64) -c kernel/heap64.c       -o build/heap64.o
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
 		build/boot64.o build/isr64.o build/switch64.o build/kernel64.o \
 		build/klog64.o build/idt64.o build/interrupt64.o build/irq64.o \
@@ -278,6 +279,7 @@ kernel64:
 		build/ata64.o build/txfs64.o build/syscall64.o build/exec64.o \
 		build/userproc64.o build/userproc64_asm.o \
 		build/physmem64.o build/paging64.o build/usercopy64.o \
+		build/heap64.o \
 		build/vgaterm64.o build/fbterm64.o build/console64.o \
 		build/ring3_syscall_stub64_blob.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin

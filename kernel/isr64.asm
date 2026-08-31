@@ -62,17 +62,24 @@ extern irq64_dispatch
 %endmacro
 
 ; %1 = dispatcher to call (isr64_dispatch or irq64_dispatch).
-; The 8-byte filler pushed after capturing rdi is invisible to
-; trapframe64_t — it exists purely so the `call` site's stack pointer
-; lands on a round byte count relative to the GPR/vector/errcode block
-; just pushed (136 bytes -> 144, a multiple of 16): defensive hygiene for
-; any future SSE-using C code, even though this kernel builds -mno-sse.
+;
+; SysV AMD64 ABI requires RSP % 16 == 0 at the point a `call` instruction
+; executes. The CPU forces RSP to be 16-byte aligned immediately BEFORE
+; it pushes the hardware interrupt frame (SDM Vol3 6.14.2), and that
+; frame is always 5 qwords (40 bytes) for vectors with no error code, or
+; 6 qwords (48 bytes) when the CPU also pushes an error code. Each stub
+; then pushes 16 bytes (dummy-err + vector) in the no-error case, or 8
+; bytes (vector only, error code already on the stack) in the error
+; case -- both total exactly 56 bytes pushed before PUSH_GPRS. PUSH_GPRS
+; adds a further 120 bytes (15 GPRs). 56 + 120 = 176, and 176 % 16 == 0,
+; so RSP is already correctly aligned for `call` right after PUSH_GPRS --
+; no extra padding is needed or correct here. (A previous version added
+; an 8-byte filler "for future SSE code", which actually broke alignment
+; to RSP % 16 == 8 instead of fixing it; removed.)
 %macro COMMON_TAIL 1
     PUSH_GPRS
     mov rdi, rsp
-    sub rsp, 8
     call %1
-    add rsp, 8
     POP_GPRS
     add rsp, 16          ; discard vector + error_code
     iretq

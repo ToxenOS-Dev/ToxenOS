@@ -100,8 +100,10 @@ static void mb2_find_fb(uint64_t mb_info_addr,
         if (type == 8) {
             // Accept type 1 (RGB) or type 0 (indexed — QEMU's Bochs VGA
             // reports type 1 for 32bpp direct-color mode). 32bpp only.
+            // (Type 2 is EGA text -- must NOT be accepted here, it is not
+            // a linear pixel buffer.)
             if (size >= 31 && *(uint8_t*)(p + 28) == 32 &&
-                (*(uint8_t*)(p + 29) == 2 || *(uint8_t*)(p + 29) == 1)) {
+                (*(uint8_t*)(p + 29) == 0 || *(uint8_t*)(p + 29) == 1)) {
                 *fb_addr   = *(uint64_t*)(p + 8);
                 *fb_pitch  = *(uint32_t*)(p + 16);
                 *fb_width  = *(uint32_t*)(p + 20);

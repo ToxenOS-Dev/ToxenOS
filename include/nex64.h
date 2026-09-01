@@ -2,7 +2,6 @@
 #define NEX64_H
 
 #include <stdint.h>
-#include "memmap64.h"
 
 // Milestone 6: 64-bit-native NEX format. Deliberately a SEPARATE magic
 // and header from include/nex.h's 32-bit format, not a shared/extended
@@ -32,20 +31,11 @@ typedef struct {
     uint64_t flags;      // NEX64_PF_*
 } __attribute__((packed)) nex64_seg_t;
 
-// Milestone 6/8 user address layout: every process gets its OWN carved-out
-// 2MB PD entry at this same fixed index (kernel/paging64.c gives each
-// process a private PD_EXEC_IDX page table, not a shared one -- see
-// paging64_create_as). PD_EXEC_IDX must differ from kernel/ring3_test64.c's
-// PD_RING3_IDX (31, Milestones 3B/5) so the two carve-outs never collide --
-// they are mutually exclusive test modes, but both must be safe to build
-// even if only one runs in a given boot.
-#define PD_EXEC_IDX 30
-#define USER64_ELF_BASE (KERNEL_VIRT_BASE64 + (uint64_t)PD_EXEC_IDX * 0x200000ULL)
-// Top of the carved 2MB region, minus the last page (reserved for the
-// stack at PT slot 511) -- segment vaddrs must stay below this. Must
-// stay in sync with the Makefile's USER64_ELF_BASE literal (used for
-// -Ttext=, since Make can't evaluate this expression) and with
-// tools/elf2nex64.c's own copy of this same bound.
-#define USER64_ELF_MAX_SIZE 0x1FF000ULL
+// Milestone 6/8 user address layout: NEX64 segment vaddrs must land in
+// the executable-image region. Milestone 25 generalized this from one
+// fixed 2MB carve-out into a real per-process VA layout -- see
+// include/uservm64.h (USER_IMAGE_BASE/USER_IMAGE_MAX_SIZE) for the
+// actual bounds, which kernel/exec64.c and tools/elf2nex64.c both use
+// directly now instead of a nex64.h-local alias.
 
 #endif // NEX64_H

@@ -25,6 +25,9 @@
 #define SYS64_DELETE     18
 #define SYS64_RMDIR      19
 #define SYS64_RENAME     20
+#define SYS64_BRK    21
+#define SYS64_MMAP   22
+#define SYS64_MUNMAP 23
 // Return value -2 means the path is protected (kernel refused the op).
 #define SYS64_ERR_PROTECTED ((int64_t)-2)
 // Return value -3 from SYS64_DELETE means the folder is not empty.
@@ -132,6 +135,34 @@ static inline void sys_set_color(uint8_t color) {
 // -1 once index runs past the last entry or path isn't a directory.
 static inline int64_t sys_readdir(const char* path, char* out, uint32_t index) {
     return (int64_t)SYSCALL3(SYS64_READDIR, path, out, index);
+}
+
+// Milestone 25: brk/mmap/munmap. brk/mmap return raw userspace
+// addresses, which live in the canonical high half (bit 63 always set)
+// -- callers MUST compare against (uint64_t)-1 for failure, never treat
+// the result as signed/negative (a valid address numerically looks
+// "negative" if naively cast to int64_t).
+//
+// sys_brk(0) queries the current break without changing it. Otherwise
+// requests the break become exactly new_brk (byte granular); returns
+// the resulting break on success, or (uint64_t)-1 if new_brk is out of
+// the allowed heap range or physical memory ran out (the heap is left
+// exactly as it was on failure).
+static inline uint64_t sys_brk(uint64_t new_brk) {
+    return SYSCALL1(SYS64_BRK, new_brk);
+}
+
+// Allocates a page-rounded anonymous, private, read-write region of at
+// least `size` bytes at an address the kernel chooses. Returns that
+// address, or (uint64_t)-1 on failure.
+static inline uint64_t sys_mmap(uint64_t size) {
+    return SYSCALL1(SYS64_MMAP, size);
+}
+
+// Unmaps a region previously returned by sys_mmap -- addr/size must
+// match a live mapping exactly (no partial unmap). Returns 0 or -1.
+static inline int64_t sys_munmap(uint64_t addr, uint64_t size) {
+    return (int64_t)SYSCALL2(SYS64_MUNMAP, addr, size);
 }
 
 // Milestone 19: write/create/delete. Return 0 = success, -1 = generic

@@ -13,6 +13,7 @@
 
 #include "../include/elf64.h"
 #include "../include/nex64.h"
+#include "../include/uservm64.h"
 
 static uint8_t* read_file(const char* path, long* size_out)
 {
@@ -69,14 +70,14 @@ int main(int argc, char** argv)
         fprintf(stderr, "elf2nex64: program header table runs past end of file\n");
         return 1;
     }
-    if (eh->entry < USER64_ELF_BASE || eh->entry >= USER64_ELF_BASE + USER64_ELF_MAX_SIZE) {
+    if (eh->entry < USER_IMAGE_BASE || eh->entry >= USER_IMAGE_END) {
         fprintf(stderr, "elf2nex64: entry point 0x%llx outside user ELF64 region\n",
                 (unsigned long long)eh->entry);
         return 1;
     }
 
     // Collect PT_LOAD segments, skipping linker-generated metadata
-    // segments that fall entirely below USER64_ELF_BASE -- same filter
+    // segments that fall entirely below USER_IMAGE_BASE -- same filter
     // the kernel applies when loading (kernel/exec64.c).
     nex64_seg_t segs[32];
     int seg_count = 0;
@@ -85,7 +86,7 @@ int main(int argc, char** argv)
         elf64_phdr_t* ph = (elf64_phdr_t*)(elf_buf + eh->phoff + (uint64_t)i * eh->phentsize);
         if (ph->type != PT_LOAD64) continue;
         if (ph->memsz == 0) continue;
-        if (ph->vaddr + ph->memsz <= USER64_ELF_BASE) continue;
+        if (ph->vaddr + ph->memsz <= USER_IMAGE_BASE) continue;
 
         if (ph->filesz > ph->memsz) {
             fprintf(stderr, "elf2nex64: segment %d has filesz > memsz\n", i);
@@ -95,7 +96,7 @@ int main(int argc, char** argv)
             fprintf(stderr, "elf2nex64: segment %d data runs past end of file\n", i);
             return 1;
         }
-        if (ph->vaddr + ph->memsz > USER64_ELF_BASE + USER64_ELF_MAX_SIZE) {
+        if (ph->vaddr + ph->memsz > USER_IMAGE_END) {
             fprintf(stderr, "elf2nex64: segment %d exceeds user ELF64 region\n", i);
             return 1;
         }

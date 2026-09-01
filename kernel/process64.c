@@ -173,6 +173,12 @@ static void perform_switch(int old_idx, int new_idx, process64_t* to_cleanup) {
     }
 
     if (to_cleanup) {
+        // uservm64_teardown only frees the kmalloc'd mmap-region
+        // bookkeeping list; the actual physical heap/mmap/image/stack
+        // pages are all freed by paging64_destroy_as below, which walks
+        // the whole user region without needing to know which purpose
+        // each mapped page served.
+        uservm64_teardown(&to_cleanup->vm);
         paging64_destroy_as(&to_cleanup->as);
         for (int i = 0; i < PROCESS64_MAX_FDS; i++) {
             if (to_cleanup->fds[i] >= 0) { txfs64_close(to_cleanup->fds[i]); to_cleanup->fds[i] = -1; }
@@ -255,8 +261,8 @@ int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uin
         return -1;
     }
 
-    uint64_t entry, stack_top, heap_start;
-    if (exec64_load(&p->as, path, &entry, &stack_top, &heap_start) < 0) {
+    uint64_t entry, stack_top;
+    if (exec64_load(&p->as, path, &entry, &stack_top) < 0) {
         paging64_destroy_as(&p->as);
         return -1;
     }
@@ -265,8 +271,7 @@ int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uin
     p->parent_pid      = parent_pid;
     p->exit_code       = 0;
     p->waiting_for_pid = 0;
-    p->heap_start      = heap_start;
-    p->heap_end        = heap_start;
+    uservm64_init(&p->vm);
     for (int i = 0; i < PROCESS64_MAX_FDS; i++) p->fds[i] = -1;
     copy_str(p->args, args, PROCESS64_ARGS_MAX);
     copy_str(p->path, path, PROCESS64_PATH_MAX);

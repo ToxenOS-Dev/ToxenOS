@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include "../include/syscall64.h"
 #include "../include/process64.h"
+#include "../include/uservm64.h"
 #include "../include/usercopy64.h"
 #include "../include/txfs64.h"
 #include "../include/keyboard_buffer64.h"
@@ -339,6 +340,32 @@ static uint64_t sys64_rename(uint64_t src_ptr, uint64_t dest_ptr) {
     return r < 0 ? (uint64_t)-1 : 0;
 }
 
+// Milestone 25: brk/mmap/munmap on top of kernel/uservm64.c. brk/mmap
+// return raw userspace addresses (canonical high-half, bit 63 always
+// set) -- (uint64_t)-1 is the ONLY failure value, distinct from any
+// address this kernel ever hands out (see include/syscall64.h).
+static uint64_t sys64_brk(uint64_t new_brk) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    uint64_t actual;
+    if (uservm64_brk(&cur->vm, &cur->as, new_brk, &actual) < 0) return (uint64_t)-1;
+    return actual;
+}
+
+static uint64_t sys64_mmap(uint64_t size) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    uint64_t addr;
+    if (uservm64_mmap(&cur->vm, &cur->as, size, &addr) < 0) return (uint64_t)-1;
+    return addr;
+}
+
+static uint64_t sys64_munmap(uint64_t addr, uint64_t size) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    return uservm64_munmap(&cur->vm, &cur->as, addr, size) < 0 ? (uint64_t)-1 : 0;
+}
+
 void syscall64_dispatch(trapframe64_t* tf) {
     switch (tf->rax) {
     case SYS64_WRITE:
@@ -400,6 +427,15 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_RENAME:
         tf->rax = sys64_rename(tf->rdi, tf->rsi);
+        break;
+    case SYS64_BRK:
+        tf->rax = sys64_brk(tf->rdi);
+        break;
+    case SYS64_MMAP:
+        tf->rax = sys64_mmap(tf->rdi);
+        break;
+    case SYS64_MUNMAP:
+        tf->rax = sys64_munmap(tf->rdi, tf->rsi);
         break;
     default:
         tf->rax = (uint64_t)-1;

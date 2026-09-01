@@ -55,6 +55,16 @@
 // Milestone 20: rename/move. Both src and dest are validated; -4 if dest exists.
 #define SYS64_RENAME     20 // (const char* src, const char* dest) -> 0, -1, -2, or -4
 
+// Milestone 25: brk/mmap/munmap (include/uservm64.h). brk/mmap return
+// USERSPACE ADDRESSES, which live in the canonical high half (bit 63
+// always set) -- callers MUST compare the raw uint64_t return value
+// against (uint64_t)-1 for failure, never treat it as a signed/negative
+// value. munmap has no address-shaped return value, so it stays a
+// normal 0/-1 result like every other syscall.
+#define SYS64_BRK    21 // (uint64_t new_brk; 0 = query) -> new break, or (uint64_t)-1
+#define SYS64_MMAP   22 // (uint64_t size)               -> mapped address, or (uint64_t)-1
+#define SYS64_MUNMAP 23 // (uint64_t addr, uint64_t size) -> 0 or -1
+
 void syscall64_dispatch(trapframe64_t* tf);
 
 #endif // SYSCALL64_H

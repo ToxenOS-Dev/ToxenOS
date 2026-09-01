@@ -3,12 +3,12 @@
 # ── Address space layout — must match include/memmap.h ───────────────────────
 USER_ELF_BASE := 0x10000000
 
-# Milestone 6: 64-bit user ELF/NEX64 base. = KERNEL_VIRT_BASE64 +
-# PD_EXEC_IDX*0x200000 (include/nex64.h) -- must stay in sync with that
-# file and with tools/elf2nex64.c's own copy; Make can't evaluate that
+# Milestone 6: 64-bit user ELF/NEX64 base. Milestone 25: = USER_IMAGE_BASE
+# = KERNEL_VIRT_BASE64 + USER_REGION_PD_START*0x200000 (include/uservm64.h)
+# -- must stay in sync with that file; Make can't evaluate that
 # expression, so the literal is duplicated here, same precedent as
 # USER_ELF_BASE above.
-USER64_ELF_BASE := 0xFFFFFFFF83C00000
+USER64_ELF_BASE := 0xFFFFFFFF84000000
 
 # Set PACKAGE_ELF=1 (e.g. `make all PACKAGE_ELF=1`) to also write .elf copies
 # of bundled commands into the TxFS image alongside .nex, for dev/debug use.
@@ -270,6 +270,7 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/usercopy64.c   -o build/usercopy64.o
 	gcc $(KFLAGS64) -c kernel/heap64.c       -o build/heap64.o
 	gcc $(KFLAGS64) -c kernel/lapic64.c      -o build/lapic64.o
+	gcc $(KFLAGS64) -c kernel/uservm64.c     -o build/uservm64.o
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
 		build/boot64.o build/isr64.o build/switch64.o build/kernel64.o \
 		build/klog64.o build/idt64.o build/interrupt64.o build/irq64.o \
@@ -277,7 +278,7 @@ kernel64:
 		build/tss64.o build/ring3_test64.o build/ring3_test64_asm.o \
 		build/ata64.o build/txfs64.o build/syscall64.o build/exec64.o \
 		build/physmem64.o build/paging64.o build/usercopy64.o \
-		build/heap64.o build/lapic64.o \
+		build/heap64.o build/lapic64.o build/uservm64.o \
 		build/vgaterm64.o build/fbterm64.o build/console64.o \
 		build/ring3_syscall_stub64_blob.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin
@@ -386,6 +387,8 @@ user64: tools/elf2nex64
 	tools/elf2nex64 build/user64/exec_badptr_test.elf64 build/user64/exec_badptr_test.nex64
 	gcc $(UFLAGS64) user64/sched_worker64.c -o build/user64/sched_worker64.elf64
 	tools/elf2nex64 build/user64/sched_worker64.elf64 build/user64/sched_worker64.nex64
+	gcc $(UFLAGS64) user64/brk_mmap_test64.c -o build/user64/brk_mmap_test64.elf64
+	tools/elf2nex64 build/user64/brk_mmap_test64.elf64 build/user64/brk_mmap_test64.nex64
 	gcc $(UFLAGS64) user64/init64.c -o build/user64/init64.elf64
 	tools/elf2nex64 build/user64/init64.elf64 build/user64/init64.nex64
 	gcc $(UFLAGS64) user64/shell64.c -o build/user64/shell64.elf64
@@ -488,11 +491,13 @@ populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 	# Milestone 16: the 64-bit debug/test fixtures below are no longer on
 	# the disk image by default -- they're root-level clutter with zero
 	# relevance to normal boot, only ever consumed by kernel/kernel64.c's
-	# EXEC64_TEST_RUN/PROCESS64_RUN_TESTS and user64/init64.c's
-	# INIT64_TEST_MODE debug flags (all off by default). Pass
-	# PACKAGE_DEBUG64=1 to re-include them, e.g. when re-enabling any of
-	# those debug flags for testing. sched_worker64.nex64 (Milestone 24)
-	# is also spawnable interactively from the shell once packaged this way.
+	# EXEC64_TEST_RUN/PROCESS64_RUN_TESTS/USERVM64_RUN_TESTS and
+	# user64/init64.c's INIT64_TEST_MODE debug flags (all off by
+	# default). Pass PACKAGE_DEBUG64=1 to re-include them, e.g. when
+	# re-enabling any of those debug flags for testing.
+	# sched_worker64.nex64 (Milestone 24) and brk_mmap_test64.nex64
+	# (Milestone 25) are also spawnable interactively from the shell
+	# once packaged this way.
 	if [ "$(PACKAGE_DEBUG64)" = "1" ]; then \
 		tools/txfs_write build/fs.img build/user64/exec_test.nex64 /exec64_test.nex64; \
 		tools/txfs_write build/fs.img build/user64/exec_test.elf64 /exec64_test.elf64; \
@@ -500,6 +505,7 @@ populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 		tools/txfs_write build/fs.img build/user64/exec_isolation_test.nex64 /exec64_isolation_test.nex64; \
 		tools/txfs_write build/fs.img build/user64/exec_badptr_test.nex64 /exec64_badptr_test.nex64; \
 		tools/txfs_write build/fs.img build/user64/sched_worker64.nex64 /sched_worker64.nex64; \
+		tools/txfs_write build/fs.img build/user64/brk_mmap_test64.nex64 /brk_mmap_test64.nex64; \
 	fi
 	# 32-bit root boot files (not in BSM -- the 32-bit kernel loads
 	# /init.nex and /shell.nex directly from the TxFS root).

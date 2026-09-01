@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "paging64.h"
+#include "uservm64.h"
 
 // Milestone 24: unified process model + preemptive scheduler.
 //
@@ -45,7 +46,7 @@ typedef struct {
     paging64_as_t        as;            // this process's own address space
     int                 exit_code;
     uint32_t            waiting_for_pid; // valid while state == BLOCKED
-    uint64_t            heap_start, heap_end; // plumbing only, unused until Milestone 25's brk
+    uservm64_state_t    vm;             // Milestone 25: heap (brk) + anonymous mmap state
     int                 fds[PROCESS64_MAX_FDS];       // underlying txfs64 fd, or -1
     char                args[PROCESS64_ARGS_MAX];     // copied BY VALUE at spawn time
     char                path[PROCESS64_PATH_MAX];     // copied BY VALUE -- debug/diagnostics only

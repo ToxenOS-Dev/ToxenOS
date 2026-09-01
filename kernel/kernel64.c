@@ -18,6 +18,7 @@
 #include "../include/txfs64.h"
 #include "../include/exec64.h"
 #include "../include/process64.h"
+#include "../include/uservm64.h"
 #include "../include/physmem64.h"
 #include "../include/heap64.h"
 #include "../include/lapic64.h"
@@ -50,6 +51,11 @@
 // default. Runs before the normal boot path spawns init64, and fully
 // reaps everything it creates on a pass.
 // #define PROCESS64_RUN_TESTS 1
+
+// Define to run the Milestone 25 brk/mmap self-test suite, same timing
+// requirements as PROCESS64_RUN_TESTS (real spawns, real preemption) --
+// requires `make populate PACKAGE_DEBUG64=1` for brk_mmap_test64.nex64.
+// #define USERVM64_RUN_TESTS 1
 
 // Define to run the Milestone 3B hardcoded ring3 smoke test in place of
 // the normal interactive boot below -- the two are mutually exclusive
@@ -313,6 +319,10 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
 
 #ifdef PROCESS64_RUN_TESTS
     klog_hex("process64_selftest: all passed = ", (uint32_t)process64_selftest());
+#endif
+
+#ifdef USERVM64_RUN_TESTS
+    klog_hex("uservm64_selftest: all passed = ", (uint32_t)uservm64_selftest());
 #endif
 
 #if defined(RING3_TEST64_RUN)

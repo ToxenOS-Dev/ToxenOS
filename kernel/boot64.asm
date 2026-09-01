@@ -251,10 +251,18 @@ start:
     mov eax, pml4
     mov cr3, eax
 
-    ; ── Set EFER.LME — enables long mode (no 32-bit analog) ─────────────────
+    ; ── Set EFER.LME (+NXE) — enables long mode and the NX page bit ─────────
+    ; Milestone 25: EFER.NXE is assumed present unconditionally, same
+    ; precedent as this kernel's unchecked PAE assumption -- NX has been
+    ; a mandatory feature of every real x86_64 CPU (and QEMU) since long
+    ; mode itself was defined, so no separate CPUID check is done. Without
+    ; NXE=1, setting bit 63 on a page table entry (kernel/paging64.c) is a
+    ; reserved-bit #GP, not a soft no-op -- this MUST be set before any
+    ; page table ever sets that bit, i.e. before paging is even enabled.
     mov ecx, 0xC0000080       ; IA32_EFER
     rdmsr
     or  eax, 1 << 8           ; EFER.LME
+    or  eax, 1 << 11          ; EFER.NXE
     wrmsr
 
     ; ── Enable paging. CPU is now in 32-bit compatibility submode of long

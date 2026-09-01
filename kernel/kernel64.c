@@ -31,10 +31,31 @@
 #include "../include/ahci64.h"
 #include "../include/nvme64.h"
 #include "../include/virtio_blk64.h"
+#include "../include/pixfmt64.h"
+#include "../include/display64.h"
+#include "../include/ps2_64.h"
+#include "../include/input64.h"
+#include "../include/mouse64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
 // #define ISR64_RUN_TESTS 1
+
+// Define to run the Milestone 29 pixel-format self-test suite -- pure
+// logic, no hardware/allocator dependency, so it can run at any point;
+// placed first since it needs nothing else initialized yet. Exercises
+// pack()/from_mb2() against synthetic RGB/BGR/16bpp/24bpp layouts QEMU's
+// fixed VBE emulation can never actually produce, so real boot tests
+// can't cover them -- see include/pixfmt64.h.
+// #define PIXFMT64_RUN_TESTS 1
+
+// Define to run the Milestone 29 display64 self-test suite right after
+// console64_init() -- exercises fill_rect/copy_rows/clipping against
+// the real active framebuffer via direct pixel read-back, including a
+// deliberately non-CHAR_H-aligned rectangle. Scribbles over the screen
+// and leaves it cleared to black; harmless before the boot diagnostics
+// below start writing (and they immediately paint over it either way).
+// #define DISPLAY64_RUN_TESTS 1
 
 // Define to run the Milestone 23 physical memory manager self-test
 // suite right after physmem64_init(), before anything else ever calls
@@ -89,11 +110,26 @@
 // `make populate PACKAGE_DEBUG64=1` for vfs_test64.nex64.
 // #define VFS64_RUN_TESTS 1
 
+// Define to spawn /display_test64.nex64 during boot (needs
+// `make populate PACKAGE_DEBUG64=1`) -- see user64/display_test64.c.
+// #define DISPLAY_TEST64_RUN 1
+
+// Define to spawn /input_test64.nex64 during boot -- it blocks on real
+// keyboard/mouse events, drive it via QEMU monitor or interactively.
+// Needs `make populate PACKAGE_DEBUG64=1` -- see user64/input_test64.c.
+// #define INPUT_TEST64_RUN 1
+
 // Define to log full PCI enumeration and block-device registry
 // diagnostics (kernel/pci64.c's pci64_dump(), kernel/blockdev64.c's
 // blockdev64_dump()) right after storage drivers initialize --
 // verbose, development use only, never needed for normal boot.
 // #define STORAGE64_DUMP 1
+
+// Define to log framebuffer/display and input-subsystem diagnostics
+// (kernel/display64.c's display64_dump(), kernel/mouse64.c's
+// mouse64_dump(), kernel/input64.c's input64_dump()) right after
+// display/input init -- verbose, development use only.
+// #define DISPLAY_INPUT64_DUMP 1
 
 // Define to run the Milestone 3B hardcoded ring3 smoke test in place of
 // the normal interactive boot below -- the two are mutually exclusive
@@ -154,14 +190,33 @@ static void out_line(const char* s) {
 // Parse the multiboot2 info struct for a framebuffer tag (type 8).
 // The mb_info_addr block is in low physical memory, which is identity-
 // mapped (VA == PA) so the pointer is valid without any translation.
-// Returns without modifying the out-parameters if no framebuffer tag is
-// found or if the reported framebuffer type is not 2 (direct RGB color).
-static void mb2_find_fb(uint64_t mb_info_addr,
+//
+// Milestone 29: no longer assumes every framebuffer is packed
+// 0x00RRGGBB 32bpp -- reads the tag's actual color_info (red/green/blue
+// field position + mask size for framebuffer_type==1, "direct RGB")
+// and hands it to pixfmt64_from_mb2() for validation, so a genuinely
+// unsupported layout (unexpected bpp, overlapping/out-of-range fields)
+// is rejected cleanly here rather than silently mis-rendered later.
+// framebuffer_type==0 (indexed) has no RGB field metadata to read at
+// all; QEMU's default Bochs VBE mode is occasionally reported this way
+// for what is actually its standard 32bpp XRGB8888 direct-color mode,
+// so that one specific legacy case is still special-cased to the
+// standard XRGB8888 layout (matching Milestone 21-28's original
+// hardcoded assumption) -- everything else goes through the real
+// parsed fields. framebuffer_type==2 (EGA text) is never a linear
+// pixel buffer and is always rejected.
+//
+// Returns 0 with every out-parameter filled (including *fmt) if a
+// supported framebuffer was found, or -1 (with *fb_addr left at 0) if
+// no framebuffer tag exists or its format isn't one this kernel
+// supports -- callers must treat -1 exactly like "no framebuffer" and
+// fall back to VGA text mode, never guess a format.
+static int mb2_find_fb(uint64_t mb_info_addr,
     uint64_t* fb_addr, uint32_t* fb_width, uint32_t* fb_height,
-    uint32_t* fb_pitch, uint8_t* fb_bpp)
+    uint32_t* fb_pitch, pixfmt64_t* fmt)
 {
     *fb_addr = 0;
-    if (!mb_info_addr) return;
+    if (!mb_info_addr) return -1;
 
     uint32_t total = *(uint32_t*)(uintptr_t)mb_info_addr;
     uint8_t* p   = (uint8_t*)(uintptr_t)(mb_info_addr + 8);
@@ -173,19 +228,31 @@ static void mb2_find_fb(uint64_t mb_info_addr,
         if (type == 0) break; // end tag
 
         if (type == 8) {
-            // Accept type 1 (RGB) or type 0 (indexed — QEMU's Bochs VGA
-            // reports type 1 for 32bpp direct-color mode). 32bpp only.
-            // (Type 2 is EGA text -- must NOT be accepted here, it is not
-            // a linear pixel buffer.)
-            if (size >= 31 && *(uint8_t*)(p + 28) == 32 &&
-                (*(uint8_t*)(p + 29) == 0 || *(uint8_t*)(p + 29) == 1)) {
-                *fb_addr   = *(uint64_t*)(p + 8);
-                *fb_pitch  = *(uint32_t*)(p + 16);
-                *fb_width  = *(uint32_t*)(p + 20);
-                *fb_height = *(uint32_t*)(p + 24);
-                *fb_bpp    = 32;
+            if (size < 32) break;
+            uint8_t bpp     = *(uint8_t*)(p + 28);
+            uint8_t fb_type = *(uint8_t*)(p + 29);
+            // Bytes 30-31 are a u16 `reserved` field (NOT a single u8),
+            // per the Multiboot2 spec -- color_info starts at offset 32.
+
+            uint8_t rp, rs, gp, gs, bp_, bs;
+            if (fb_type == 1 && size >= 38) {
+                rp  = *(uint8_t*)(p + 32); rs = *(uint8_t*)(p + 33);
+                gp  = *(uint8_t*)(p + 34); gs = *(uint8_t*)(p + 35);
+                bp_ = *(uint8_t*)(p + 36); bs = *(uint8_t*)(p + 37);
+            } else if (fb_type == 0 && bpp == 32) {
+                // Legacy QEMU/Bochs mislabel -- see header comment.
+                rp = 16; rs = 8; gp = 8; gs = 8; bp_ = 0; bs = 8;
+            } else {
+                break; // type 2 (EGA text), or an indexed mode we can't assume a layout for
             }
-            break;
+
+            if (pixfmt64_from_mb2(bpp, rp, rs, gp, gs, bp_, bs, fmt) < 0) break;
+
+            *fb_addr   = *(uint64_t*)(p + 8);
+            *fb_pitch  = *(uint32_t*)(p + 16);
+            *fb_width  = *(uint32_t*)(p + 20);
+            *fb_height = *(uint32_t*)(p + 24);
+            return 0;
         }
 
         // Advance to next tag (each tag is 8-byte aligned)
@@ -193,6 +260,7 @@ static void mb2_find_fb(uint64_t mb_info_addr,
         if (!skip) break;
         p += skip;
     }
+    return -1;
 }
 
 static void hex64(uint64_t val, char* out) {
@@ -244,17 +312,22 @@ static inline uint64_t read_efer(void) {
 }
 
 void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
+#ifdef PIXFMT64_RUN_TESTS
+    klog_hex("pixfmt64_selftest: all passed = ", (uint32_t)pixfmt64_selftest());
+#endif
+
     // Milestone 21: parse framebuffer info from multiboot2 before any output
     // so that boot diagnostics appear on the framebuffer when available.
     uint64_t fb_addr = 0;
     uint32_t fb_width = 0, fb_height = 0, fb_pitch = 0;
-    uint8_t  fb_bpp = 0;
-    mb2_find_fb(mb_info_addr, &fb_addr, &fb_width, &fb_height, &fb_pitch, &fb_bpp);
+    pixfmt64_t fb_fmt;
+    mb2_find_fb(mb_info_addr, &fb_addr, &fb_width, &fb_height, &fb_pitch, &fb_fmt);
     klog_hex("fb_addr:", (uint32_t)fb_addr);
     // physmem64_init MUST come before console64_init: the framebuffer
-    // mapping (map_fb_phys, kernel/fbterm64.c) calls physmem64_alloc_page
-    // for its own PD table pages, which only works once physmem64_init has
-    // parsed the memory map and built its managed regions.
+    // mapping (display64_init -> physmem64_map_mmio) calls
+    // physmem64_alloc_page for its own PD table pages, which only works
+    // once physmem64_init has parsed the memory map and built its
+    // managed regions.
     uint64_t fb_size = (uint64_t)fb_height * (uint64_t)fb_pitch;
     physmem64_init(mb_info_addr, fb_addr, fb_size);
 #ifdef PHYSMEM64_RUN_TESTS
@@ -264,7 +337,11 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
 #ifdef HEAP64_RUN_TESTS
     klog_hex("heap64_selftest: all passed = ", (uint32_t)heap64_selftest());
 #endif
-    console64_init(fb_addr, fb_width, fb_height, fb_pitch, fb_bpp);
+    console64_init(fb_addr, fb_width, fb_height, fb_pitch, &fb_fmt);
+
+#ifdef DISPLAY64_RUN_TESTS
+    klog_hex("display64_selftest: all passed = ", (uint32_t)display64_selftest());
+#endif
 
     out_line("ToxenOS64 -- Milestone 1: long-mode boot");
     out_kv("multiboot magic: ", magic);
@@ -324,6 +401,24 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     irq64_register(0, timer64_handler);
     irq64_register(1, keyboard64_handler);
     out_line("PIC remapped, IRQ0/IRQ1 registered");
+
+    // Milestone 29: bring up the shared 8042 controller (flush, enable
+    // both ports + their IRQs in the configuration byte) before the
+    // mouse driver tries to talk to the auxiliary port, and before
+    // `sti` below -- same "no IRQ work happens until interrupts are
+    // actually enabled" ordering IRQ0/IRQ1 already followed. The input
+    // event queue must exist before either IRQ1 or IRQ12 could
+    // possibly fire.
+    input64_init();
+    ps2_64_init();
+    mouse64_init(); // registers+unmasks IRQ12 itself; a no-op failure if no mouse responds
+    out_line("PS/2 controller + mouse initialized");
+
+#ifdef DISPLAY_INPUT64_DUMP
+    display64_dump();
+    mouse64_dump();
+    input64_dump();
+#endif
 
     // Milestone 24: 100Hz instead of the legacy unprogrammed ~18.2Hz --
     // see include/process64.h's PROCESS64_TICK_DIVISOR for how this
@@ -402,6 +497,32 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
 
 #ifdef VFS64_RUN_TESTS
     klog_hex("vfs64_selftest: all passed = ", (uint32_t)vfs64_selftest());
+#endif
+
+// Milestone 29: spawns /display_test64.nex64 (self-contained, no
+// external input needed -- see user64/display_test64.c) from
+// kernel/idle context, same process64_spawn+process64_wait pattern
+// EXEC64_TEST_RUN below uses. Requires `make populate PACKAGE_DEBUG64=1`.
+#ifdef DISPLAY_TEST64_RUN
+    {
+        uint32_t pid = 0;
+        int code = -1;
+        if (process64_spawn("/display_test64.nex64", 0, 0, &pid) == 0) code = process64_wait(pid);
+        out_kv("display_test64: exit code = ", (uint64_t)(int64_t)code);
+    }
+#endif
+
+// Milestone 29: spawns /input_test64.nex64, which blocks on real
+// keyboard/mouse events (see user64/input_test64.c) -- drive it via
+// QEMU monitor `sendkey`/`mouse_move`/`mouse_button` while this is
+// running, or interactively. Requires `make populate PACKAGE_DEBUG64=1`.
+#ifdef INPUT_TEST64_RUN
+    {
+        uint32_t pid = 0;
+        int code = -1;
+        if (process64_spawn("/input_test64.nex64", 0, 0, &pid) == 0) code = process64_wait(pid);
+        out_kv("input_test64: exit code = ", (uint64_t)(int64_t)code);
+    }
 #endif
 
 #if defined(RING3_TEST64_RUN)

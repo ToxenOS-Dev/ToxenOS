@@ -3,14 +3,19 @@
 
 #include <stdint.h>
 
-// Milestone 10: minimal stdin path for ToxenOS64. kernel/keyboard64.c's
-// IRQ1 handler feeds raw PS/2 Set 1 scancodes in here; userland reads
+// Milestone 10: minimal stdin path for ToxenOS64; userland reads
 // translated ASCII back out through sys_getch (kernel/syscall64.c).
-// US QWERTY layout, Shift tracked for case -- no Ctrl, no extended/arrow
-// keys, no multi-key sequences. Anything not in the translation table is
-// silently dropped, matching this milestone's "ignore unsupported
-// special keys for now" scope.
-void keyboard_buffer64_on_scancode(uint8_t sc);
+//
+// Milestone 29: this file is now JUST the ASCII ring buffer -- raw
+// scancode parsing, extended (0xE0) handling, modifier tracking, and
+// ASCII translation all moved to kernel/keyboard64.c's new structured
+// input64_event_t pipeline (see include/input64.h). keyboard64.c calls
+// keyboard_buffer64_push() for every KEY-press event that has a
+// translated character, which is exactly the compatibility path
+// SYS64_GETCH/tox_readline keep working through -- unchanged from
+// their Milestone 10 behavior, they just no longer see raw scancodes
+// even indirectly.
+void keyboard_buffer64_push(char c);
 
 // Non-blocking: returns the next buffered ASCII character (0-255), or -1
 // if the buffer is currently empty. Deliberately never blocks -- int

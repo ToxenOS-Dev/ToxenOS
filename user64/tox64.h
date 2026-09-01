@@ -36,6 +36,10 @@
 #define SYS64_SHM_CREATE   28
 #define SYS64_SHM_MAP      29
 #define SYS64_READDIR_NEXT 30
+#define SYS64_INPUT_OPEN 31
+#define SYS64_DISPLAY_OPEN 32
+#define SYS64_DISPLAY_PRESENT 33
+#define DISPLAY64_FORMAT_LOGICAL_XRGB8888 1
 // Return value -2 means the path is protected (kernel refused the op).
 #define SYS64_ERR_PROTECTED ((int64_t)-2)
 // Return value -3 from SYS64_DELETE means the folder is not empty.
@@ -262,6 +266,74 @@ static inline int64_t sys_delete(const char* path) {
 static inline int64_t sys_rename(const char* src, const char* dest) {
     return (int64_t)SYSCALL2(SYS64_RENAME, src, dest);
 }
+// Milestone 29: structured input events -- mirrors include/input64.h's
+// input64_event_t layout exactly (kept in sync by convention, same as
+// every other struct duplicated in this file). See that header for the
+// full field/type-code documentation.
+#define INPUT64_EVENT_KEY            1
+#define INPUT64_EVENT_POINTER_MOVE   2
+#define INPUT64_EVENT_POINTER_BUTTON 3
+#define INPUT64_EVENT_POINTER_WHEEL  4
+
+#define INPUT64_MOD_SHIFT    0x01u
+#define INPUT64_MOD_CTRL     0x02u
+#define INPUT64_MOD_ALT      0x04u
+#define INPUT64_MOD_CAPSLOCK 0x08u
+
+#define INPUT64_BTN_LEFT   0x01u
+#define INPUT64_BTN_RIGHT  0x02u
+#define INPUT64_BTN_MIDDLE 0x04u
+
+#define INPUT64_KEY_EXTENDED   0x100u
+#define INPUT64_KEY_UP         (INPUT64_KEY_EXTENDED | 0x48u)
+#define INPUT64_KEY_DOWN       (INPUT64_KEY_EXTENDED | 0x50u)
+#define INPUT64_KEY_LEFT       (INPUT64_KEY_EXTENDED | 0x4Bu)
+#define INPUT64_KEY_RIGHT      (INPUT64_KEY_EXTENDED | 0x4Du)
+#define INPUT64_KEY_ENTER      0x1Cu
+#define INPUT64_KEY_BACKSPACE  0x0Eu
+#define INPUT64_KEY_ESCAPE     0x01u
+
+typedef struct {
+    uint32_t type;
+    uint32_t seq;
+    int32_t  a;
+    int32_t  b;
+    uint32_t pressed;
+    uint32_t modifiers;
+    uint32_t ascii;
+    uint32_t buttons;
+} input64_event_t;
+
+// Opens the global structured-input-event stream. Fails (-1) if it's
+// already owned by another process -- see include/syscall64.h's header
+// comment on SYS64_INPUT_OPEN for the single-consumer rationale.
+static inline int64_t sys_input_open(void) {
+    return (int64_t)SYSCALL0(SYS64_INPUT_OPEN);
+}
+
+// Milestone 29: userspace display-present interface. The compositor
+// (Milestone 30) is the intended sole caller -- see
+// include/syscall64.h's header comment on SYS64_DISPLAY_OPEN/PRESENT.
+typedef struct {
+    uint64_t buf_ptr;
+    uint32_t pitch;
+    uint32_t x, y, w, h;
+} display64_present_req_t;
+
+// Opens the physical display. Fails (-1) if no display is available or
+// it's already owned by another process. format_out may be NULL.
+static inline int64_t sys_display_open(uint32_t* width_out, uint32_t* height_out, uint32_t* format_out) {
+    return (int64_t)SYSCALL3(SYS64_DISPLAY_OPEN, width_out, height_out, format_out);
+}
+
+// Presents one rectangle of logical XRGB8888 pixels from the caller's
+// own memory (private or shared-memory-backed) to the physical display
+// in a single bulk kernel-side blit. `handle` must be a display handle
+// this process owns (see sys_display_open). Returns 0 or -1.
+static inline int64_t sys_display_present(int handle, const display64_present_req_t* req) {
+    return (int64_t)SYSCALL2(SYS64_DISPLAY_PRESENT, handle, req);
+}
+
 // Composed userland helper, not a 1:1 syscall wrapper -- hence "tox_"
 // instead of "sys_", to keep that distinction visible at call sites.
 // Blocks by polling sys_getch (safe: ring3 always resumes with IF=1

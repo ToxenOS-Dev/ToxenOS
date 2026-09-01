@@ -88,6 +88,8 @@
 #include "../include/pipe64.h"
 #include "../include/shm64.h"
 #include "../include/vfs64.h"
+#include "../include/input64.h"
+#include "../include/display64.h"
 #include "../include/klog.h"
 
 extern void context_switch64(uint64_t* old_rsp_ptr, uint64_t* new_rsp_ptr);
@@ -303,6 +305,8 @@ static void close_all_handles(process64_t* p) {
         case HANDLE64_SHM:        shm64_release((shm64_t*)p->handles[i].obj); break;
         case HANDLE64_FILE:
         case HANDLE64_DIR:        vfs64_file_release((vfs64_file_t*)p->handles[i].obj); break;
+        case HANDLE64_INPUT:      input64_release(); break;
+        case HANDLE64_DISPLAY:    display64_release(); break;
         default: break;
         }
         p->handles[i].kind = HANDLE64_UNUSED;

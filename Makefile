@@ -280,6 +280,11 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/ahci64.c       -o build/ahci64.o
 	gcc $(KFLAGS64) -c kernel/nvme64.c       -o build/nvme64.o
 	gcc $(KFLAGS64) -c kernel/virtio_blk64.c -o build/virtio_blk64.o
+	gcc $(KFLAGS64) -c kernel/pixfmt64.c     -o build/pixfmt64.o
+	gcc $(KFLAGS64) -c kernel/display64.c    -o build/display64.o
+	gcc $(KFLAGS64) -c kernel/ps2_64.c       -o build/ps2_64.o
+	gcc $(KFLAGS64) -c kernel/input64.c      -o build/input64.o
+	gcc $(KFLAGS64) -c kernel/mouse64.c      -o build/mouse64.o
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
 		build/boot64.o build/isr64.o build/switch64.o build/kernel64.o \
 		build/klog64.o build/idt64.o build/interrupt64.o build/irq64.o \
@@ -291,6 +296,8 @@ kernel64:
 		build/pipe64.o build/shm64.o build/vfs64.o \
 		build/kmutex64.o build/blockdev64.o build/pci64.o \
 		build/ahci64.o build/nvme64.o build/virtio_blk64.o \
+		build/pixfmt64.o build/display64.o build/ps2_64.o \
+		build/input64.o build/mouse64.o \
 		build/vgaterm64.o build/fbterm64.o build/console64.o \
 		build/ring3_syscall_stub64_blob.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin
@@ -433,6 +440,10 @@ user64: tools/elf2nex64
 	tools/elf2nex64 build/user64/shm_test64.elf64 build/user64/shm_test64.nex64
 	gcc $(UFLAGS64) user64/vfs_test64.c -o build/user64/vfs_test64.elf64
 	tools/elf2nex64 build/user64/vfs_test64.elf64 build/user64/vfs_test64.nex64
+	gcc $(UFLAGS64) user64/input_test64.c -o build/user64/input_test64.elf64
+	tools/elf2nex64 build/user64/input_test64.elf64 build/user64/input_test64.nex64
+	gcc $(UFLAGS64) user64/display_test64.c -o build/user64/display_test64.elf64
+	tools/elf2nex64 build/user64/display_test64.elf64 build/user64/display_test64.nex64
 	gcc $(UFLAGS64) user64/init64.c -o build/user64/init64.elf64
 	tools/elf2nex64 build/user64/init64.elf64 build/user64/init64.nex64
 	gcc $(UFLAGS64) user64/shell64.c -o build/user64/shell64.elf64
@@ -556,6 +567,8 @@ populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 		tools/txfs_write build/fs.img build/user64/pipe_test64.nex64 /pipe_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/shm_test64.nex64 /shm_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/vfs_test64.nex64 /vfs_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/input_test64.nex64 /input_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/display_test64.nex64 /display_test64.nex64; \
 	fi
 	# 32-bit root boot files (not in BSM -- the 32-bit kernel loads
 	# /init.nex and /shell.nex directly from the TxFS root).

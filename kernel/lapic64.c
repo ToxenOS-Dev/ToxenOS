@@ -3,10 +3,12 @@
 // (32-bit), adapted to this kernel's own mapping mechanism: rather than
 // a pre-allocated page-directory slot, the LAPIC's fixed physical MMIO
 // base (0xFEE00000) is mapped on demand by extending the low identity
-// map (pml4[0] -> pdpt_low), the same technique kernel/fbterm64.c's
-// map_fb_phys already uses for the framebuffer LFB -- reused here
-// rather than shared, since the two have nothing else in common and
-// fbterm64.c's own helper is file-static.
+// map (pml4[0] -> pdpt_low) with its own file-static helper below.
+// Milestone 28 later added a general-purpose equivalent for device MMIO
+// (physmem64_map_mmio, used by AHCI/NVMe/VirtIO-blk and, since
+// Milestone 29, kernel/display64.c's framebuffer mapping too) -- this
+// file predates that and was never migrated onto it, so it remains its
+// own separate, narrower mapping path.
 #include <stdint.h>
 #include "../include/lapic64.h"
 #include "../include/physmem64.h"

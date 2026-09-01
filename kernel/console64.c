@@ -10,11 +10,12 @@
 #include "../include/vgaterm64.h"
 
 void console64_init(uint64_t fb_addr, uint32_t width, uint32_t height,
-                    uint32_t pitch, uint8_t bpp)
+                    uint32_t pitch, const pixfmt64_t* fmt)
 {
     // Try framebuffer first; fbterm64_init is a no-op (leaves fb_avail=0)
-    // if bpp != 32, dimensions are tiny, or the physical mapping fails.
-    fbterm64_init(fb_addr, width, height, pitch, bpp);
+    // if the format is unsupported, dimensions are tiny, or the physical
+    // mapping fails.
+    fbterm64_init(fb_addr, width, height, pitch, fmt);
     // VGA text mode requires no explicit init — hardware default is valid.
 }
 

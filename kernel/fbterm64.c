@@ -1,23 +1,15 @@
 // kernel/fbterm64.c — Milestone 21: framebuffer terminal for ToxenOS64.
 // Renders text using an 8x16 bitmap font (same dataset as kernel/font.c,
 // reproduced here for 64-bit isolation) at 2x scale (16x32 pixels per
-// character) into a 32bpp linear framebuffer supplied by GRUB via the
-// multiboot2 framebuffer info tag.
-//
-// VGA 4-bit attributes (fg in low nibble, bg in high nibble) map to the
-// standard 16-color VGA RGB palette. Scrolling, backspace, tab, and
-// newline are handled the same way as vgaterm64.c.
-//
-// Framebuffer access: if the physical framebuffer address lies outside the
-// boot identity map (first 64MB), map_fb_phys() extends the identity map
-// by adding entries to pdpt_low (boot64.asm's PDPT for pml4[0]) so the
-// physical address becomes directly accessible as an identity-mapped
-// virtual address. This keeps the implementation simple (VA == PA) while
-// handling the typical case where GRUB/QEMU places the LFB above 64MB.
+// character). Milestone 29: this file no longer owns the framebuffer's
+// physical mapping, geometry, or pixel format -- see include/fbterm64.h's
+// header comment. All actual pixel writes go through kernel/display64.c,
+// which also fixes the previous milestones' "bottom strip" bug (clear/
+// scroll now cover the display's real height, not fb_rows*CHAR_H).
 #include <stdint.h>
 #include "../include/fbterm64.h"
-#include "../include/physmem64.h"
-#include "../include/memmap64.h"
+#include "../include/display64.h"
+#include "../include/heap64.h"
 #include "../include/klog.h"
 
 // ── Font data ────────────────────────────────────────────────────────────────
@@ -220,7 +212,7 @@ static const uint8_t font8x16[96][16] = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
 };
 
-// ── VGA 16-color palette → 32-bit XRGB ───────────────────────────────────────
+// ── VGA 16-color palette → logical 0x00RRGGBB ─────────────────────────────────
 static const uint32_t vga_rgb[16] = {
     0x000000, // 0  Black
     0x0000AA, // 1  Blue
@@ -247,111 +239,109 @@ static const uint32_t vga_rgb[16] = {
 #define CHAR_W     (FONT_W * FONT_SCALE)   // 16
 #define CHAR_H     (FONT_H * FONT_SCALE)   // 32
 
-// ── Framebuffer state ─────────────────────────────────────────────────────────
-static uint64_t fb_base  = 0;
-static uint32_t fb_pitch = 0;
+// ── Terminal state ─────────────────────────────────────────────────────────
+static uint32_t disp_width = 0, disp_height = 0;
 static int      fb_cols  = 0;
 static int      fb_rows  = 0;
 static int      fb_avail = 0;
 
-// Cursor and color
 static int     cur_col  = 0;
 static int     cur_row  = 0;
 static uint8_t cur_attr = 0x07; // light gray on black
 
-// ── Page-table constants (matches boot64.asm and paging64.c) ─────────────────
-#define PT_PRESENT  0x001ULL
-#define PT_WRITABLE 0x002ULL
-#define PT_HUGE_2M  0x080ULL
+// Milestone 29: mirrors exactly what character is currently drawn at
+// each cell -- the ONLY reason this exists is so the cursor can be
+// erased (redraw the true glyph) without needing to remember or
+// recompute what used to be there. Sized fb_cols*fb_rows at init.
+static char* screen_buf = 0;
 
-// boot64.asm's PDPT for the low identity map (pml4[0] → pdpt_low → ...).
-// .bootdata VMA == PA, so this symbol resolves to the physical/low-identity
-// virtual address — safe to dereference directly from C code.
-extern uint64_t pdpt_low[512];
-
-// ── Framebuffer physical-address mapping ──────────────────────────────────────
-// Extends the identity map (pml4[0] → pdpt_low) to cover the framebuffer's
-// physical address range, then returns that physical address as the virtual
-// address (VA == PA under the identity map).
-static uint64_t map_fb_phys(uint64_t phys, uint32_t size)
-{
-    // Already in the first 64MB (boot identity map covers 32 × 2MB = 64MB)
-    if (phys + (uint64_t)size <= 0x4000000ULL) return phys;
-
-    // Align start down and end up to 2MB boundaries
-    uint64_t start = phys & ~(uint64_t)0x1FFFFF;
-    uint64_t end   = (phys + (uint64_t)size + 0x1FFFFF) & ~(uint64_t)0x1FFFFF;
-
-    for (uint64_t addr = start; addr < end; addr += 0x200000ULL) {
-        uint32_t gb_idx = (uint32_t)(addr >> 30);         // PDPT index (1GB per entry)
-        uint32_t pd_idx = (uint32_t)((addr >> 21) & 0x1FF); // PD index within 1GB
-
-        if (gb_idx >= 512) return 0;
-
-        if (!(pdpt_low[gb_idx] & PT_PRESENT)) {
-            uint64_t pd_phys = physmem64_alloc_page();
-            if (!pd_phys) return 0;
-            pdpt_low[gb_idx] = pd_phys | PT_PRESENT | PT_WRITABLE;
-        }
-
-        uint64_t pd_phys = pdpt_low[gb_idx] & ~(uint64_t)0xFFF;
-        uint64_t* pd_ptr = (uint64_t*)physmem64_to_virt(pd_phys);
-        if (!(pd_ptr[pd_idx] & PT_PRESENT))
-            pd_ptr[pd_idx] = addr | PT_PRESENT | PT_WRITABLE | PT_HUGE_2M;
-    }
-
-    // Full TLB flush by reloading CR3
-    uint64_t cr3;
-    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
-    __asm__ volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
-
-    return phys; // identity-mapped: VA == PA
+static inline char cell_char(int col, int row) {
+    if (!screen_buf || col < 0 || col >= fb_cols || row < 0 || row >= fb_rows) return ' ';
+    return screen_buf[row * fb_cols + col];
 }
 
-// ── Pixel and glyph rendering ─────────────────────────────────────────────────
-static inline void put_pixel(uint32_t x, uint32_t y, uint32_t color)
-{
-    uint32_t* p = (uint32_t*)((uint8_t*)(uintptr_t)fb_base + y * fb_pitch + x * 4u);
-    *p = color;
+static inline void cell_set(int col, int row, char ch) {
+    if (screen_buf && col >= 0 && col < fb_cols && row >= 0 && row < fb_rows)
+        screen_buf[row * fb_cols + col] = ch;
 }
 
-static void draw_glyph(int col, int row, unsigned char ch, uint32_t fg, uint32_t bg)
+// ── Glyph rendering ────────────────────────────────────────────────────────
+// Renders one character cell via display64_blit_row -- one call per
+// (2x-scaled) pixel row of the glyph, rather than CHAR_W*CHAR_H
+// individual put_pixel calls.
+static void draw_cell(int col, int row, unsigned char ch, uint32_t fg, uint32_t bg)
 {
     const uint8_t* glyph = font8x16[(ch >= 32 && ch <= 127) ? ch - 32u : 0u];
     uint32_t px = (uint32_t)col * CHAR_W;
     uint32_t py = (uint32_t)row * CHAR_H;
+    uint32_t linebuf[CHAR_W];
 
     for (int r = 0; r < FONT_H; r++) {
         uint8_t bits = glyph[r];
         for (int c = 0; c < FONT_W; c++) {
             uint32_t color = (bits & (0x80u >> c)) ? fg : bg;
-            uint32_t dx = px + (uint32_t)c * 2u;
-            uint32_t dy = py + (uint32_t)r * 2u;
-            put_pixel(dx,     dy,     color);
-            put_pixel(dx + 1, dy,     color);
-            put_pixel(dx,     dy + 1, color);
-            put_pixel(dx + 1, dy + 1, color);
+            linebuf[c * 2]     = color;
+            linebuf[c * 2 + 1] = color;
         }
+        display64_blit_row(px, py + (uint32_t)r * 2u,     CHAR_W, linebuf);
+        display64_blit_row(px, py + (uint32_t)r * 2u + 1, CHAR_W, linebuf);
     }
 }
 
-// ── Scrolling ─────────────────────────────────────────────────────────────────
-static void scroll_up_one(void)
+// Draws real content into a cell: updates screen_buf AND paints it with
+// the terminal's normal (non-inverted) colors for the current attr.
+static void set_cell(int col, int row, unsigned char ch)
 {
-    uint8_t* dst = (uint8_t*)(uintptr_t)fb_base;
-    uint8_t* src = dst + (uint32_t)CHAR_H * fb_pitch;
-    uint32_t copy_bytes = (uint32_t)(fb_rows - 1) * (uint32_t)CHAR_H * fb_pitch;
-
-    for (uint32_t i = 0; i < copy_bytes; i++) dst[i] = src[i];
-
-    // Clear the vacated last row with the current background color
-    uint32_t bg = vga_rgb[(cur_attr >> 4) & 0xF];
-    uint32_t* last = (uint32_t*)(dst + (uint32_t)(fb_rows - 1) * (uint32_t)CHAR_H * fb_pitch);
-    uint32_t n = (uint32_t)CHAR_H * fb_pitch / 4u;
-    for (uint32_t i = 0; i < n; i++) last[i] = bg;
+    cell_set(col, row, (char)ch);
+    uint32_t fg = vga_rgb[cur_attr & 0x0F];
+    uint32_t bg = vga_rgb[(cur_attr >> 4) & 0x0F];
+    draw_cell(col, row, ch, fg, bg);
 }
 
-// ── Character dispatch ────────────────────────────────────────────────────────
+// ── Cursor ───────────────────────────────────────────────────────────────
+// Simple, non-blinking software block cursor: reverse-video of whatever
+// character actually occupies the cursor's cell. Never overwrites
+// screen_buf, so erasing it (redrawing the cell with normal colors)
+// always restores the exact glyph that was there -- the cursor never
+// permanently destroys content underneath it.
+static void draw_cursor(void)
+{
+    if (!fb_avail) return;
+    uint32_t fg = vga_rgb[cur_attr & 0x0F];
+    uint32_t bg = vga_rgb[(cur_attr >> 4) & 0x0F];
+    draw_cell(cur_col, cur_row, (unsigned char)cell_char(cur_col, cur_row), bg, fg); // swapped fg/bg
+}
+
+static void erase_cursor(void)
+{
+    if (!fb_avail) return;
+    uint32_t fg = vga_rgb[cur_attr & 0x0F];
+    uint32_t bg = vga_rgb[(cur_attr >> 4) & 0x0F];
+    draw_cell(cur_col, cur_row, (unsigned char)cell_char(cur_col, cur_row), fg, bg);
+}
+
+// ── Scrolling ─────────────────────────────────────────────────────────────
+// Milestone 29: fills all the way down to the display's REAL height
+// (not fb_rows*CHAR_H), so a framebuffer whose height isn't an exact
+// multiple of CHAR_H no longer leaves a stale, never-cleared strip at
+// the bottom (the previously known "bottom strip" bug).
+static void scroll_up_one(void)
+{
+    uint32_t bg = vga_rgb[(cur_attr >> 4) & 0xF];
+    uint32_t shift_rows = (uint32_t)(fb_rows - 1) * (uint32_t)CHAR_H;
+
+    display64_copy_rows(0, CHAR_H, shift_rows);
+    display64_fill_rect(0, shift_rows, disp_width, disp_height - shift_rows, bg);
+
+    if (screen_buf && fb_rows > 1) {
+        for (int i = 0; i < (fb_rows - 1) * fb_cols; i++)
+            screen_buf[i] = screen_buf[i + fb_cols];
+        for (int c = 0; c < fb_cols; c++)
+            screen_buf[(fb_rows - 1) * fb_cols + c] = ' ';
+    }
+}
+
+// ── Character dispatch ────────────────────────────────────────────────────
 static void newline(void)
 {
     cur_col = 0;
@@ -362,69 +352,88 @@ static void newline(void)
     }
 }
 
+static void do_tab(void)
+{
+    int stop = (cur_col + 8) & ~7;
+    if (stop > fb_cols) stop = fb_cols;
+    while (cur_col < stop) {
+        set_cell(cur_col, cur_row, ' ');
+        cur_col++;
+    }
+    if (cur_col >= fb_cols) newline();
+}
+
+static void do_backspace(void)
+{
+    if (cur_col > 0) {
+        cur_col--;
+    } else if (cur_row > 0) {
+        cur_row--;
+        cur_col = fb_cols - 1;
+    } else {
+        return; // top-left corner -- nothing to erase
+    }
+    set_cell(cur_col, cur_row, ' ');
+}
+
 static void put_char(char c)
 {
-    uint32_t fg = vga_rgb[cur_attr & 0x0F];
-    uint32_t bg = vga_rgb[(cur_attr >> 4) & 0x0F];
-
     if (c == '\n') { newline(); return; }
     if (c == '\r') { cur_col = 0; return; }
-    if (c == '\b') {
-        if (cur_col > 0) {
-            cur_col--;
-            draw_glyph(cur_col, cur_row, ' ', fg, bg);
-        }
-        return;
-    }
-    if (c == '\t') {
-        cur_col = (cur_col + 8) & ~7;
-        if (cur_col >= fb_cols) newline();
-        return;
-    }
+    if (c == '\b') { do_backspace(); return; }
+    if (c == '\t') { do_tab(); return; }
 
-    draw_glyph(cur_col, cur_row, (unsigned char)c, fg, bg);
+    set_cell(cur_col, cur_row, (unsigned char)c);
     cur_col++;
     if (cur_col >= fb_cols) newline();
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Public API ────────────────────────────────────────────────────────────
 void fbterm64_init(uint64_t fb_addr, uint32_t width, uint32_t height,
-                   uint32_t pitch, uint8_t bpp)
+                   uint32_t pitch, const pixfmt64_t* fmt)
 {
-    if (bpp != 32 || !fb_addr || width < 320 || height < 200) return;
+    fb_avail = 0;
+    if (display64_init(fb_addr, width, height, pitch, fmt) < 0) return;
 
-    uint32_t fb_size = height * pitch;
-    uint64_t vaddr = map_fb_phys(fb_addr, fb_size);
-    if (!vaddr) return;
-
-    fb_base  = vaddr;
-    fb_pitch = pitch;
-    fb_cols  = (int)(width  / CHAR_W);
-    fb_rows  = (int)(height / CHAR_H);
+    display64_info_t info;
+    display64_get_info(&info);
+    disp_width  = info.width;
+    disp_height = info.height;
+    fb_cols  = (int)(disp_width  / CHAR_W);
+    fb_rows  = (int)(disp_height / CHAR_H);
     if (fb_cols < 1 || fb_rows < 1) return;
 
-    fb_avail = 1;
+    screen_buf = (char*)kmalloc((uint64_t)fb_cols * (uint64_t)fb_rows);
+    if (screen_buf) {
+        for (int i = 0; i < fb_cols * fb_rows; i++) screen_buf[i] = ' ';
+    }
+
     cur_col  = 0;
     cur_row  = 0;
     cur_attr = 0x07; // light gray on black (VGA default)
+    fb_avail = 1;
+    draw_cursor();
 }
 
 void fbterm64_write(const char* buf, uint64_t len)
 {
     if (!fb_avail) return;
+    erase_cursor();
     for (uint64_t i = 0; i < len; i++) put_char(buf[i]);
+    draw_cursor();
 }
 
 void fbterm64_clear(void)
 {
     if (!fb_avail) return;
     uint32_t bg = vga_rgb[(cur_attr >> 4) & 0x0F];
-    uint8_t* p  = (uint8_t*)(uintptr_t)fb_base;
-    uint32_t n  = (uint32_t)fb_rows * (uint32_t)CHAR_H * fb_pitch / 4u;
-    uint32_t* pw = (uint32_t*)p;
-    for (uint32_t i = 0; i < n; i++) pw[i] = bg;
+    display64_fill_rect(0, 0, disp_width, disp_height, bg);
+    if (screen_buf) {
+        for (int i = 0; i < fb_cols * fb_rows; i++) screen_buf[i] = ' ';
+    }
     cur_col = 0;
     cur_row = 0;
+    draw_cursor();
 }
 
 void fbterm64_set_color(uint8_t attr)

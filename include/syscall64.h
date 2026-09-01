@@ -129,6 +129,58 @@
 // through kernel/vfs64.c underneath.
 #define SYS64_READDIR_NEXT 30 // (int handle, char* name_out) -> 0 or -1
 
+// Milestone 29: structured input events and the userspace display-
+// present interface. Both new handle kinds (HANDLE64_INPUT,
+// HANDLE64_DISPLAY -- include/handle64.h) are process-wide SINGLETONS:
+// only one process may hold each open at a time (see kernel/input64.c's/
+// kernel/display64.c's acquire/release), and neither is inherited
+// across sys_spawn -- a deliberate access-control stand-in until
+// ToxenOS has real credentials, shaped around the eventual model where
+// one compositor/input-server process owns both and fans out to
+// applications via IPC (not implemented this milestone).
+//
+// SYS64_INPUT_OPEN returns a HANDLE64_INPUT handle, or -1 if the input
+// stream is already owned by another process. Reading it goes through
+// the EXISTING generic SYS64_HANDLE_READ: `len` must be at least
+// sizeof(input64_event_t) (see include/input64.h) -- as many whole
+// events as fit are copied out (never a partial event); the call BLOCKS
+// (a real scheduler block, never polling) while the queue is empty.
+// Closing it (SYS64_HANDLE_CLOSE) releases ownership, same as process
+// exit.
+#define SYS64_INPUT_OPEN 31 // () -> handle, or -1
+
+// SYS64_DISPLAY_OPEN returns a HANDLE64_DISPLAY handle plus the
+// display's actual geometry and logical pixel format (currently always
+// DISPLAY64_FORMAT_LOGICAL_XRGB8888 -- see below), or -1 if no display
+// is available or it's already owned by another process.
+#define SYS64_DISPLAY_OPEN 32 // (uint32_t* width_out, uint32_t* height_out, uint32_t* format_out) -> handle, or -1
+#define DISPLAY64_FORMAT_LOGICAL_XRGB8888 1
+
+// SYS64_DISPLAY_PRESENT copies a rectangle of caller-supplied pixels
+// (logical 0x00RRGGBB, DISPLAY64_FORMAT_LOGICAL_XRGB8888) from the
+// caller's own memory -- ordinary private or shared-memory-backed
+// userspace memory, validated through the SAME paging64_check_user_range
+// machinery as copy_from_user64/copy_to_user64 (Milestone 25), so a
+// virtually-contiguous buffer backed by non-contiguous physical pages
+// works correctly with no special-casing -- into the physical
+// framebuffer, converting to the real hardware pixel layout inside the
+// kernel (kernel/display64.c). One call performs the entire rectangle's
+// blit (never one syscall per pixel); passing the full display
+// dimensions presents a whole frame, a smaller w/h presents only a
+// damaged sub-rectangle. `handle` must be a HANDLE64_DISPLAY this
+// process owns. The request struct is packed into a single user
+// pointer since it has more fields than the 3-register syscall ABI
+// allows in separate arguments:
+//   typedef struct {
+//       uint64_t buf_ptr;  // user pointer, logical XRGB8888, row-major
+//       uint32_t pitch;    // bytes per row in buf_ptr (0 = tightly packed, w*4)
+//       uint32_t x, y;     // destination rect top-left on the display
+//       uint32_t w, h;     // destination rect size
+//   } display64_present_req_t;
+// Returns 0, or -1 (bad handle/pointer, or the rect doesn't fit the
+// display).
+#define SYS64_DISPLAY_PRESENT 33 // (int handle, const display64_present_req_t* req) -> 0 or -1
+
 void syscall64_dispatch(trapframe64_t* tf);
 
 #endif // SYSCALL64_H

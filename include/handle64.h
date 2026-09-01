@@ -22,6 +22,17 @@ typedef enum {
     HANDLE64_SHM,
     HANDLE64_FILE,  // Milestone 27: obj = vfs64_file_t* (regular file)
     HANDLE64_DIR,   // Milestone 27: obj = vfs64_file_t* (directory, cursor == enumeration index)
+    // Milestone 29: obj is unused (0) for both of these -- each is a
+    // singleton global resource (see kernel/input64.c's/kernel/display64.c's
+    // single-owner acquire/release), not a per-open kmalloc'd object like
+    // a pipe or file. Deliberately NOT copied by process64_spawn's
+    // handle-inheritance switch (kernel/process64.c) -- a child of the
+    // process holding one of these does NOT automatically get raw
+    // display/input access, matching the "compositor is the sole owner,
+    // dispatches to apps via IPC" architecture this milestone sets up
+    // for but does not itself implement.
+    HANDLE64_INPUT,   // the global structured-input-event stream
+    HANDLE64_DISPLAY, // the physical display's present operation
 } handle64_kind_t;
 
 typedef struct {

@@ -26,6 +26,10 @@
 #include "../include/console64.h"
 #include "../include/pipe64.h"
 #include "../include/shm64.h"
+#include "../include/input64.h"
+#include "../include/display64.h"
+#include "../include/paging64.h"
+#include "../include/heap64.h"
 #include "../include/klog.h"
 
 #define SYS64_WRITE_MAX 256
@@ -458,6 +462,20 @@ static uint64_t sys64_handle_read(int h, uint64_t buf_ptr, uint64_t len) {
         f->cursor += (uint64_t)n;
         return (uint64_t)n;
     }
+    // Milestone 29: a HANDLE64_INPUT read blocks (real scheduler block,
+    // never polling -- see input64_read_blocking) for exactly ONE
+    // structured event, then copies it out. `len` must be at least one
+    // event's worth; this deliberately doesn't batch multiple events
+    // per call (Milestone 30's compositor doesn't need that yet, and it
+    // would need a non-blocking peek this milestone has no reason to
+    // add).
+    if (cur->handles[h].kind == HANDLE64_INPUT) {
+        if (len < sizeof(input64_event_t)) return (uint64_t)-1;
+        input64_event_t ev;
+        if (input64_read_blocking(&ev) < 0) return (uint64_t)-1;
+        if (copy_to_user64(buf_ptr, &ev, sizeof(ev)) < 0) return (uint64_t)-1;
+        return (uint64_t)sizeof(ev);
+    }
     return (uint64_t)-1;
 }
 
@@ -497,6 +515,8 @@ static uint64_t sys64_handle_close(int h) {
     case HANDLE64_SHM:        shm64_release((shm64_t*)cur->handles[h].obj); break;
     case HANDLE64_FILE:
     case HANDLE64_DIR:        vfs64_file_release((vfs64_file_t*)cur->handles[h].obj); break;
+    case HANDLE64_INPUT:      input64_release(); break;
+    case HANDLE64_DISPLAY:    display64_release(); break;
     default: return (uint64_t)-1;
     }
     cur->handles[h].kind = HANDLE64_UNUSED;
@@ -527,6 +547,97 @@ static uint64_t sys64_shm_map(int h, int writable) {
     uint64_t addr;
     if (uservm64_map_shm(&cur->vm, &cur->as, (shm64_t*)cur->handles[h].obj, writable, &addr) < 0) return (uint64_t)-1;
     return addr;
+}
+
+// ── Milestone 29: structured input + userspace display present ──────
+// See include/syscall64.h's header comment on SYS64_INPUT_OPEN/
+// SYS64_DISPLAY_OPEN/SYS64_DISPLAY_PRESENT for the full design.
+
+static uint64_t sys64_input_open(void) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+
+    int slot = find_free_handle(cur);
+    if (slot < 0) return (uint64_t)-1;
+    if (input64_acquire() < 0) return (uint64_t)-1;
+
+    cur->handles[slot].kind = HANDLE64_INPUT;
+    cur->handles[slot].obj  = (void*)1; // singleton -- kind alone identifies it
+    return (uint64_t)slot;
+}
+
+static uint64_t sys64_display_open(uint64_t width_out_ptr, uint64_t height_out_ptr, uint64_t format_out_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (!display64_available()) return (uint64_t)-1;
+
+    int slot = find_free_handle(cur);
+    if (slot < 0) return (uint64_t)-1;
+    if (display64_acquire() < 0) return (uint64_t)-1;
+
+    display64_info_t info;
+    display64_get_info(&info);
+    uint32_t fmt = DISPLAY64_FORMAT_LOGICAL_XRGB8888;
+
+    if (copy_to_user64(width_out_ptr, &info.width, sizeof(info.width)) < 0 ||
+        copy_to_user64(height_out_ptr, &info.height, sizeof(info.height)) < 0 ||
+        (format_out_ptr && copy_to_user64(format_out_ptr, &fmt, sizeof(fmt)) < 0)) {
+        display64_release();
+        return (uint64_t)-1;
+    }
+
+    cur->handles[slot].kind = HANDLE64_DISPLAY;
+    cur->handles[slot].obj  = (void*)1;
+    return (uint64_t)slot;
+}
+
+typedef struct {
+    uint64_t buf_ptr;
+    uint32_t pitch;
+    uint32_t x, y, w, h;
+} display64_present_req_t;
+
+#define SYS64_DISPLAY_MAX_DIM 4096 // sanity cap -- real display width/height already enforce the true bound
+
+static uint64_t sys64_display_present(int handle, uint64_t req_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (handle < 0 || handle >= PROCESS64_MAX_HANDLES || cur->handles[handle].kind != HANDLE64_DISPLAY)
+        return (uint64_t)-1;
+
+    display64_present_req_t req;
+    if (copy_from_user64(&req, req_ptr, sizeof(req)) < 0) return (uint64_t)-1;
+    if (req.w == 0 || req.h == 0 || req.w > SYS64_DISPLAY_MAX_DIM || req.h > SYS64_DISPLAY_MAX_DIM) return (uint64_t)-1;
+
+    display64_info_t info;
+    display64_get_info(&info);
+    if (req.x >= info.width || req.y >= info.height) return (uint64_t)-1;
+    if (req.w > info.width - req.x || req.h > info.height - req.y) return (uint64_t)-1;
+
+    uint32_t pitch = req.pitch ? req.pitch : req.w * 4u;
+    if (pitch < req.w * 4u) return (uint64_t)-1; // pitch too small to hold w pixels
+
+    // Validate the ENTIRE source span up front (same whole-range-then-
+    // direct-access pattern as copy_from_user64/copy_to_user64 --
+    // Milestone 25) -- works correctly for a virtually contiguous
+    // buffer backed by non-contiguous physical pages with no special
+    // casing, since validation and the subsequent reads both go through
+    // this process's own live page tables via ordinary virtual
+    // addressing, never a physical-address walk.
+    uint64_t span = (uint64_t)(req.h - 1) * pitch + (uint64_t)req.w * 4u;
+    if (paging64_check_user_range(&cur->as, req.buf_ptr, span, 0) < 0) return (uint64_t)-1;
+
+    uint32_t* rowbuf = (uint32_t*)kmalloc((uint64_t)req.w * 4u);
+    if (!rowbuf) return (uint64_t)-1;
+
+    for (uint32_t row = 0; row < req.h; row++) {
+        const uint32_t* src = (const uint32_t*)(uintptr_t)(req.buf_ptr + (uint64_t)row * pitch);
+        for (uint32_t col = 0; col < req.w; col++) rowbuf[col] = src[col];
+        display64_blit_row(req.x, req.y + row, req.w, rowbuf);
+    }
+
+    kfree(rowbuf);
+    return 0;
 }
 
 void syscall64_dispatch(trapframe64_t* tf) {
@@ -614,6 +725,15 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_READDIR_NEXT:
         tf->rax = sys64_readdir_next((int)tf->rdi, tf->rsi);
+        break;
+    case SYS64_INPUT_OPEN:
+        tf->rax = sys64_input_open();
+        break;
+    case SYS64_DISPLAY_OPEN:
+        tf->rax = sys64_display_open(tf->rdi, tf->rsi, tf->rdx);
+        break;
+    case SYS64_DISPLAY_PRESENT:
+        tf->rax = sys64_display_present((int)tf->rdi, tf->rsi);
         break;
     default:
         tf->rax = (uint64_t)-1;

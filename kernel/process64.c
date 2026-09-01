@@ -1,159 +1,597 @@
-// kernel/process64.c — Milestone 3: kernel-task scheduler foundation.
+// kernel/process64.c — Milestone 24: unified process model + preemptive
+// scheduler.
 //
-// Every task here runs in ring 0 on its own static kernel stack, sharing
-// the existing Milestone-1 page tables (no per-task address space, no
-// TSS/IST, no ring3 — deferred to a future Milestone 3B). A brand-new
-// task is bootstrapped far more simply than the 32-bit fake-iret-frame
-// approach: since nothing here ever crosses a privilege level, starting
-// a task is just "push its entry function's address as the return
-// address context_switch64's `ret` will pop" — no trampoline, no iretq.
+// Design overview
+// ----------------
+// Every process is represented by a suspended (or actively running)
+// kernel stack. Whenever a process is NOT the one currently on the
+// CPU, its kernel_rsp points at a stack layout of exactly this shape,
+// from low address (== kernel_rsp) to high address:
+//
+//   [ r15..rbx (6 callee-saved slots, zeroed or real) ]
+//   [ return address = process64_resume_trapframe      ]
+//   [ trapframe64_t (real or fake -- see below)         ]
+//
+// This is EXACTLY the layout context_switch64 (kernel/switch64.asm,
+// reused unchanged from the old ring-0 task scheduler) expects to
+// restore: it pops the 6 callee-saved registers, then executes a plain
+// `ret`, which jumps to process64_resume_trapframe (kernel/isr64.asm) --
+// a small routine that is simply COMMON_TAIL's own epilogue (restore
+// every GPR, discard vector/error_code, iretq) pulled out into its own
+// callable target. iretq then drops into ring3 using whatever is in the
+// trapframe.
+//
+// For a process that was PREEMPTED mid-flight, that trapframe is 100%
+// real: the timer IRQ landed on this process's own TSS.RSP0 kernel
+// stack, COMMON_TAIL pushed a genuine trapframe64_t there, and
+// process64_tick() was reached via a normal (if deep) C call chain
+// sitting just above it. Switching away from it is just
+// context_switch64 saving the CURRENT rsp (wherever it happens to be in
+// that call chain) into kernel_rsp; switching back to it later resumes
+// that exact call chain, which eventually unwinds back out through
+// COMMON_TAIL's own POP_GPRS/iretq -- process64_resume_trapframe is
+// never actually reached for this case, since the frame was pushed by a
+// real interrupt stub, not fabricated. For a BRAND NEW process (never
+// run), bootstrap_process_stack() below fabricates the same layout by
+// hand, with a synthetic trapframe pointing at the process's real entry
+// point/user stack -- process64_resume_trapframe genuinely IS the first
+// thing that runs for it.
+//
+// This is the same trick the deleted Milestone 3 task64_t scheduler
+// used for ring-0-only tasks (context_switch64 + a hand-built stack for
+// first activation); the only new piece is fabricating a full ring3
+// trapframe instead of a bare `ret`-to-entry-function, which is what
+// makes this generalize to real, isolated, preemptible USER processes.
+//
+// ── CR3 / TSS.RSP0 lifecycle ─────────────────────────────────────────
+// perform_switch() always updates CR3 and TSS.RSP0 to the TARGET
+// process BEFORE calling context_switch64 -- both are plain register/
+// MSR-adjacent state changes with no privilege transition of their own,
+// so doing them slightly "early" (while still nominally running as the
+// OLD process, for the next few instructions until the RSP swap
+// actually happens) is safe: nothing between here and the RSP swap
+// takes a ring3->ring0 transition (that's the only time TSS.RSP0 is
+// consulted) or relies on CR3 still pointing at the old tables (the
+// kernel's own code/data is mapped identically in every process's
+// tables, so continuing to execute is fine regardless of which CR3 is
+// loaded).
+//
+// This ordering is exactly what makes process exit safe: an exiting
+// process's address space is torn down synchronously, in its own call
+// to perform_switch(), immediately after CR3 has already moved to the
+// NEXT process -- by the time paging64_destroy_as() frees the exiting
+// process's page-table/user pages, CR3 no longer references them at
+// all, even though the CPU is still, for a few more instructions,
+// executing on the exiting process's own (not-yet-abandoned) kernel
+// stack. Its kernel stack itself is never touched at exit time (still
+// "in use" until context_switch64 actually swaps away from it) -- only
+// reused once a later process64_wait() reaps the slot.
+//
+// ── Idle ─────────────────────────────────────────────────────────────
+// There is no process64_t for "idle" -- kernel_main64's own execution
+// (boot stack, boot pml4/CR3, ring0) doubles as the fallback whenever no
+// real process is READY, tracked as current_idx == -1 with its own
+// dedicated idle_kernel_rsp save slot instead of a table entry.
+// Switching TO idle always explicitly reloads the boot pml4 and a
+// neutral TSS.RSP0 (stack_top64) -- idle never takes a ring3->ring0
+// transition of its own (it's ring0-only, running `hlt` in a loop), so
+// TSS.RSP0's value while idle is technically unused, but is still set
+// for hygiene/future-proofing.
 #include <stdint.h>
-#include "../include/klog.h"
 #include "../include/process64.h"
-
-#define BOOT_TASK_ID 0
-#define TASK_A_ID    1
-#define TASK_B_ID    2
+#include "../include/exec64.h"
+#include "../include/paging64.h"
+#include "../include/tss64.h"
+#include "../include/txfs64.h"
+#include "../include/isr64.h"
+#include "../include/gdt64.h"
+#include "../include/physmem64.h"
+#include "../include/klog.h"
 
 extern void context_switch64(uint64_t* old_rsp_ptr, uint64_t* new_rsp_ptr);
 
-static task64_t tasks[MAX_TASKS64];
-static int current_task = BOOT_TASK_ID;
+// boot64.asm's static, identity-mapped (VA==PA) boot page tables/stack --
+// idle's own CR3/RSP0 targets.
+extern uint64_t pml4[512];
+extern uint8_t  stack_top64[];
 
-static uint8_t task_stack_a[TASK64_STACK_SIZE] __attribute__((aligned(16)));
-static uint8_t task_stack_b[TASK64_STACK_SIZE] __attribute__((aligned(16)));
+static process64_t procs[PROCESS64_MAX];
+static uint8_t     kernel_stacks[PROCESS64_MAX][PROCESS64_KSTACK_SIZE] __attribute__((aligned(16)));
+static int         current_idx = -1;   // -1 == idle/boot context is current
+static uint32_t    next_pid = 1;
+static uint64_t    idle_kernel_rsp = 0;
+static uint64_t    g_switch_count = 0; // diagnostic/self-test only -- counts real switches
 
-static volatile uint64_t task_a_count = 0;
-static volatile uint64_t task_b_count = 0;
+// ── Small helpers ────────────────────────────────────────────────────
+static void copy_str(char* dst, const char* src, int max) {
+    int i = 0;
+    if (src) { while (src[i] && i < max - 1) { dst[i] = src[i]; i++; } }
+    dst[i] = 0;
+}
 
-// Deliberately a tight busy loop with NO hlt inside it: this is the
-// stronger proof that the scheduler is genuinely preemptive — neither
-// task ever voluntarily yields, so the only thing moving execution
-// between them is the timer IRQ firing mid-loop and scheduler64_tick()
-// deciding to switch. IF stays 1 throughout, so IRQ0/IRQ1 still land
-// and preempt this loop normally.
-// A brand-new task's first activation never goes through iretq (there is
-// no trapframe yet for a task that has never run) — iretq is normally
-// what restores RFLAGS.IF on return from an interrupt-gate handler. If a
-// task's first activation happens to occur from *inside* the timer IRQ's
-// nested call chain (true for every task after the first one, since the
-// scheduler only ever runs from inside timer64_handler), it inherits
-// whatever IF currently is — 0, because IDT64_INTERRUPT_GATE_K (0x8E)
-// gates auto-clear IF on entry. With IF stuck at 0, no further IRQ ever
-// fires again, silently freezing the scheduler on whichever task hit
-// this first. Each task explicitly re-enables interrupts as its first
-// action to guarantee the "every task runs with IF=1" invariant holds
-// regardless of how it was started.
-static void task64_a_entry(void)
-{
-    __asm__ volatile ("sti");
-    for (;;) {
-        task_a_count++;
-        if (task_a_count % 2000000 == 0)
-            klog("[task64 A] heartbeat\n");
+static void dec_to_str(uint64_t val, char* out) {
+    char tmp[24];
+    int n = 0;
+    if (val == 0) tmp[n++] = '0';
+    while (val > 0 && n < 24) { tmp[n++] = (char)('0' + (val % 10)); val /= 10; }
+    int j = 0;
+    while (n > 0) out[j++] = tmp[--n];
+    out[j] = 0;
+}
+
+static void hex_to_str(uint64_t val, char* out) {
+    const char* h = "0123456789ABCDEF";
+    out[0] = '0'; out[1] = 'x';
+    for (int i = 0; i < 16; i++) { out[2 + (15 - i)] = h[val & 0xF]; val >>= 4; }
+    out[18] = 0;
+}
+
+// ── Fresh-process stack bootstrap ───────────────────────────────────
+// Builds the [callee-saved][return addr][trapframe64_t] layout described
+// above by hand, for a process that has never run yet.
+static void bootstrap_process_stack(process64_t* p, uint64_t entry, uint64_t user_stack_top) {
+    uint8_t* top = p->kernel_stack + p->kernel_stack_size;
+    trapframe64_t* tf = ((trapframe64_t*)top) - 1;
+
+    uint8_t* z = (uint8_t*)tf;
+    for (uint64_t i = 0; i < sizeof(trapframe64_t); i++) z[i] = 0;
+
+    tf->rip    = entry;
+    tf->cs     = USER_CODE64_SEL | 3;
+    tf->rflags = 0x202; // reserved bit1=1, IF=1
+    tf->rsp    = user_stack_top;
+    tf->ss     = USER_DATA64_SEL | 3;
+
+    uint64_t* sp = (uint64_t*)tf;
+    *(--sp) = (uint64_t)process64_resume_trapframe; // popped by context_switch64's `ret`
+    *(--sp) = 0; // rbx
+    *(--sp) = 0; // rbp
+    *(--sp) = 0; // r12
+    *(--sp) = 0; // r13
+    *(--sp) = 0; // r14
+    *(--sp) = 0; // r15
+
+    p->kernel_rsp = (uint64_t)sp;
+}
+
+// ── The switch primitive ─────────────────────────────────────────────
+// `to_cleanup` (if non-NULL) is the process whose address space/fds
+// should be released as part of this switch -- always the process that
+// just called sys64_exit/faulted, always distinct from `new_idx`'s
+// process (never itself, since a ZOMBIE is never selected as a switch
+// target). See the file header comment for why this ordering is safe.
+static void perform_switch(int old_idx, int new_idx, process64_t* to_cleanup) {
+    uint64_t* old_rsp_ptr = (old_idx >= 0) ? &procs[old_idx].kernel_rsp : &idle_kernel_rsp;
+    uint64_t* new_rsp_ptr = (new_idx >= 0) ? &procs[new_idx].kernel_rsp : &idle_kernel_rsp;
+
+    if (new_idx >= 0) {
+        paging64_switch_to(procs[new_idx].as.pml4_phys);
+        tss64_set_kernel_stack((uint64_t)(procs[new_idx].kernel_stack + procs[new_idx].kernel_stack_size));
+    } else {
+        paging64_switch_to((uint64_t)pml4);
+        tss64_set_kernel_stack((uint64_t)stack_top64);
     }
-}
 
-static void task64_b_entry(void)
-{
-    __asm__ volatile ("sti");
-    for (;;) {
-        task_b_count++;
-        if (task_b_count % 2000000 == 0)
-            klog("[task64 B] heartbeat\n");
-    }
-}
-
-// Builds the stack layout context_switch64 expects for a task that has
-// never run before. Must mirror context_switch64's pop order exactly
-// (pop r15,r14,r13,r12,rbp,rbx — first pop reads the lowest address):
-//
-//   [highest]  entry_fn   <- popped by `ret`
-//              rbx  = 0   <- popped LAST by context_switch64
-//              rbp  = 0
-//              r12  = 0
-//              r13  = 0
-//              r14  = 0
-//   [lowest]   r15  = 0   <- popped FIRST; task->rsp ends up here
-//
-// The 6 zero values carry no meaning (callee-saved regs are dead on
-// first entry) — only their count (6, matching switch64.asm) and
-// entry_fn's position above them matter.
-static void task64_bootstrap(task64_t* t, void (*entry_fn)(void))
-{
-    uint64_t* sp = (uint64_t*)(t->stack_base + t->stack_size);
-    *(--sp) = (uint64_t)entry_fn;
-    *(--sp) = 0;  // rbx
-    *(--sp) = 0;  // rbp
-    *(--sp) = 0;  // r12
-    *(--sp) = 0;  // r13
-    *(--sp) = 0;  // r14
-    *(--sp) = 0;  // r15
-    t->rsp = (uint64_t)sp;
-}
-
-void process64_init(void)
-{
-    for (int i = 0; i < MAX_TASKS64; i++) {
-        tasks[i].state = TASK64_DEAD;
-        tasks[i].id    = (uint32_t)i;
-        tasks[i].name  = "(unused)";
-    }
-
-    // The boot task has no static stack of its own — it's already
-    // running on kernel_main64's real stack (linker64.ld's
-    // stack_top64). Its rsp is captured by context_switch64 itself the
-    // first time process64_start() switches away from it.
-    tasks[BOOT_TASK_ID].name = "boot";
-
-    tasks[TASK_A_ID].name       = "A";
-    tasks[TASK_A_ID].stack_base = task_stack_a;
-    tasks[TASK_A_ID].stack_size = TASK64_STACK_SIZE;
-    task64_bootstrap(&tasks[TASK_A_ID], task64_a_entry);
-
-    tasks[TASK_B_ID].name       = "B";
-    tasks[TASK_B_ID].stack_base = task_stack_b;
-    tasks[TASK_B_ID].stack_size = TASK64_STACK_SIZE;
-    task64_bootstrap(&tasks[TASK_B_ID], task64_b_entry);
-}
-
-void process64_start(void)
-{
-    current_task = BOOT_TASK_ID;
-    tasks[BOOT_TASK_ID].state = TASK64_READY;  // fallback target if A/B ever die
-    tasks[TASK_A_ID].state    = TASK64_READY;
-    tasks[TASK_B_ID].state    = TASK64_READY;
-
-    int old = current_task;
-    current_task = TASK_A_ID;
-    tasks[TASK_A_ID].state = TASK64_RUNNING;
-    context_switch64(&tasks[old].rsp, &tasks[current_task].rsp);
-    // Only reached again once the scheduler later switches back to
-    // BOOT_TASK_ID — execution resumes here, returns into
-    // kernel_main64's idle hlt loop exactly where it left off. Same IF
-    // hazard as a brand-new task's first activation (see task64_a_entry/
-    // task64_b_entry): this resumption never goes through iretq either,
-    // so re-assert IF=1 explicitly rather than assume it survived.
-    __asm__ volatile ("sti");
-}
-
-void scheduler64_tick(void)
-{
-    int next = current_task;
-    for (int i = 1; i <= MAX_TASKS64; i++) {
-        int cand = (current_task + i) % MAX_TASKS64;
-        if (tasks[cand].state == TASK64_READY || tasks[cand].state == TASK64_RUNNING) {
-            next = cand;
-            break;
+    if (to_cleanup) {
+        paging64_destroy_as(&to_cleanup->as);
+        for (int i = 0; i < PROCESS64_MAX_FDS; i++) {
+            if (to_cleanup->fds[i] >= 0) { txfs64_close(to_cleanup->fds[i]); to_cleanup->fds[i] = -1; }
         }
     }
-    if (next == current_task) return;  // nothing else runnable
 
-    if (tasks[current_task].state == TASK64_RUNNING)
-        tasks[current_task].state = TASK64_READY;
-    tasks[next].state = TASK64_RUNNING;
+    current_idx = new_idx;
+    g_switch_count++;
+    context_switch64(old_rsp_ptr, new_rsp_ptr);
+    // Resumes here once something later switches back to old_idx --
+    // EXCEPT when new_idx was a brand-new process, which jumps straight
+    // into ring3 via process64_resume_trapframe instead and never
+    // "returns" through this specific call at all. Either way there is
+    // nothing left to do on this path once we reach here again.
+}
 
-    int old = current_task;
-    current_task = next;
-    context_switch64(&tasks[old].rsp, &tasks[next].rsp);
+// Finds the next READY process starting after `from_idx`, wrapping
+// around. Returns -1 if none exists anywhere (including from_idx's own
+// slot, which is never READY while it's RUNNING).
+static int pick_next_ready(int from_idx) {
+    for (int i = 1; i <= PROCESS64_MAX; i++) {
+        int cand = (from_idx + i) % PROCESS64_MAX;
+        if (procs[cand].state == PROCESS64_READY) return cand;
+    }
+    return -1;
+}
+
+// Used by exit/block paths, where the caller is DEFINITELY not staying
+// current -- -1 correctly means "switch to idle" here (unlike
+// process64_tick(), which has its own interpretation).
+static void yield_to_next_or_idle(process64_t* to_cleanup) {
+    int next = pick_next_ready(current_idx);
+    if (next >= 0) procs[next].state = PROCESS64_RUNNING;
+    perform_switch(current_idx, next, to_cleanup);
+}
+
+static process64_t* find_child(uint32_t parent_pid, uint32_t pid) {
+    for (int i = 0; i < PROCESS64_MAX; i++) {
+        if (procs[i].state != PROCESS64_UNUSED &&
+            procs[i].pid == pid && procs[i].parent_pid == parent_pid) {
+            return &procs[i];
+        }
+    }
+    return 0;
+}
+
+static void reap(process64_t* p) {
+    p->state = PROCESS64_UNUSED;
+    p->pid = 0;
+    p->parent_pid = 0;
+}
+
+// ── Public API ───────────────────────────────────────────────────────
+void process64_init(void) {
+    for (int i = 0; i < PROCESS64_MAX; i++) {
+        procs[i].state = PROCESS64_UNUSED;
+        procs[i].pid = 0;
+        for (int f = 0; f < PROCESS64_MAX_FDS; f++) procs[i].fds[f] = -1;
+    }
+    current_idx = -1;
+    idle_kernel_rsp = 0;
+    next_pid = 1;
+    g_switch_count = 0;
+}
+
+int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uint32_t* pid_out) {
+    int idx = -1;
+    for (int i = 0; i < PROCESS64_MAX; i++) {
+        if (procs[i].state == PROCESS64_UNUSED) { idx = i; break; }
+    }
+    if (idx < 0) {
+        klog("process64: spawn: no free process slots\n");
+        return -1;
+    }
+
+    process64_t* p = &procs[idx];
+
+    if (paging64_create_as(&p->as) < 0) {
+        klog("process64: spawn: failed to create address space\n");
+        return -1;
+    }
+
+    uint64_t entry, stack_top, heap_start;
+    if (exec64_load(&p->as, path, &entry, &stack_top, &heap_start) < 0) {
+        paging64_destroy_as(&p->as);
+        return -1;
+    }
+
+    p->pid             = next_pid++;
+    p->parent_pid      = parent_pid;
+    p->exit_code       = 0;
+    p->waiting_for_pid = 0;
+    p->heap_start      = heap_start;
+    p->heap_end        = heap_start;
+    for (int i = 0; i < PROCESS64_MAX_FDS; i++) p->fds[i] = -1;
+    copy_str(p->args, args, PROCESS64_ARGS_MAX);
+    copy_str(p->path, path, PROCESS64_PATH_MAX);
+
+    p->kernel_stack      = kernel_stacks[idx];
+    p->kernel_stack_size = PROCESS64_KSTACK_SIZE;
+    bootstrap_process_stack(p, entry, stack_top);
+
+    char pidbuf[24];
+    dec_to_str(p->pid, pidbuf);
+    klog("process64: spawned pid=");
+    klog(pidbuf);
+    klog(" path=");
+    klog(path);
+    klog("\n");
+
+    if (pid_out) *pid_out = p->pid;
+    p->state = PROCESS64_READY; // scheduler picks it up later; never run here
+    return 0;
+}
+
+process64_t* process64_current(void) {
+    return current_idx >= 0 ? &procs[current_idx] : 0;
+}
+
+int process64_current_pid(void) {
+    return current_idx >= 0 ? (int)procs[current_idx].pid : -1;
+}
+
+static void wake_parent_if_waiting(process64_t* child) {
+    for (int i = 0; i < PROCESS64_MAX; i++) {
+        if (procs[i].state == PROCESS64_BLOCKED &&
+            procs[i].pid == child->parent_pid &&
+            procs[i].waiting_for_pid == child->pid) {
+            procs[i].state = PROCESS64_READY;
+            return;
+        }
+    }
+    // No table entry to wake if parent_pid == 0 (kernel/debug caller) --
+    // process64_wait's no-current-process path just polls via hlt.
+}
+
+static void exit_current(int code, const char* why) {
+    int idx = current_idx;
+    if (idx < 0) return; // never called with no current process
+
+    process64_t* self = &procs[idx];
+    self->exit_code = code;
+    self->state = PROCESS64_ZOMBIE;
+
+    char pidbuf[24], codebuf[24];
+    dec_to_str(self->pid, pidbuf);
+    dec_to_str((uint64_t)(uint32_t)code, codebuf);
+    klog(why);
+    klog(" pid=");
+    klog(pidbuf);
+    klog(" code=");
+    klog(codebuf);
+    klog("\n");
+
+    wake_parent_if_waiting(self);
+    yield_to_next_or_idle(self);
+    for (;;) { } // unreachable -- self is ZOMBIE, never selected as a switch target again
+}
+
+void process64_exit_current(int code) {
+    exit_current(code, "process64: exited,");
+}
+
+void process64_fault_current(void) {
+    exit_current(-1, "process64: faulted,");
+}
+
+int process64_wait(uint32_t pid) {
+    if (current_idx < 0) {
+        // Called from kernel/debug code, not from a real process -- the
+        // only processes it may reap are ones spawned with parent_pid 0.
+        process64_t* child = find_child(0, pid);
+        if (!child) return -1;
+        while (child->state != PROCESS64_ZOMBIE) __asm__ volatile ("hlt");
+        int code = child->exit_code;
+        reap(child);
+        return code;
+    }
+
+    process64_t* cur = &procs[current_idx];
+    process64_t* child = find_child(cur->pid, pid);
+    if (!child) return -1;
+
+    while (child->state != PROCESS64_ZOMBIE) {
+        cur->state = PROCESS64_BLOCKED;
+        cur->waiting_for_pid = pid;
+        yield_to_next_or_idle(0);
+        // Resumes here once woken (or spuriously) -- re-checked by the
+        // while condition either way. cur/child are stable pointers into
+        // the static procs[] table, valid across the block.
+    }
+
+    int code = child->exit_code;
+    reap(child);
+    return code;
+}
+
+void process64_tick(void) {
+    int next = pick_next_ready(current_idx);
+    if (next < 0) return; // nothing else ready -- let current (or idle) keep running
+
+    if (current_idx >= 0) procs[current_idx].state = PROCESS64_READY;
+    procs[next].state = PROCESS64_RUNNING;
+    perform_switch(current_idx, next, 0);
+}
+
+// ── Diagnostics ──────────────────────────────────────────────────────
+static const char* state_name(process64_state_t s) {
+    switch (s) {
+    case PROCESS64_UNUSED:  return "UNUSED";
+    case PROCESS64_READY:   return "READY";
+    case PROCESS64_RUNNING: return "RUNNING";
+    case PROCESS64_BLOCKED: return "BLOCKED";
+    case PROCESS64_ZOMBIE:  return "ZOMBIE";
+    }
+    return "?";
+}
+
+void process64_dump(void) {
+    klog("process64: dump ---\n");
+    if (current_idx < 0) {
+        klog("  current: idle\n");
+    } else {
+        char pidbuf[24];
+        dec_to_str(procs[current_idx].pid, pidbuf);
+        klog("  current: pid=");
+        klog(pidbuf);
+        klog("\n");
+    }
+    for (int i = 0; i < PROCESS64_MAX; i++) {
+        process64_t* p = &procs[i];
+        if (p->state == PROCESS64_UNUSED) continue;
+        char pidbuf[24], ppidbuf[24], cr3buf[19];
+        dec_to_str(p->pid, pidbuf);
+        dec_to_str(p->parent_pid, ppidbuf);
+        hex_to_str(p->as.pml4_phys, cr3buf);
+        klog("  pid="); klog(pidbuf);
+        klog(" parent="); klog(ppidbuf);
+        klog(" state="); klog(state_name(p->state));
+        klog(" cr3="); klog(cr3buf);
+        klog(" path="); klog(p->path);
+        klog("\n");
+    }
+    klog("process64: dump end ---\n");
+}
+
+// ── Self-test suite ──────────────────────────────────────────────────
+// Every case below runs from the kernel/idle context (current_idx < 0),
+// which is what makes process64_wait() poll-via-hlt instead of block a
+// real process -- see its own header comment. Real ring3-side blocking
+// (a process calling sys_wait and actually being marked BLOCKED, then
+// woken by its child's exit) is still genuinely exercised: the nested
+// case below spawns a worker with args="nest", and THAT worker (running
+// in ring3, as pid N) itself calls sys_wait on ITS OWN child (pid N+1)
+// from inside its own syscall handler -- exactly the real blocking path,
+// just one level removed from this top-level kernel-side test.
+//
+// Requires `make populate PACKAGE_DEBUG64=1` for sched_worker64.nex64
+// (and exec_fault_test.nex64) to exist on the disk image.
+#define SCHED_WORKER_PATH "/sched_worker64.nex64"
+#define SCHED_FAULT_PATH  "/exec64_fault_test.nex64"
+
+static int test_single_spawn_wait(void) {
+    uint32_t pid = 0;
+    if (process64_spawn(SCHED_WORKER_PATH, "", 0, &pid) < 0) return 0;
+    if (pid == 0) return 0;
+
+    int code = process64_wait(pid);
+    if (code != 42) return 0;
+
+    // Reaped -- the slot must be fully vacated, not just marked done.
+    process64_t* gone = find_child(0, pid);
+    return gone == 0;
+}
+
+static int test_concurrent_preemption_and_isolation(void) {
+    uint32_t pid_a = 0, pid_b = 0;
+    int spawn_a, spawn_b;
+    process64_t *a, *b;
+    int a_resident, b_resident;
+    uint64_t switches_before;
+
+    // The kernel/idle context is itself preemptible: interrupts are
+    // enabled throughout boot, and loading two binaries from disk (the
+    // two spawns below) takes long enough in wall-clock time that a
+    // timer tick is essentially always pending by the time it's safe to
+    // service one again. A cli/sti pair around JUST the two spawns is
+    // not enough -- re-enabling interrupts (sti) right after them lets
+    // that pending tick fire immediately, which can preempt THIS
+    // function (kernel/idle is just another switch target) and not
+    // resume it until BOTH newly-READY workers have run to completion
+    // (idle is only resumed once nothing else is runnable) -- defeating
+    // a "check they're both still resident" read placed after the sti.
+    // The whole spawn-then-observe sequence below must stay atomic, so
+    // the critical section covers the state reads too, not just the
+    // spawns. See kernel/physmem64.c/heap64.c for the same
+    // save/restore-flags technique used for their own critical sections.
+    uint64_t flags;
+    __asm__ volatile ("pushfq\n\tpop %0\n\tcli" : "=r"(flags) :: "memory");
+
+    spawn_a = process64_spawn(SCHED_WORKER_PATH, "", 0, &pid_a);
+    spawn_b = process64_spawn(SCHED_WORKER_PATH, "", 0, &pid_b);
+    a = find_child(0, pid_a);
+    b = find_child(0, pid_b);
+    a_resident = a && a->state != PROCESS64_ZOMBIE;
+    b_resident = b && b->state != PROCESS64_ZOMBIE;
+    switches_before = g_switch_count;
+
+    if (flags & (1ULL << 9)) __asm__ volatile ("sti" ::: "memory");
+
+    if (spawn_a < 0 || spawn_b < 0) return 0;
+    if (pid_a == 0 || pid_b == 0 || pid_b == pid_a) return 0;
+    // Both must be genuinely resident (not yet exited) immediately after
+    // both spawns return -- proves spawn does not block on completion.
+    if (!a_resident || !b_resident) return 0;
+
+    // Wait for B first (spawned second) -- exercises "wait for a
+    // specific pid regardless of spawn/completion order", not just
+    // FIFO.
+    int code_b = process64_wait(pid_b);
+    int code_a = process64_wait(pid_a);
+
+    uint64_t switches_after = g_switch_count;
+
+    // Two busy-looping workers sharing one CPU for ~8M iterations each
+    // can only both finish if the scheduler repeatedly switched between
+    // them -- a handful of switches would mean one just got lucky
+    // (e.g. finished, then the other ran alone); real round-robin
+    // preemption at a ~10ms quantum produces many more than that.
+    int real_preemption = (switches_after - switches_before) >= 8;
+
+    return code_a == 42 && code_b == 42 && real_preemption;
+}
+
+static int test_nested_spawn(void) {
+    uint32_t pid = 0;
+    if (process64_spawn(SCHED_WORKER_PATH, "nest", 0, &pid) < 0) return 0;
+    if (pid == 0) return 0;
+
+    int code = process64_wait(pid);
+    // 42 is only possible if the outer worker's OWN nested sys_spawn +
+    // (real, ring3-blocking) sys_wait on its child also succeeded --
+    // see user64/sched_worker64.c.
+    return code == 42;
+}
+
+static int test_exit_status_propagation(void) {
+    uint32_t pid = 0;
+    if (process64_spawn(SCHED_FAULT_PATH, "", 0, &pid) < 0) return 0;
+    if (pid == 0) return 0;
+
+    int code = process64_wait(pid);
+    // exec_fault_test.nex64 deliberately NULL-derefs; process64_fault_current()
+    // hardcodes exit_code -1 -- a DIFFERENT value than the success path's
+    // 42, proving exit status genuinely propagates rather than always
+    // reading back some fixed constant.
+    return code == -1;
+}
+
+static int test_pid_and_slot_reuse(void) {
+    uint32_t pid1 = 0, pid2 = 0;
+
+    if (process64_spawn(SCHED_WORKER_PATH, "", 0, &pid1) < 0) return 0;
+    process64_t* p1 = find_child(0, pid1);
+    if (!p1) return 0;
+    int slot1 = (int)(p1 - procs);
+    if (process64_wait(pid1) != 42) return 0;
+
+    if (process64_spawn(SCHED_WORKER_PATH, "", 0, &pid2) < 0) return 0;
+    process64_t* p2 = find_child(0, pid2);
+    if (!p2) return 0;
+    int slot2 = (int)(p2 - procs);
+    if (process64_wait(pid2) != 42) return 0;
+
+    // Pids are never numerically reused (a monotonic counter -- see
+    // process64_spawn); the underlying TABLE SLOT is what gets recycled.
+    return pid2 == pid1 + 1 && slot2 == slot1;
+}
+
+static int test_repeated_cycles_no_leak(void) {
+    physmem64_stats_t before, after;
+    physmem64_stats(&before);
+
+    for (int i = 0; i < 20; i++) {
+        uint32_t pid = 0;
+        if (process64_spawn(SCHED_WORKER_PATH, "", 0, &pid) < 0) return 0;
+        if (pid == 0) return 0;
+        if (process64_wait(pid) != 42) return 0;
+    }
+
+    physmem64_stats(&after);
+    return after.used_pages == before.used_pages && after.free_pages == before.free_pages;
+}
+
+#define PROCESS64_TEST(name, expr) do {          \
+    int _r = (expr);                             \
+    klog("process64_selftest: " name " ");       \
+    klog(_r ? "PASS\n" : "FAIL\n");              \
+    if (_r) pass++; else fail++;                 \
+} while (0)
+
+int process64_selftest(void) {
+    int pass = 0, fail = 0;
+    klog("process64_selftest: starting\n");
+
+    PROCESS64_TEST("single spawn/wait (also: exit status, one runnable)", test_single_spawn_wait());
+    PROCESS64_TEST("concurrent residency + preemption + isolation", test_concurrent_preemption_and_isolation());
+    PROCESS64_TEST("nested process creation", test_nested_spawn());
+    PROCESS64_TEST("exit status propagation (fault path)", test_exit_status_propagation());
+    PROCESS64_TEST("pid monotonic, slot reused", test_pid_and_slot_reuse());
+    PROCESS64_TEST("repeated spawn/wait cycles, no page leak", test_repeated_cycles_no_leak());
+
+    char passbuf[24], failbuf[24];
+    dec_to_str((uint64_t)pass, passbuf);
+    dec_to_str((uint64_t)fail, failbuf);
+    klog("process64_selftest: pass=");
+    klog(passbuf);
+    klog(" fail=");
+    klog(failbuf);
+    klog("\n");
+    return fail == 0;
 }

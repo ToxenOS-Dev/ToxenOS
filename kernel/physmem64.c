@@ -178,6 +178,26 @@ static uint64_t stat_mbinfo_bytes = 0;
 static uint64_t stat_fb_base = 0;
 static uint64_t stat_fb_bytes = 0;
 
+// Milestone 24: allocations/frees must not be interrupted and re-entered
+// by another scheduled context now that the timer can genuinely preempt
+// into a DIFFERENT process (or the kernel-task equivalent) mid-call.
+// Every current call site already runs with IF=0 regardless (int 0x80
+// and IRQ gates are interrupt gates, which hardware-clear IF on entry,
+// and this kernel is single-core, so there is nothing to protect
+// against yet in practice) -- this is explicit, load-bearing defense in
+// depth rather than a currently-observable bug, and is what a future
+// change that ever re-enables interrupts mid-syscall would actually
+// need to keep this allocator safe.
+static inline uint64_t physmem64_lock(void) {
+    uint64_t flags;
+    __asm__ volatile ("pushfq\n\tpop %0\n\tcli" : "=r"(flags) :: "memory");
+    return flags;
+}
+
+static inline void physmem64_unlock(uint64_t flags) {
+    if (flags & (1ULL << 9)) __asm__ volatile ("sti" ::: "memory");
+}
+
 static inline int bit_is_set(const uint8_t* bm, uint64_t i) { return (bm[i >> 3] >> (i & 7)) & 1; }
 static inline void bit_set(uint8_t* bm, uint64_t i)   { bm[i >> 3] |= (uint8_t)(1u << (i & 7)); }
 static inline void bit_clear(uint8_t* bm, uint64_t i) { bm[i >> 3] &= (uint8_t)~(1u << (i & 7)); }
@@ -386,6 +406,8 @@ void physmem64_init(uint64_t mb_info_addr, uint64_t fb_addr, uint64_t fb_size) {
 
 uint64_t physmem64_alloc_pages(uint64_t count) {
     if (count == 0) return 0;
+    uint64_t flags = physmem64_lock();
+
     for (int i = 0; i < num_regions; i++) {
         physmem64_region_t* r = &regions[i];
         if (r->free_count < count) continue;
@@ -403,8 +425,12 @@ uint64_t physmem64_alloc_pages(uint64_t count) {
         r->alloc_hint = (uint64_t)start + count;
         if (r->alloc_hint >= r->page_count) r->alloc_hint = 0;
 
-        return r->base + (uint64_t)start * 4096ULL;
+        uint64_t result = r->base + (uint64_t)start * 4096ULL;
+        physmem64_unlock(flags);
+        return result;
     }
+
+    physmem64_unlock(flags);
     return 0;
 }
 
@@ -414,29 +440,36 @@ uint64_t physmem64_alloc_page(void) {
 
 void physmem64_free_pages(uint64_t phys, uint64_t count) {
     if (count == 0) return;
+    uint64_t flags = physmem64_lock();
+
     if ((phys & 0xFFFULL) != 0) {
         klog("physmem64: free: address not page-aligned -- ignoring\n");
+        physmem64_unlock(flags);
         return;
     }
 
     physmem64_region_t* r = find_region(phys);
     if (!r) {
         klog("physmem64: free: address outside any managed region -- ignoring\n");
+        physmem64_unlock(flags);
         return;
     }
 
     uint64_t start = (phys - r->base) / 4096ULL;
     if (start + count > r->page_count) {
         klog("physmem64: free: range runs past the end of its region -- ignoring\n");
+        physmem64_unlock(flags);
         return;
     }
     if (start < r->bitmap_pages) {
         klog("physmem64: free: attempted to free allocator-internal memory -- ignoring\n");
+        physmem64_unlock(flags);
         return;
     }
     for (uint64_t k = 0; k < count; k++) {
         if (!bit_is_set(r->bitmap, start + k)) {
             klog("physmem64: free: double free (or partially-unallocated range) -- ignoring the whole call\n");
+            physmem64_unlock(flags);
             return;
         }
     }
@@ -444,6 +477,7 @@ void physmem64_free_pages(uint64_t phys, uint64_t count) {
     for (uint64_t k = 0; k < count; k++) bit_clear(r->bitmap, start + k);
     r->free_count += count;
     if (start < r->alloc_hint) r->alloc_hint = start;
+    physmem64_unlock(flags);
 }
 
 void physmem64_free_page(uint64_t phys) {

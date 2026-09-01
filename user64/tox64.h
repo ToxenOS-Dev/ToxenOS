@@ -79,19 +79,23 @@ static inline int64_t sys_stat(const char* path, uint64_t* size_out, int* is_dir
     return (int64_t)SYSCALL3(SYS64_STAT, path, size_out, is_dir_out);
 }
 
-// Synchronous -- by the time this returns, the child has already run to
-// completion (see kernel/syscall64.c's sys64_spawn). Returns the child's
-// pid on success, -1 on failure (wrong arch, missing file, etc.).
+// Milestone 24: asynchronous -- returns the child's pid as soon as it
+// has been loaded into its own address space and left runnable; the
+// child does not run during this call and is not guaranteed to have
+// made any progress by the time this returns (the scheduler picks it up
+// on a later tick). Returns -1 on failure (wrong arch, missing file,
+// etc.) -- no process is created in that case. Callers that want to run
+// something and see its result should always follow this with sys_wait.
 // Milestone 11: args is a single raw string the child can retrieve via
 // sys_get_args -- may be NULL, meaning "no args" (not real argv[]).
 static inline int64_t sys_spawn(const char* path, const char* args) {
     return (int64_t)SYSCALL2(SYS64_SPAWN, path, args);
 }
 
-// Retrieves the cached exit code of the most recently completed child
-// with this pid -- never actually blocks (there is nothing to block on
-// by the time spawn has already returned). Returns -1 if pid doesn't
-// match the last completed child.
+// Milestone 24: genuinely blocks the caller until `pid` -- which must be
+// one of this process's own children -- exits, then returns its real
+// exit code. Returns -1 if `pid` is not a matching child (including
+// after it has already been reaped by an earlier sys_wait call).
 static inline int64_t sys_wait(uint32_t pid) {
     return (int64_t)SYSCALL1(SYS64_WAIT, pid);
 }

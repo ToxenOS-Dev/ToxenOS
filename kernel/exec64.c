@@ -9,8 +9,18 @@
 // file format, hand paging64 one page at a time."
 //
 // Milestone 7: stops at "parsed, mapped" -- entering ring3 is
-// kernel/userproc64.c's job (it owns CR3 activation and the process's
+// kernel/process64.c's job (it owns CR3 activation and the process's
 // kernel stack/RSP0).
+//
+// Milestone 24: the file parse buffer is now kmalloc'd/kfree'd per call
+// instead of one static file-scope array. It was previously safe only
+// because process creation was strictly serialized (one process loaded,
+// run, and exited before the next started); now that multiple processes
+// can be genuinely resident and spawned independently, two overlapping
+// exec64_load calls would otherwise corrupt each other's parse. `g_max_end`
+// (the running "highest vaddr+memsz seen" accumulator) is threaded through
+// as an explicit out-parameter for the same reason, rather than kept as a
+// second shared global.
 #include <stdint.h>
 #include "../include/exec64.h"
 #include "../include/nex64.h"
@@ -19,28 +29,17 @@
 #include "../include/memmap64.h"
 #include "../include/paging64.h"
 #include "../include/physmem64.h"
+#include "../include/heap64.h"
 #include "../include/klog.h"
 
 #define EXEC64_FILE_MAX  (64u * 1024u)
 #define EXEC64_STACK_SLOT 511  // fixed -- segment slots must stay below this
-
-// Single shared parse scratch buffer. Safe only because process loading
-// is still strictly serialized (one process is created, loaded, run, and
-// exited/faulted before the next is ever started -- see
-// kernel/userproc64.c's userproc64_run). The day this kernel gains
-// concurrent process creation, this must become per-call (stack or
-// pool-allocated) -- it is NOT part of any process's live memory, just
-// transient parse state, but two overlapping exec64_load calls would
-// corrupt each other's parse here.
-static uint8_t file_buf[EXEC64_FILE_MAX];
 
 // Generic segment fields, normalized from either nex64_seg_t or
 // elf64_phdr_t before the shared mapping/copy logic below runs.
 typedef struct {
     uint64_t vaddr, offset, filesz, memsz, flags;
 } seg_t;
-
-static uint64_t g_max_end = 0;  // highest vaddr+memsz seen, for heap_start_out
 
 // Ensures every 4KB page covering [vaddr, vaddr+memsz) is mapped in the
 // process's own address space via paging64_map_user_page -- segments can
@@ -81,7 +80,8 @@ static void copy_segment_data(paging64_as_t* as, const seg_t* seg, const uint8_t
     }
 }
 
-static int load_segment(paging64_as_t* as, const seg_t* seg, const uint8_t* file_buf_base, uint64_t file_size) {
+static int load_segment(paging64_as_t* as, const seg_t* seg, const uint8_t* file_buf_base,
+                         uint64_t file_size, uint64_t* max_end) {
     if (seg->memsz == 0) return 0;
     if (seg->vaddr < USER64_ELF_BASE || seg->vaddr + seg->memsz > USER64_ELF_BASE + USER64_ELF_MAX_SIZE) {
         klog("exec64: segment vaddr outside the user region -- refusing to load\n");
@@ -100,11 +100,11 @@ static int load_segment(paging64_as_t* as, const seg_t* seg, const uint8_t* file
     copy_segment_data(as, seg, file_buf_base);
 
     uint64_t end = (seg->vaddr + seg->memsz + 0xFFFULL) & ~0xFFFULL;
-    if (end > g_max_end) g_max_end = end;
+    if (end > *max_end) *max_end = end;
     return 0;
 }
 
-static int finish_mapping(paging64_as_t* as, uint64_t entry, uint64_t* entry_out,
+static int finish_mapping(paging64_as_t* as, uint64_t entry, uint64_t max_end, uint64_t* entry_out,
                            uint64_t* stack_top_out, uint64_t* heap_start_out) {
     uint64_t stack_vaddr = USER64_ELF_BASE + (uint64_t)EXEC64_STACK_SLOT * 0x1000;
     if (paging64_map_user_page(as, stack_vaddr, 1) == 0) {
@@ -116,13 +116,13 @@ static int finish_mapping(paging64_as_t* as, uint64_t entry, uint64_t* entry_out
     *stack_top_out  = USER64_ELF_BASE + (uint64_t)(EXEC64_STACK_SLOT + 1) * 0x1000;
     // Heap plumbing only -- establishes where a future brk/sys_heap would
     // start; no pages are mapped here in Milestone 8.
-    *heap_start_out = g_max_end;
+    *heap_start_out = max_end;
     return 0;
 }
 
-static int load_nex64(paging64_as_t* as, uint32_t file_size, uint64_t* entry_out,
-                       uint64_t* stack_top_out, uint64_t* heap_start_out) {
-    nex64_header_t* nh = (nex64_header_t*)file_buf;
+static int load_nex64(paging64_as_t* as, const uint8_t* file_buf, uint32_t file_size,
+                       uint64_t* entry_out, uint64_t* stack_top_out, uint64_t* heap_start_out) {
+    const nex64_header_t* nh = (const nex64_header_t*)file_buf;
     if (file_size < sizeof(nex64_header_t)) {
         klog("exec64: file too small to be a NEX64 header\n");
         return -1;
@@ -137,19 +137,20 @@ static int load_nex64(paging64_as_t* as, uint32_t file_size, uint64_t* entry_out
         return -1;
     }
 
-    nex64_seg_t* segs = (nex64_seg_t*)(file_buf + sizeof(nex64_header_t));
+    uint64_t max_end = 0;
+    const nex64_seg_t* segs = (const nex64_seg_t*)(file_buf + sizeof(nex64_header_t));
     for (uint32_t i = 0; i < nh->seg_count; i++) {
         seg_t seg = { segs[i].vaddr, segs[i].offset, segs[i].filesz, segs[i].memsz, segs[i].flags };
-        if (load_segment(as, &seg, file_buf, file_size) < 0) return -1;
+        if (load_segment(as, &seg, file_buf, file_size, &max_end) < 0) return -1;
     }
 
     klog("exec64: NEX64 loaded\n");
-    return finish_mapping(as, nh->entry, entry_out, stack_top_out, heap_start_out);
+    return finish_mapping(as, nh->entry, max_end, entry_out, stack_top_out, heap_start_out);
 }
 
-static int load_elf64(paging64_as_t* as, uint32_t file_size, uint64_t* entry_out,
-                       uint64_t* stack_top_out, uint64_t* heap_start_out) {
-    elf64_header_t* eh = (elf64_header_t*)file_buf;
+static int load_elf64(paging64_as_t* as, const uint8_t* file_buf, uint32_t file_size,
+                       uint64_t* entry_out, uint64_t* stack_top_out, uint64_t* heap_start_out) {
+    const elf64_header_t* eh = (const elf64_header_t*)file_buf;
     if (file_size < sizeof(elf64_header_t)) {
         klog("exec64: file too small to be an ELF64 header\n");
         return -1;
@@ -159,29 +160,36 @@ static int load_elf64(paging64_as_t* as, uint32_t file_size, uint64_t* entry_out
         return -1;
     }
 
+    uint64_t max_end = 0;
     for (uint16_t i = 0; i < eh->phnum; i++) {
-        elf64_phdr_t* ph = (elf64_phdr_t*)(file_buf + eh->phoff + (uint64_t)i * eh->phentsize);
+        const elf64_phdr_t* ph = (const elf64_phdr_t*)(file_buf + eh->phoff + (uint64_t)i * eh->phentsize);
         if (ph->type != PT_LOAD64) continue;
         if (ph->memsz == 0) continue;
         if (ph->vaddr + ph->memsz <= USER64_ELF_BASE) continue;  // linker metadata below the user region
 
         seg_t seg = { ph->vaddr, ph->offset, ph->filesz, ph->memsz, ph->flags };
-        if (load_segment(as, &seg, file_buf, file_size) < 0) return -1;
+        if (load_segment(as, &seg, file_buf, file_size, &max_end) < 0) return -1;
     }
 
     klog("exec64: ELF64 loaded (fallback path)\n");
-    return finish_mapping(as, eh->entry, entry_out, stack_top_out, heap_start_out);
+    return finish_mapping(as, eh->entry, max_end, entry_out, stack_top_out, heap_start_out);
 }
 
 int exec64_load(paging64_as_t* as, const char* path, uint64_t* entry_out,
                  uint64_t* stack_top_out, uint64_t* heap_start_out) {
-    g_max_end = 0;
-
     uint64_t size;
     if (txfs64_stat(path, &size) < 0 || size == 0 || size > EXEC64_FILE_MAX) {
-        klog("exec64: file missing, empty, or too large for the static buffer: ");
+        klog("exec64: file missing, empty, or too large for the parse buffer: ");
         klog(path);
         klog("\n");
+        return -1;
+    }
+
+    // Milestone 24: a fresh buffer per call -- see the file header
+    // comment for why this can no longer be one shared static array.
+    uint8_t* file_buf = (uint8_t*)kmalloc(EXEC64_FILE_MAX);
+    if (!file_buf) {
+        klog("exec64: out of memory for parse buffer\n");
         return -1;
     }
 
@@ -190,6 +198,7 @@ int exec64_load(paging64_as_t* as, const char* path, uint64_t* entry_out,
         klog("exec64: open failed: ");
         klog(path);
         klog("\n");
+        kfree(file_buf);
         return -1;
     }
 
@@ -197,23 +206,30 @@ int exec64_load(paging64_as_t* as, const char* path, uint64_t* entry_out,
     txfs64_close(fd);
     if (n < 0 || (uint64_t)n != size) {
         klog("exec64: short read\n");
+        kfree(file_buf);
         return -1;
     }
 
     if (size < 4) {
         klog("exec64: file too small to identify\n");
+        kfree(file_buf);
         return -1;
     }
 
+    int result;
     uint32_t magic = *(uint32_t*)file_buf;
-    if (magic == NEX64_MAGIC) return load_nex64(as, (uint32_t)size, entry_out, stack_top_out, heap_start_out);
-
-    if (magic == ELF64_MAGIC && size >= sizeof(elf64_header_t)) {
-        elf64_header_t* eh = (elf64_header_t*)file_buf;
-        if (eh->bits == ELFCLASS64 && eh->endian == ELFDATA2LSB && eh->machine == EM_X86_64)
-            return load_elf64(as, (uint32_t)size, entry_out, stack_top_out, heap_start_out);
+    if (magic == NEX64_MAGIC) {
+        result = load_nex64(as, file_buf, (uint32_t)size, entry_out, stack_top_out, heap_start_out);
+    } else if (magic == ELF64_MAGIC && size >= sizeof(elf64_header_t) &&
+               ((const elf64_header_t*)file_buf)->bits == ELFCLASS64 &&
+               ((const elf64_header_t*)file_buf)->endian == ELFDATA2LSB &&
+               ((const elf64_header_t*)file_buf)->machine == EM_X86_64) {
+        result = load_elf64(as, file_buf, (uint32_t)size, entry_out, stack_top_out, heap_start_out);
+    } else {
+        klog("exec64: unrecognized format / wrong architecture -- refusing to load\n");
+        result = -1;
     }
 
-    klog("exec64: unrecognized format / wrong architecture -- refusing to load\n");
-    return -1;
+    kfree(file_buf);
+    return result;
 }

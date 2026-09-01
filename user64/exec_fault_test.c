@@ -1,7 +1,7 @@
 // ToxenOS/user64/exec_fault_test.c — Milestone 7: deliberate user-mode
 // page fault, to exercise the pid-aware fault termination path
 // (kernel/interrupt64.c's terminate_faulting_user_or_halt ->
-// userproc64_fault_current). More representative than another ud2/#UD
+// process64_fault_current). More representative than another ud2/#UD
 // test: page_fault64_handler's CR2/error-code decode already exists
 // and this proves it correctly attributes the fault to the right pid
 // and returns control to the kernel afterward instead of halting the

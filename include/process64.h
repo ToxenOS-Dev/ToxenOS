@@ -2,41 +2,113 @@
 #define PROCESS64_H
 
 #include <stdint.h>
+#include "paging64.h"
 
-// Milestone 3: kernel-task scheduler foundation. Every task runs in
-// ring 0, sharing the existing static Milestone-1 page tables — no
-// per-task address space, no TSS/IST, no ring3 yet (deferred to a
-// future Milestone 3B). See kernel/process64.c for the design notes.
+// Milestone 24: unified process model + preemptive scheduler.
+//
+// Replaces BOTH of the previous, separate models: Milestone 3's
+// task64_t (ring-0-only, no address space, cooperative-ish demo
+// scheduler) and Milestones 7-9's userproc64_t (real per-process
+// address spaces, but synchronous/run-to-completion -- sys_spawn
+// blocked the caller until the child finished, so only one user
+// process was ever resident at a time). There is now exactly one
+// process concept: real address space, real preemption, real
+// concurrency. See kernel/process64.c for the full design writeup.
+
+#define PROCESS64_MAX         8
+#define PROCESS64_KSTACK_SIZE (16u * 1024u)
+#define PROCESS64_MAX_FDS     4
+#define PROCESS64_ARGS_MAX    128
+#define PROCESS64_PATH_MAX    256
+
+// Every Nth timer tick invokes the scheduler (kernel/timer64.c calls
+// process64_tick()). The PIT is now reprogrammed to 100Hz
+// (timer64_init), so a divisor of 1 gives a genuine ~10ms quantum.
+#define PROCESS64_TICK_DIVISOR 1
 
 typedef enum {
-    TASK64_DEAD,    // unused slot — must be the zero value, since
-                    // tasks[] starts zero-initialized and an
-                    // accidentally-scheduled DEAD slot must never run
-    TASK64_READY,
-    TASK64_RUNNING,
-} task64_state_t;
+    PROCESS64_UNUSED,   // free slot -- must be the zero value (procs[] starts zeroed)
+    PROCESS64_READY,    // runnable, waiting for the scheduler to pick it
+    PROCESS64_RUNNING,  // currently on the CPU (at most one, single-core)
+    PROCESS64_BLOCKED,  // inside sys_wait(), waiting for waiting_for_pid to exit
+    PROCESS64_ZOMBIE,   // exited/faulted; exit_code valid; address space already
+                        // released; slot itself still held until the parent reaps it
+} process64_state_t;
 
 typedef struct {
-    uint64_t        rsp;         // the ONLY field context_switch64 touches
-    task64_state_t  state;
-    uint32_t        id;
-    const char*     name;        // debug/log only
-    uint8_t*        stack_base;
-    uint64_t        stack_size;
-} task64_t;
-
-#define MAX_TASKS64        4
-#define TASK64_STACK_SIZE  (16u * 1024u)
-
-// Every Nth timer tick triggers a scheduler decision (see
-// kernel/timer64.c). IRQ0 free-runs at the legacy ~18.2Hz (nothing
-// reprograms the PIT this milestone), so 4 gives a ~220ms quantum: slow
-// enough that each task's heartbeat prints in readable clusters, fast
-// enough to show many switches in a few seconds of runtime.
-#define SCHED64_TICK_DIVISOR 4
+    uint32_t            pid;
+    uint32_t            parent_pid;     // 0 = spawned directly by the kernel/idle context, not a real process
+    process64_state_t   state;
+    uint64_t            kernel_rsp;     // saved kernel stack pointer while NOT running -- see kernel/process64.c
+    uint8_t*            kernel_stack;   // this process's own dedicated RSP0 stack
+    uint64_t            kernel_stack_size;
+    paging64_as_t        as;            // this process's own address space
+    int                 exit_code;
+    uint32_t            waiting_for_pid; // valid while state == BLOCKED
+    uint64_t            heap_start, heap_end; // plumbing only, unused until Milestone 25's brk
+    int                 fds[PROCESS64_MAX_FDS];       // underlying txfs64 fd, or -1
+    char                args[PROCESS64_ARGS_MAX];     // copied BY VALUE at spawn time
+    char                path[PROCESS64_PATH_MAX];     // copied BY VALUE -- debug/diagnostics only
+} process64_t;
 
 void process64_init(void);
-void process64_start(void);     // captures the boot context, switches into Task A
-void scheduler64_tick(void);    // called from timer64_handler()
+
+// Loads `path` into a brand-new process (own address space, own kernel
+// stack), leaves it READY, and returns 0 with *pid_out set on success.
+// Returns -1 if the file failed to load (wrong arch, missing,
+// malformed) -- no process/slot is consumed in that case. Does NOT
+// run it and does NOT block -- the scheduler picks it up on a later
+// tick or reschedule point. `parent_pid` should be an existing
+// process's pid (real spawns), or 0 for a process spawned directly by
+// kernel/debug code with no user-space parent (only process64_wait()
+// called with no current process can ever reap such a process).
+int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uint32_t* pid_out);
+
+// The current process, or NULL if the CPU is running the idle/boot
+// context (no tracked process -- e.g. kernel_main64's own idle loop).
+process64_t* process64_current(void);
+int process64_current_pid(void); // -1 if idle
+
+// Called by sys64_exit. Marks the current process ZOMBIE, releases its
+// address space and file descriptors (safe -- CR3 has already moved
+// off its tables by the time this runs; see kernel/process64.c), wakes
+// its parent if blocked specifically on this pid, and switches to
+// whatever the scheduler picks next. Never returns.
+void process64_exit_current(int code);
+
+// Called by the fault path (kernel/interrupt64.c). Identical to
+// process64_exit_current(-1) except it logs differently. Never returns.
+void process64_fault_current(void);
+
+// Waits for the process `pid`, which must be a child of the caller
+// (process64_current(), or -- if called with no current process, i.e.
+// from kernel/debug code -- a process spawned with parent_pid == 0).
+// If `pid` has not exited yet, blocks the caller (a real process blocks
+// via the scheduler; the no-current-process case polls via hlt) until
+// it does. Reaps it (frees the table slot) before returning its exit
+// code. Returns -1 if `pid` is not a matching child.
+int process64_wait(uint32_t pid);
+
+// Called from the timer ISR (kernel/timer64.c) every
+// PROCESS64_TICK_DIVISOR ticks. If another process is READY, preempts
+// whatever is currently running (or idle) in favor of it round-robin;
+// otherwise leaves the current context running untouched (does NOT
+// switch to idle just because nothing ELSE happens to be ready).
+void process64_tick(void);
+
+// ── Diagnostics ──────────────────────────────────────────────────────
+// Logs the scheduler's current state and every non-UNUSED process's
+// pid/state/parent/CR3/path via klog(). For interactive debugging only.
+void process64_dump(void);
+
+// Runs the Milestone 24 self-test suite against real NEX64 test
+// binaries (multiple resident processes, preemption, isolation, async
+// spawn, blocking wait + wakeup, exit status propagation, pid/slot
+// reuse, teardown + page reclamation, nested spawn, single/no runnable
+// process). Logs each case's result and a final pass/fail tally via
+// klog(). Returns 1 if every case passed. Must be run from the
+// kernel/idle context (before spawning init64), not from within a
+// process.
+int process64_selftest(void);
 
 #endif // PROCESS64_H

@@ -12,15 +12,15 @@
 #include "../include/idt64.h"
 #include "../include/irq64.h"
 #include "../include/pic.h"
-#include "../include/process64.h"
 #include "../include/tss64.h"
 #include "../include/ring3_test64.h"
 #include "../include/ata64.h"
 #include "../include/txfs64.h"
 #include "../include/exec64.h"
-#include "../include/userproc64.h"
+#include "../include/process64.h"
 #include "../include/physmem64.h"
 #include "../include/heap64.h"
+#include "../include/lapic64.h"
 #include "../include/console64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
@@ -41,6 +41,16 @@
 // boot proceeds with an untouched physmem64 allocator either way.
 // #define HEAP64_RUN_TESTS 1
 
+// Define to run the Milestone 24 process/scheduler self-test suite
+// after TxFS64 is mounted (it spawns real NEX64 test binaries from
+// disk) and interrupts are enabled (it needs the timer to actually
+// fire to prove preemption/blocking). Requires
+// `make populate PACKAGE_DEBUG64=1` -- the sched_worker64 and
+// exec_fault_test fixtures it spawns are not on the disk image by
+// default. Runs before the normal boot path spawns init64, and fully
+// reaps everything it creates on a pass.
+// #define PROCESS64_RUN_TESTS 1
+
 // Define to run the Milestone 3B hardcoded ring3 smoke test in place of
 // the normal interactive boot below -- the two are mutually exclusive
 // (the ring3 test halts forever once it catches the deliberate #UD, so
@@ -55,14 +65,19 @@
 // Milestone 16: the exec64_test*/exec64_fault_test/etc. fixtures this
 // loads are no longer on the disk image by default -- rebuild it with
 // `make populate PACKAGE_DEBUG64=1` before re-enabling this flag, or
-// userproc64_run below will fail to find the binary.
+// process64_spawn below will fail to find the binary.
+// Milestone 24: exec64_test.nex64 now runs via process64_spawn +
+// process64_wait (blocking, from kernel/idle context) instead of the
+// old synchronous userproc64_run -- behaviorally identical from this
+// file's point of view (still prints two distinct incrementing pids).
 // #define EXEC64_TEST_RUN 1
 
-// Define to stop right after the boot diagnostics below and fall into
-// the Milestone 3A kernel-task scheduler WITHOUT ever launching
-// userland -- this was the default before Milestone 13. Useful for
-// debugging boot/IDT/TSS/ATA/TxFS bring-up by itself, without a
-// process/shell on top, while keeping the diagnostics on screen.
+// Define to stop right after the boot diagnostics below WITHOUT ever
+// launching userland -- useful for debugging boot/IDT/TSS/ATA/TxFS
+// bring-up by itself, without a process/shell on top, while keeping the
+// diagnostics on screen. Milestone 24: the old Milestone 3A ring-0 task
+// demo this used to fall into is gone (there is only one process model
+// now); this just idles forever with zero processes instead.
 // #define KERNEL64_DIAG_ONLY 1
 
 // Milestone 13: the NORMAL boot path (none of the debug flags above
@@ -75,6 +90,7 @@
 // on a clean shell prompt instead of a wall of boot text.
 
 extern void timer64_handler(void);
+extern void timer64_init(uint32_t frequency);
 extern void keyboard64_handler(void);
 
 _Static_assert(sizeof(void*) == 8, "kernel64.c must be compiled as 64-bit (-m64)");
@@ -253,13 +269,26 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     // instead of returning here.
 #endif
 
+    // Milestone 24: must come before pic_remap()/sti -- on real UEFI/APIC
+    // hardware the 8259 PIC's output often isn't wired to the CPU by
+    // default, so without this, no IRQ (timer or keyboard) would ever
+    // arrive after `sti`. QEMU's default machine leaves PIC routing
+    // intact regardless, so this has no observable effect there.
+    lapic64_virtual_wire_init();
+
     pic_remap();
     irq64_register(0, timer64_handler);
     irq64_register(1, keyboard64_handler);
     out_line("PIC remapped, IRQ0/IRQ1 registered");
 
+    // Milestone 24: 100Hz instead of the legacy unprogrammed ~18.2Hz --
+    // see include/process64.h's PROCESS64_TICK_DIVISOR for how this
+    // maps to the scheduler's quantum.
+    timer64_init(100);
+    process64_init();
+
     __asm__ volatile ("sti");
-    out_line("Interrupts enabled (sti) -- starting kernel tasks");
+    out_line("Interrupts enabled (sti) -- timer at 100Hz, scheduler ready");
 
     ata64_init();
     out_line("ATA64 initialized");
@@ -282,6 +311,10 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
         out_line("TxFS64 mount failed (bad magic)");
     }
 
+#ifdef PROCESS64_RUN_TESTS
+    klog_hex("process64_selftest: all passed = ", (uint32_t)process64_selftest());
+#endif
+
 #if defined(RING3_TEST64_RUN)
     out_line("Entering ring3 syscall test (iretq) -- expect sys64_write/sys64_exit next");
     ring3_test64_start();
@@ -297,28 +330,26 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     // the Milestone 8/9 plans' test matrices. Run TWICE in a row: proves
     // two distinct, incrementing real pids, and that the second run's
     // address space is freshly created/torn down rather than erroring on
-    // stale state left over from the first.
+    // stale state left over from the first. Spawn+wait from the
+    // kernel/idle context (parent_pid 0) since kernel_main64 is not
+    // itself a tracked process.
     const char* exec64_test_path = "/exec64_test.nex64";
     for (int run = 1; run <= 2; run++) {
-        out_kv("userproc64: run #", (uint64_t)run);
+        out_kv("process64: run #", (uint64_t)run);
         klog(exec64_test_path);
         klog("\n");
-        int code = userproc64_run(exec64_test_path, 0, 0);
-        out_kv("userproc64: returned to kernel, exit code: ", (uint64_t)(int64_t)code);
+        uint32_t pid = 0;
+        int code = -1;
+        if (process64_spawn(exec64_test_path, 0, 0, &pid) == 0) {
+            code = process64_wait(pid);
+        }
+        out_kv("process64: returned to kernel, exit code: ", (uint64_t)(int64_t)code);
     }
-    process64_init();
-    process64_start();
-    // Reached only if the scheduler later switches back to the boot
-    // task -- proves control genuinely returned to the kernel (it
-    // doesn't matter whether userproc64_run succeeded or failed; either
-    // way execution falls through here).
+    // Falls into the idle loop below with zero processes resident --
+    // proves control genuinely returned to the kernel either way.
 #elif defined(KERNEL64_DIAG_ONLY)
-    process64_init();
-    process64_start();
-    // Reached only if the scheduler later switches back to the boot
-    // task (e.g. if both demo tasks ever died) — falls into the same
-    // idle loop as before. Diagnostics stay on screen -- no userland,
-    // no VGA clear.
+    // Falls straight into the idle loop below -- no userland, no VGA
+    // clear, diagnostics stay on screen.
 #else
     // Milestone 13: normal interactive boot. One last line on the
     // diagnostics screen, then clear it before init64/shell64 ever get
@@ -327,15 +358,24 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     // logged to klog/serial regardless).
     out_line("Launching ToxenOS64 interactive shell...");
     console64_clear();
-    int init_code = userproc64_run("/init64.nex64", 0, 0);
-    klog_hex("userproc64: init64 returned to kernel, exit code: ", (uint32_t)(int64_t)init_code);
-    process64_init();
-    process64_start();
-    // Reached only if the scheduler later switches back to the boot
-    // task -- proves control genuinely returned to the kernel.
+    uint32_t init_pid = 0;
+    if (process64_spawn("/init64.nex64", 0, 0, &init_pid) < 0) {
+        klog("process64: failed to spawn /init64.nex64\n");
+    }
+    // Does NOT block here -- init64 is left READY, and the very next
+    // timer tick's process64_tick() (or the keyboard IRQ, indirectly)
+    // picks it up. Falling through to the idle loop below IS the
+    // scheduler's fallback path, not a "nothing left to do" halt: the
+    // moment any process is READY, the next tick switches away from it.
 #endif
 
+    // Milestone 24: this is no longer just an inert parking loop -- it
+    // is the scheduler's own idle path, resumed via context_switch64
+    // (kernel/process64.c) whenever no real process is READY. `sti`
+    // ensures the next timer/keyboard IRQ actually arrives; `hlt` avoids
+    // busy-looping while genuinely idle (e.g. between the last process
+    // exiting and the machine being told to do anything else).
     for (;;) {
-        __asm__ volatile("hlt");
+        __asm__ volatile("sti; hlt");
     }
 }

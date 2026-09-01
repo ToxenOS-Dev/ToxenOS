@@ -407,9 +407,9 @@ static void run_line(char* line) {
     int64_t pid = resolve_and_spawn(cmd, args);
     if (pid < 0) return;  // already reported
 
-    // sys_spawn is fully synchronous -- the child has already run to
-    // completion by the time it returns (Milestone 9). The exit code is
-    // already known; sys_wait just retrieves the cached result.
+    // Milestone 24: sys_spawn returns immediately (the child runs
+    // concurrently); sys_wait is what actually blocks until it finishes
+    // and hands back its real exit code.
 #ifdef SHELL64_DEBUG
     int64_t code = sys_wait((uint32_t)pid);
     put("[pid "); put_int(pid); put("] exited with code "); put_int(code); put("\n");

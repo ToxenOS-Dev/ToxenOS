@@ -32,7 +32,7 @@ void _start(void) {
     int n = itoa10(sum, msg + prefix_len);
 
     // Milestone 7: also print the real pid (not a fake hardcoded
-    // constant) so userproc64's tracking is directly checkable from the
+    // constant) so process64's tracking is directly checkable from the
     // serial log -- this is the same _start every NEX64/ELF64 build of
     // this program runs, no separate "process-aware" variant needed.
     const char* pid_label = ", pid=";

@@ -41,9 +41,4 @@ void tss64_init(void);
 // happened to be RSP0 last.
 void tss64_set_kernel_stack(uint64_t rsp0);
 
-// Milestone 9: reads the current RSP0 -- needed so a nested
-// userproc64_run (sys_spawn) can restore the caller's own kernel stack
-// after the nested child's own kernel stack is torn down.
-uint64_t tss64_get_kernel_stack(void);
-
 #endif // TSS64_H

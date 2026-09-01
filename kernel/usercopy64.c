@@ -4,11 +4,11 @@
 // through the now-confirmed-valid user pointer is safe).
 #include <stdint.h>
 #include "../include/usercopy64.h"
-#include "../include/userproc64.h"
+#include "../include/process64.h"
 #include "../include/paging64.h"
 
 int copy_from_user64(void* kdst, uint64_t uaddr, uint64_t len) {
-    userproc64_t* cur = userproc64_current();
+    process64_t* cur = process64_current();
     if (!cur) return -1;
     if (paging64_check_user_range(&cur->as, uaddr, len, 0) < 0) return -1;
 
@@ -19,7 +19,7 @@ int copy_from_user64(void* kdst, uint64_t uaddr, uint64_t len) {
 }
 
 int copy_to_user64(uint64_t udst, const void* ksrc, uint64_t len) {
-    userproc64_t* cur = userproc64_current();
+    process64_t* cur = process64_current();
     if (!cur) return -1;
     if (paging64_check_user_range(&cur->as, udst, len, 1) < 0) return -1;
 
@@ -30,7 +30,7 @@ int copy_to_user64(uint64_t udst, const void* ksrc, uint64_t len) {
 }
 
 int copy_user_cstr64(char* kdst, uint64_t uaddr, uint64_t kdst_max, uint64_t* len_out) {
-    userproc64_t* cur = userproc64_current();
+    process64_t* cur = process64_current();
     if (!cur || kdst_max == 0) return -1;
 
     uint64_t checked_page = ~0ULL;  // sentinel -- no page validated yet

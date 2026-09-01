@@ -9,7 +9,7 @@
 // kernel/paging64.c, not a shared global page table) -- parses the file,
 // maps its segments and a user stack page via paging64_map_user_page.
 // Does NOT activate the address space (no CR3 write) or enter ring3
-// itself -- that's kernel/userproc64.c's job, which owns CR3 activation
+// itself -- that's kernel/process64.c's job, which owns CR3 activation
 // and the process's kernel stack/RSP0. On success, writes the program's
 // entry point, computed user stack top, and a heap_start hint (highest
 // loaded vaddr, page-rounded -- no pages mapped there, just plumbing for

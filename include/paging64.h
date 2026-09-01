@@ -57,7 +57,7 @@ void paging64_destroy_as(paging64_as_t* as);
 int paging64_check_user_range(const paging64_as_t* as, uint64_t vaddr,
                                uint64_t len, int need_write);
 
-// Reads CR3. Needed so a nested userproc64_run (Milestone 9's sys_spawn)
+// Reads CR3. Needed so a nested process64_spawn+process64_wait (Milestone 9's sys_spawn)
 // can restore exactly whatever address space was active before IT was
 // called, rather than unconditionally the boot pml4.
 uint64_t paging64_current_cr3(void);

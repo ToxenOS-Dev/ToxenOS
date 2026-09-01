@@ -241,7 +241,6 @@ kernel64:
 	nasm -f elf64 kernel/isr64.asm         -o build/isr64.o
 	nasm -f elf64 kernel/switch64.asm      -o build/switch64.o
 	nasm -f elf64 kernel/ring3_test64.asm  -o build/ring3_test64_asm.o
-	nasm -f elf64 kernel/userproc64.asm    -o build/userproc64_asm.o
 	# Milestone 5: ring3 syscall test stub -- flat binary, embedded as a
 	# blob the same way the 32-bit Makefile embeds init.elf/shell.nex.
 	nasm -f bin kernel/ring3_syscall_stub64.asm -o build/ring3_syscall_stub64.bin
@@ -266,20 +265,19 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/fbterm64.c     -o build/fbterm64.o
 	gcc $(KFLAGS64) -c kernel/console64.c    -o build/console64.o
 	gcc $(KFLAGS64) -c kernel/exec64.c       -o build/exec64.o
-	gcc $(KFLAGS64) -c kernel/userproc64.c   -o build/userproc64.o
 	gcc $(KFLAGS64) -c kernel/physmem64.c    -o build/physmem64.o
 	gcc $(KFLAGS64) -c kernel/paging64.c     -o build/paging64.o
 	gcc $(KFLAGS64) -c kernel/usercopy64.c   -o build/usercopy64.o
 	gcc $(KFLAGS64) -c kernel/heap64.c       -o build/heap64.o
+	gcc $(KFLAGS64) -c kernel/lapic64.c      -o build/lapic64.o
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
 		build/boot64.o build/isr64.o build/switch64.o build/kernel64.o \
 		build/klog64.o build/idt64.o build/interrupt64.o build/irq64.o \
 		build/timer64.o build/keyboard64.o build/keyboard_buffer64.o build/pic64.o build/process64.o \
 		build/tss64.o build/ring3_test64.o build/ring3_test64_asm.o \
 		build/ata64.o build/txfs64.o build/syscall64.o build/exec64.o \
-		build/userproc64.o build/userproc64_asm.o \
 		build/physmem64.o build/paging64.o build/usercopy64.o \
-		build/heap64.o \
+		build/heap64.o build/lapic64.o \
 		build/vgaterm64.o build/fbterm64.o build/console64.o \
 		build/ring3_syscall_stub64_blob.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin
@@ -386,6 +384,8 @@ user64: tools/elf2nex64
 	tools/elf2nex64 build/user64/exec_isolation_test.elf64 build/user64/exec_isolation_test.nex64
 	gcc $(UFLAGS64) user64/exec_badptr_test.c -o build/user64/exec_badptr_test.elf64
 	tools/elf2nex64 build/user64/exec_badptr_test.elf64 build/user64/exec_badptr_test.nex64
+	gcc $(UFLAGS64) user64/sched_worker64.c -o build/user64/sched_worker64.elf64
+	tools/elf2nex64 build/user64/sched_worker64.elf64 build/user64/sched_worker64.nex64
 	gcc $(UFLAGS64) user64/init64.c -o build/user64/init64.elf64
 	tools/elf2nex64 build/user64/init64.elf64 build/user64/init64.nex64
 	gcc $(UFLAGS64) user64/shell64.c -o build/user64/shell64.elf64
@@ -485,19 +485,21 @@ populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 	tools/txfs_write build/fs.img build/user64/init64.nex64 /init64.nex64
 	# Milestone 10: ToxenOS64's first interactive shell.
 	tools/txfs_write build/fs.img build/user64/shell64.nex64 /shell64.nex64
-	# Milestone 16: the four 64-bit debug/test fixtures below are no
-	# longer on the disk image by default -- they're root-level clutter
-	# with zero relevance to normal boot, only ever consumed by
-	# kernel/kernel64.c's EXEC64_TEST_RUN and user64/init64.c's
-	# INIT64_TEST_MODE debug flags (both off by default). Pass
-	# PACKAGE_DEBUG64=1 to re-include them, e.g. when re-enabling either
-	# debug flag for testing.
+	# Milestone 16: the 64-bit debug/test fixtures below are no longer on
+	# the disk image by default -- they're root-level clutter with zero
+	# relevance to normal boot, only ever consumed by kernel/kernel64.c's
+	# EXEC64_TEST_RUN/PROCESS64_RUN_TESTS and user64/init64.c's
+	# INIT64_TEST_MODE debug flags (all off by default). Pass
+	# PACKAGE_DEBUG64=1 to re-include them, e.g. when re-enabling any of
+	# those debug flags for testing. sched_worker64.nex64 (Milestone 24)
+	# is also spawnable interactively from the shell once packaged this way.
 	if [ "$(PACKAGE_DEBUG64)" = "1" ]; then \
 		tools/txfs_write build/fs.img build/user64/exec_test.nex64 /exec64_test.nex64; \
 		tools/txfs_write build/fs.img build/user64/exec_test.elf64 /exec64_test.elf64; \
 		tools/txfs_write build/fs.img build/user64/exec_fault_test.nex64 /exec64_fault_test.nex64; \
 		tools/txfs_write build/fs.img build/user64/exec_isolation_test.nex64 /exec64_isolation_test.nex64; \
 		tools/txfs_write build/fs.img build/user64/exec_badptr_test.nex64 /exec64_badptr_test.nex64; \
+		tools/txfs_write build/fs.img build/user64/sched_worker64.nex64 /sched_worker64.nex64; \
 	fi
 	# 32-bit root boot files (not in BSM -- the 32-bit kernel loads
 	# /init.nex and /shell.nex directly from the TxFS root).

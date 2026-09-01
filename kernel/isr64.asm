@@ -85,6 +85,29 @@ extern irq64_dispatch
     iretq
 %endmacro
 
+; Milestone 24: reusable resume point for the process scheduler
+; (kernel/process64.c). A process that is not currently running always
+; has its kernel stack arranged as [6 callee-saved slots][return address
+; = this label][a trapframe64_t] -- real (if it was preempted mid-flight,
+; the CPU/COMMON_TAIL built it for real) or fake (if it has never run
+; yet, kernel/process64.c constructs one by hand with the same layout).
+; context_switch64 (kernel/switch64.asm), reused unchanged for process
+; switches, pops the 6 callee-saved registers and then `ret`s into
+; exactly this label, which is simply COMMON_TAIL's tail half pulled out
+; into its own callable target: reload the user data selectors (ring3
+; code cannot use a DPL=0 selector; harmless/idempotent if they were
+; already the user selectors from a previous entry), restore every GPR,
+; discard the vector/error_code placeholders, and iretq into ring3.
+USER_DATA64_SEL_RESUME equ 0x20
+global process64_resume_trapframe
+process64_resume_trapframe:
+    mov ax, USER_DATA64_SEL_RESUME | 3
+    mov ds, ax
+    mov es, ax
+    POP_GPRS
+    add rsp, 16          ; discard vector + error_code
+    iretq
+
 ; Exceptions that do NOT push a CPU error code: push a fake zero so every
 ; vector presents the same uniform frame layout.
 %macro ISR64_NOERR 1

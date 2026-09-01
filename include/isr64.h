@@ -34,6 +34,13 @@ extern void irq64_12(void), irq64_13(void), irq64_14(void), irq64_15(void);
 
 extern void isr64_default(void);
 
+// Milestone 24: reusable "resume a suspended or brand-new process"
+// target -- see kernel/isr64.asm and kernel/process64.c. Never called
+// directly from C; only ever reached via context_switch64's `ret`
+// popping this address off a process's own kernel stack. Declared here
+// solely so kernel/process64.c can take its address.
+extern void process64_resume_trapframe(void);
+
 // Syscall gate (vector 128 / int 0x80). DPL=3 in its IDT entry lets ring3
 // invoke it directly; see kernel/idt64.c and kernel/interrupt64.c.
 extern void isr64_128(void);

@@ -4,15 +4,21 @@
 // same POP_GPRS/iretq return to ring3 afterward.
 //
 // Milestone 7: process-aware. sys64_exit/sys64_getpid now go through
-// kernel/userproc64.c's real process tracking instead of a hardcoded
+// kernel/process64.c's real process tracking instead of a hardcoded
 // halt / hardcoded pid=1.
 //
 // Milestone 9: first userland file/process API (open/read/close/stat/
 // spawn/wait), all pointer args going through kernel/usercopy64.c's
 // validated copy helpers instead of trusting a raw user pointer.
+//
+// Milestone 24: sys64_spawn/sys64_wait are no longer synchronous --
+// spawn creates a process and returns its pid immediately (the child
+// runs concurrently, picked up by the scheduler), and wait genuinely
+// blocks the caller (kernel/process64.c's process64_wait) until the
+// target child exits, rather than retrieving an already-known result.
 #include <stdint.h>
 #include "../include/syscall64.h"
-#include "../include/userproc64.h"
+#include "../include/process64.h"
 #include "../include/usercopy64.h"
 #include "../include/txfs64.h"
 #include "../include/keyboard_buffer64.h"
@@ -22,13 +28,13 @@
 #define SYS64_WRITE_MAX 256
 #define SYS64_READ_MAX  1024
 #define SYS64_PATH_MAX  256
-#define SYS64_ARGS_MAX  USERPROC64_ARGS_MAX
+#define SYS64_ARGS_MAX  PROCESS64_ARGS_MAX
 
-// Deliberately does NOT gate on userproc64_current() the way every other
+// Deliberately does NOT gate on process64_current() the way every other
 // Milestone 9 syscall does: writing to the kernel log has no
 // process-state dependency, and the still-independently-working
 // Milestone 3B/5 RING3_TEST64_RUN stub calls this exact syscall without
-// ever going through userproc64_run (no tracked process at all) -- that
+// ever going through process64_spawn (no tracked process at all) -- that
 // path must keep producing its original output untouched. When there
 // IS a tracked process, the pointer is validated like every other
 // syscall; the untracked-stub fallback keeps the old direct-copy
@@ -38,7 +44,7 @@ static uint64_t sys64_write(const char* buf, uint64_t len) {
     if (len > SYS64_WRITE_MAX) len = SYS64_WRITE_MAX;
     char tmp[SYS64_WRITE_MAX + 1];
 
-    if (userproc64_current()) {
+    if (process64_current()) {
         if (copy_from_user64(tmp, (uint64_t)buf, len) < 0) return (uint64_t)-1;
     } else {
         for (uint64_t i = 0; i < len; i++) tmp[i] = buf[i];
@@ -54,23 +60,23 @@ static uint64_t sys64_write(const char* buf, uint64_t len) {
 }
 
 static void sys64_exit(int code) {
-    userproc64_exit_current(code);  // never returns
+    process64_exit_current(code);  // never returns
 }
 
 static uint64_t sys64_getpid(void) {
-    int pid = userproc64_current_pid();
+    int pid = process64_current_pid();
     return (pid < 0) ? (uint64_t)-1 : (uint64_t)pid;
 }
 
 static uint64_t sys64_open(uint64_t path_ptr) {
-    userproc64_t* cur = userproc64_current();
+    process64_t* cur = process64_current();
     if (!cur) return (uint64_t)-1;
 
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
 
     int slot = -1;
-    for (int i = 0; i < USERPROC64_MAX_FDS; i++) {
+    for (int i = 0; i < PROCESS64_MAX_FDS; i++) {
         if (cur->fds[i] < 0) { slot = i; break; }
     }
     if (slot < 0) return (uint64_t)-1;
@@ -83,9 +89,9 @@ static uint64_t sys64_open(uint64_t path_ptr) {
 }
 
 static uint64_t sys64_read(int pfd, uint64_t buf_ptr, uint64_t len) {
-    userproc64_t* cur = userproc64_current();
+    process64_t* cur = process64_current();
     if (!cur) return (uint64_t)-1;
-    if (pfd < 0 || pfd >= USERPROC64_MAX_FDS || cur->fds[pfd] < 0) return (uint64_t)-1;
+    if (pfd < 0 || pfd >= PROCESS64_MAX_FDS || cur->fds[pfd] < 0) return (uint64_t)-1;
 
     if (len > SYS64_READ_MAX) len = SYS64_READ_MAX;
     uint8_t kbuf[SYS64_READ_MAX];
@@ -96,9 +102,9 @@ static uint64_t sys64_read(int pfd, uint64_t buf_ptr, uint64_t len) {
 }
 
 static uint64_t sys64_close(int pfd) {
-    userproc64_t* cur = userproc64_current();
+    process64_t* cur = process64_current();
     if (!cur) return (uint64_t)-1;
-    if (pfd < 0 || pfd >= USERPROC64_MAX_FDS || cur->fds[pfd] < 0) return (uint64_t)-1;
+    if (pfd < 0 || pfd >= PROCESS64_MAX_FDS || cur->fds[pfd] < 0) return (uint64_t)-1;
 
     txfs64_close(cur->fds[pfd]);
     cur->fds[pfd] = -1;
@@ -106,7 +112,7 @@ static uint64_t sys64_close(int pfd) {
 }
 
 static uint64_t sys64_stat(uint64_t path_ptr, uint64_t size_out_ptr, uint64_t type_out_ptr) {
-    if (!userproc64_current()) return (uint64_t)-1;
+    if (!process64_current()) return (uint64_t)-1;
 
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
@@ -124,7 +130,7 @@ static uint64_t sys64_stat(uint64_t path_ptr, uint64_t size_out_ptr, uint64_t ty
 // every other M9 file syscall. out_ptr must point at a user buffer of
 // at least 256 bytes (txfs64_readdir's own contract).
 static uint64_t sys64_readdir(uint64_t path_ptr, uint64_t out_ptr, uint32_t index) {
-    if (!userproc64_current()) return (uint64_t)-1;
+    if (!process64_current()) return (uint64_t)-1;
 
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
@@ -138,13 +144,12 @@ static uint64_t sys64_readdir(uint64_t path_ptr, uint64_t out_ptr, uint32_t inde
     return 0;
 }
 
-// Synchronous: by the time this returns, the child has already run to
-// completion (kernel/userproc64.c's userproc64_run is fully blocking --
-// no concurrent scheduling of multiple user processes exists yet). The
-// exit code is therefore already known and stashed on the PARENT for
-// sys64_wait to retrieve, rather than anything actually blocking.
+// Milestone 24: no longer synchronous -- creates the child process (its
+// own address space, its own kernel stack) and returns its pid as soon
+// as loading succeeds. The child does not run during this call at all;
+// it is left READY for the scheduler to pick up on a later tick.
 static uint64_t sys64_spawn(uint64_t path_ptr, uint64_t args_ptr) {
-    userproc64_t* parent = userproc64_current();
+    process64_t* parent = process64_current();
     if (!parent) return (uint64_t)-1;
 
     char path[SYS64_PATH_MAX];
@@ -155,22 +160,20 @@ static uint64_t sys64_spawn(uint64_t path_ptr, uint64_t args_ptr) {
     if (args_ptr && copy_user_cstr64(args, args_ptr, sizeof(args), 0) < 0) return (uint64_t)-1;
 
     uint32_t child_pid = 0;
-    int exit_code = userproc64_run(path, &child_pid, args);
-    if (child_pid == 0) return (uint64_t)-1;  // load failed -- no process created
-
-    parent->last_child_pid      = child_pid;
-    parent->last_child_exit_code = exit_code;
-    parent->has_child_result     = 1;
+    if (process64_spawn(path, args, parent->pid, &child_pid) < 0) return (uint64_t)-1;
     return (uint64_t)child_pid;
 }
 
+// Milestone 24: genuinely blocks the caller (kernel/process64.c's
+// process64_wait, via the scheduler) until `pid` -- which must be one
+// of this process's own children -- actually exits, then reaps it and
+// returns its real exit code.
 static uint64_t sys64_wait(uint32_t pid) {
-    userproc64_t* cur = userproc64_current();
+    process64_t* cur = process64_current();
     if (!cur) return (uint64_t)-1;
-    if (!cur->has_child_result || cur->last_child_pid != pid) return (uint64_t)-1;
 
-    cur->has_child_result = 0;
-    return (uint64_t)(int64_t)cur->last_child_exit_code;
+    int code = process64_wait(pid);
+    return (uint64_t)(int64_t)code;
 }
 
 // Milestone 10: non-blocking by design -- see keyboard_buffer64.h for
@@ -198,23 +201,23 @@ static uint64_t sys64_setcolor(uint8_t color) {
 }
 
 // Milestone 11: retrieves the single raw argument string sys_spawn
-// stashed on this process at creation time (see userproc64_run/
-// copy_args). Truncates to max_len if the caller's buffer is smaller
+// stashed on this process at creation time (see process64_spawn's
+// copy_str). Truncates to max_len if the caller's buffer is smaller
 // than the stored args -- never overruns the user buffer either way,
 // since copy_to_user64 itself validates it first.
 static uint64_t sys64_get_args(uint64_t buf_ptr, uint64_t max_len) {
-    userproc64_t* cur = userproc64_current();
+    process64_t* cur = process64_current();
     if (!cur) return (uint64_t)-1;
     if (max_len == 0) return (uint64_t)-1;
 
     uint64_t len = 0;
-    while (cur->args[len] && len < (uint64_t)USERPROC64_ARGS_MAX - 1) len++;
+    while (cur->args[len] && len < (uint64_t)PROCESS64_ARGS_MAX - 1) len++;
     if (len > max_len - 1) len = max_len - 1;  // truncate to fit the caller's buffer
 
     // Truncating cur->args[] directly would cut it off mid-string without
     // a NUL where we clamped -- build the (possibly shorter) terminated
     // copy here instead, then copy that out.
-    char tmp[USERPROC64_ARGS_MAX];
+    char tmp[PROCESS64_ARGS_MAX];
     for (uint64_t i = 0; i < len; i++) tmp[i] = cur->args[i];
     tmp[len] = 0;
 
@@ -230,8 +233,8 @@ static uint64_t sys64_get_args(uint64_t buf_ptr, uint64_t max_len) {
 // prefix itself) is refused with return value -2 so callers can print a
 // distinct "path is protected" error instead of a generic failure.
 //
-// Note: exec64 loader messages ("exec64: NEX64 loaded"), userproc64 lifecycle
-// messages ("userproc64: starting..."), and timer heartbeats go through
+// Note: exec64 loader messages ("exec64: NEX64 loaded"), process64 lifecycle
+// messages ("process64: spawned..."), and timer heartbeats go through
 // klog() which writes to the serial ring buffer ONLY -- never to vgaterm64.
 // The VGA user-facing shell already stays clean without any additional gating
 // on the kernel write path.
@@ -277,7 +280,7 @@ static int sys64_is_protected(const char* path) {
 #define SYS64_WRITE_FILE_MAX 4096  // max content per write call this milestone
 
 static uint64_t sys64_mkdir(uint64_t path_ptr) {
-    if (!userproc64_current()) return (uint64_t)-1;
+    if (!process64_current()) return (uint64_t)-1;
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
     if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
@@ -285,7 +288,7 @@ static uint64_t sys64_mkdir(uint64_t path_ptr) {
 }
 
 static uint64_t sys64_mkfile(uint64_t path_ptr) {
-    if (!userproc64_current()) return (uint64_t)-1;
+    if (!process64_current()) return (uint64_t)-1;
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
     if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
@@ -293,7 +296,7 @@ static uint64_t sys64_mkfile(uint64_t path_ptr) {
 }
 
 static uint64_t sys64_write_file(uint64_t path_ptr, uint64_t data_ptr, uint64_t len) {
-    if (!userproc64_current()) return (uint64_t)-1;
+    if (!process64_current()) return (uint64_t)-1;
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
     if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
@@ -304,7 +307,7 @@ static uint64_t sys64_write_file(uint64_t path_ptr, uint64_t data_ptr, uint64_t 
 }
 
 static uint64_t sys64_delete(uint64_t path_ptr) {
-    if (!userproc64_current()) return (uint64_t)-1;
+    if (!process64_current()) return (uint64_t)-1;
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
     if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
@@ -318,7 +321,7 @@ static uint64_t sys64_delete(uint64_t path_ptr) {
 }
 
 static uint64_t sys64_rmdir(uint64_t path_ptr) {
-    if (!userproc64_current()) return (uint64_t)-1;
+    if (!process64_current()) return (uint64_t)-1;
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
     if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
@@ -326,7 +329,7 @@ static uint64_t sys64_rmdir(uint64_t path_ptr) {
 }
 
 static uint64_t sys64_rename(uint64_t src_ptr, uint64_t dest_ptr) {
-    if (!userproc64_current()) return (uint64_t)-1;
+    if (!process64_current()) return (uint64_t)-1;
     char src[SYS64_PATH_MAX], dest[SYS64_PATH_MAX];
     if (copy_user_cstr64(src,  src_ptr,  sizeof(src),  0) < 0) return (uint64_t)-1;
     if (copy_user_cstr64(dest, dest_ptr, sizeof(dest),  0) < 0) return (uint64_t)-1;

@@ -14,4 +14,14 @@ int  ata64_read(uint32_t lba, uint8_t* buf, uint32_t sectors);
 // Milestone 19: write path (mirrors read; blocks/sectors same layout).
 int  ata64_write(uint32_t lba, const uint8_t* buf, uint32_t sectors);
 
+// Milestone 28: registers this driver as a kernel/blockdev64.c device
+// named "ata0" -- the fallback/reference block device, kept working
+// unconditionally alongside whatever AHCI/NVMe/VirtIO controllers PCI
+// enumeration finds (or doesn't). Issues IDENTIFY DEVICE (0xEC) to
+// learn real 28-bit LBA capacity (word 60/61) rather than reporting a
+// guess; returns 0 on success, or -1 (no master drive present, or the
+// name is somehow already registered). Safe to call even with no drive
+// attached -- just doesn't register anything.
+int ata64_register_blockdev(void);
+
 #endif // ATA64_H

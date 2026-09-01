@@ -26,6 +26,11 @@
 #include "../include/console64.h"
 #include "../include/pipe64.h"
 #include "../include/shm64.h"
+#include "../include/blockdev64.h"
+#include "../include/pci64.h"
+#include "../include/ahci64.h"
+#include "../include/nvme64.h"
+#include "../include/virtio_blk64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
@@ -83,6 +88,12 @@
 // -- same timing requirements as PROCESS64_RUN_TESTS -- requires
 // `make populate PACKAGE_DEBUG64=1` for vfs_test64.nex64.
 // #define VFS64_RUN_TESTS 1
+
+// Define to log full PCI enumeration and block-device registry
+// diagnostics (kernel/pci64.c's pci64_dump(), kernel/blockdev64.c's
+// blockdev64_dump()) right after storage drivers initialize --
+// verbose, development use only, never needed for normal boot.
+// #define STORAGE64_DUMP 1
 
 // Define to run the Milestone 3B hardcoded ring3 smoke test in place of
 // the normal interactive boot below -- the two are mutually exclusive
@@ -323,8 +334,34 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     __asm__ volatile ("sti");
     out_line("Interrupts enabled (sti) -- timer at 100Hz, scheduler ready");
 
+    // Milestone 28: PCI enumeration and every storage driver's MMIO
+    // mapping/DMA setup MUST happen here, strictly before the first
+    // process64_spawn() call below -- see physmem64_map_mmio()'s own
+    // ordering requirement (paging64_create_as() copies the shared
+    // direct-map entries into each new process's page tables BY VALUE
+    // at creation time, not by reference, so a process created before a
+    // given MMIO mapping exists would never see it).
+    //
+    // Registration order (AHCI/NVMe/VirtIO-blk via PCI, then ATA last)
+    // is also the order kernel/vfs64.c's root-device selection tries
+    // devices in -- ATA is deliberately tried last: it is the universal
+    // legacy fallback (always at a fixed ISA port, needs no PCI
+    // enumeration to find), so if a PCI storage controller's disk is
+    // what actually has the TxFS64 filesystem on it, that is preferred
+    // over an unrelated ATA drive coincidentally also present.
+    pci64_enumerate();
+    ahci64_init();
+    nvme64_init();
+    virtio_blk64_init();
+
     ata64_init();
-    out_line("ATA64 initialized");
+    ata64_register_blockdev();
+    out_line("Storage drivers initialized");
+
+#ifdef STORAGE64_DUMP
+    pci64_dump();
+    blockdev64_dump();
+#endif
 
     if (vfs64_init_root_txfs() == 0) {
         out_line("TxFS64 mounted");

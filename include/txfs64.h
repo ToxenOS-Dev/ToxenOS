@@ -2,6 +2,7 @@
 #define TXFS64_H
 
 #include <stdint.h>
+#include "blockdev64.h"
 
 // TxFS subset for the x86_64 kernel. On-disk structs below are
 // duplicated from include/txfs.h (NOT included directly, since txfs.h
@@ -73,9 +74,18 @@ typedef struct {
     char     name[256];
 } __attribute__((packed)) txfs64_dirent_t;
 
-// 0 on success (valid TXFS64_MAGIC found at the hardcoded LBA-10240
-// partition offset), -1 on bad magic.
-int txfs64_mount(void);
+// Milestone 28: validates `dev` as this TxFS64 instance's backing
+// block device -- reads its superblock (at the hardcoded LBA-10240
+// partition offset, 512-byte LBA units -- see include/blockdev64.h's
+// sector-size contract) and checks TXFS64_MAGIC. On success, `dev`
+// becomes the device every subsequent txfs64_* call reads/writes
+// through; on failure, whatever was mounted before (if anything) is
+// left unchanged, so a caller can safely try several candidate devices
+// in turn (see kernel/vfs64.c's vfs64_init_root_txfs(), which is where
+// that root-device-selection policy actually lives -- this function
+// only ever validates ONE given device, it does not search). Returns 0
+// or -1 (NULL dev, or bad magic).
+int txfs64_mount(blockdev64_t* dev);
 
 // Resolves an ALREADY-NORMALIZED absolute path ("/a/b/c" or "/") to an
 // inode number plus its cached size/type. Path syntax normalization

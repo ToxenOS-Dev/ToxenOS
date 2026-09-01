@@ -8,6 +8,7 @@
 // that would never execute.
 #include <stdint.h>
 #include "../include/ata64.h"
+#include "../include/blockdev64.h"
 
 #define ATA_DATA        0x1F0
 #define ATA_ERROR       0x1F1
@@ -27,6 +28,7 @@
 #define ATA_CMD_FLUSH   0xE7
 
 #define ATA_SEL_MASTER  0xE0
+#define ATA_CMD_IDENTIFY 0xEC
 
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0,%1" :: "a"(val), "Nd"(port));
@@ -168,4 +170,56 @@ int ata64_write(uint32_t lba, const uint8_t* buf, uint32_t sectors) {
     outb(ATA_DRIVE_SEL, ATA_SEL_MASTER);
     ata64_delay();
     return (int)sectors;
+}
+
+// ── Milestone 28: blockdev64 registration ───────────────────────────
+// IDENTIFY DEVICE (0xEC) -- LBA28 total sector count lives in words
+// 60 (low 16 bits) and 61 (high 16 bits). Returns 0 if no master drive
+// responds (status reads back 0, or DRQ never sets).
+static uint32_t ata64_identify_sectors(void) {
+    outb(ATA_DRIVE_SEL, ATA_SEL_MASTER);
+    ata64_delay();
+    outb(ATA_SECTOR_CNT, 0);
+    outb(ATA_LBA_LO, 0);
+    outb(ATA_LBA_MID, 0);
+    outb(ATA_LBA_HI, 0);
+    outb(ATA_STATUS, ATA_CMD_IDENTIFY);
+    ata64_delay();
+
+    uint8_t st = inb(ATA_STATUS);
+    if (st == 0) return 0; // no drive on this channel
+
+    if (ata64_wait_drq() < 0) return 0;
+
+    uint16_t id[256];
+    for (int i = 0; i < 256; i++) id[i] = inw(ATA_DATA);
+    return ((uint32_t)id[61] << 16) | id[60];
+}
+
+static int ata64_bd_read(blockdev64_t* dev, uint64_t lba, uint8_t* buf, uint32_t count) {
+    (void)dev;
+    return ata64_read((uint32_t)lba, buf, count);
+}
+static int ata64_bd_write(blockdev64_t* dev, uint64_t lba, const uint8_t* buf, uint32_t count) {
+    (void)dev;
+    return ata64_write((uint32_t)lba, buf, count);
+}
+static const blockdev64_ops_t ata64_bd_ops = {
+    .read  = ata64_bd_read,
+    .write = ata64_bd_write,
+};
+static blockdev64_t g_ata64_blockdev;
+
+int ata64_register_blockdev(void) {
+    uint32_t sectors = ata64_identify_sectors();
+    if (sectors == 0) return -1;
+
+    g_ata64_blockdev.name[0] = 'a'; g_ata64_blockdev.name[1] = 't'; g_ata64_blockdev.name[2] = 'a';
+    g_ata64_blockdev.name[3] = '0'; g_ata64_blockdev.name[4] = 0;
+    g_ata64_blockdev.type                = BLOCKDEV64_TYPE_ATA;
+    g_ata64_blockdev.logical_block_size  = 512;
+    g_ata64_blockdev.block_count         = sectors;
+    g_ata64_blockdev.ops                 = &ata64_bd_ops;
+    g_ata64_blockdev.driver_data         = 0;
+    return blockdev64_register(&g_ata64_blockdev);
 }

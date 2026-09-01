@@ -82,6 +82,11 @@ extern uint8_t kernel64_end;
 #define PT_PRESENT  0x001ULL
 #define PT_WRITABLE 0x002ULL
 #define PT_HUGE_2M  0x080ULL
+// Milestone 28: same bit lapic64.c's own one-off MMIO mapping already
+// uses for the LAPIC's page (PAGE_CD, bit 4) -- disables caching for a
+// PD-level 2MB huge-page entry. Never set for the RAM-backed direct-map
+// entries ensure_directmap() populates during physmem64_init().
+#define PT_CACHE_DISABLE 0x010ULL
 
 // pdpt_high[510] is the kernel image (boot64.asm/paging64.c); slots
 // 0..509 are free for this file to claim as the physical direct map.
@@ -108,9 +113,13 @@ static uint64_t bootstrap_alloc_page(void) {
 // present PD entry in the direct-map window, allocating new PD tables
 // (from the bootstrap pool) only for 1GB chunks not already mapped.
 // Idempotent -- safe to call again for a range that overlaps one
-// already mapped. Returns 0 on success, -1 if the direct map's 510GB
-// budget or the bootstrap pool is exhausted.
-static int ensure_directmap(uint64_t phys_start, uint64_t phys_end) {
+// already mapped (an already-present entry's cache attribute is left
+// as it was, see physmem64_map_mmio's doc comment). Returns 0 on
+// success, -1 if the direct map's 510GB budget or the bootstrap pool is
+// exhausted. `cache_disable` selects PT_CACHE_DISABLE on newly-created
+// entries only -- physmem64_init's own RAM-mapping calls always pass 0;
+// Milestone 28's physmem64_map_mmio passes 1.
+static int ensure_directmap_ex(uint64_t phys_start, uint64_t phys_end, int cache_disable) {
     uint64_t start = phys_start & ~0x1FFFFFULL;
     uint64_t end   = (phys_end + 0x1FFFFFULL) & ~0x1FFFFFULL;
     int touched = 0;
@@ -120,7 +129,7 @@ static int ensure_directmap(uint64_t phys_start, uint64_t phys_end) {
         uint32_t pd_idx = (uint32_t)((addr >> 21) & 0x1FF);
 
         if (gb_idx >= DIRECTMAP_PDPT_LIMIT) {
-            klog("physmem64: direct map exhausted -- RAM extends beyond the supported window\n");
+            klog("physmem64: direct map exhausted -- range extends beyond the supported window\n");
             return -1;
         }
 
@@ -135,7 +144,9 @@ static int ensure_directmap(uint64_t phys_start, uint64_t phys_end) {
 
         uint64_t* pd_ptr = (uint64_t*)phys_to_ptr(pdpt_high[gb_idx] & ~0xFFFULL);
         if (!(pd_ptr[pd_idx] & PT_PRESENT)) {
-            pd_ptr[pd_idx] = addr | PT_PRESENT | PT_WRITABLE | PT_HUGE_2M;
+            uint64_t flags = PT_PRESENT | PT_WRITABLE | PT_HUGE_2M;
+            if (cache_disable) flags |= PT_CACHE_DISABLE;
+            pd_ptr[pd_idx] = addr | flags;
             touched = 1;
         }
     }
@@ -148,12 +159,22 @@ static int ensure_directmap(uint64_t phys_start, uint64_t phys_end) {
     return 0;
 }
 
+static int ensure_directmap(uint64_t phys_start, uint64_t phys_end) {
+    return ensure_directmap_ex(phys_start, phys_end, 0);
+}
+
 void* physmem64_to_virt(uint64_t phys) {
     return (void*)(phys + PHYS_DIRECTMAP_BASE);
 }
 
 uint64_t physmem64_to_phys(const void* virt) {
     return (uint64_t)(uintptr_t)virt - PHYS_DIRECTMAP_BASE;
+}
+
+void* physmem64_map_mmio(uint64_t phys, uint64_t size) {
+    if (size == 0) return 0;
+    if (ensure_directmap_ex(phys, phys + size, 1) < 0) return 0;
+    return physmem64_to_virt(phys);
 }
 
 // ── Regions ──────────────────────────────────────────────────────────

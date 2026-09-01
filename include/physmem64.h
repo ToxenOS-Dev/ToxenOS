@@ -55,6 +55,36 @@ void     physmem64_free_pages(uint64_t phys, uint64_t count);
 void*    physmem64_to_virt(uint64_t phys);
 uint64_t physmem64_to_phys(const void* virt);
 
+// Milestone 28: maps a physical DEVICE MMIO range (NOT RAM this
+// allocator owns -- a PCI BAR target, typically) into the SAME direct-
+// map window physmem64_to_virt() covers for RAM, but with cache-disable
+// set on its page-table entries, appropriate for device registers
+// (unlike RAM, where a cached stale read/write of an MMIO doorbell or
+// status register would be a correctness bug, not just a performance
+// one). Returns a kernel virtual pointer usable immediately, or NULL on
+// failure (direct-map/bootstrap-pool exhaustion). Idempotent per
+// 2MB-aligned chunk. Never allocates from or frees back to the page
+// allocator -- the range is owned by hardware, not by physmem64.
+//
+// MUST be called before the first process64_spawn() -- paging64_create_
+// as() copies the shared pdpt_high[] direct-map entries into every new
+// process's own page tables BY VALUE at creation time, not by
+// reference, so a process created before a given MMIO mapping exists
+// would never see it. In practice this means all PCI/storage-driver
+// probing must happen during kernel64.c's boot sequence, before
+// init64.nex64 (or any other process) is spawned -- exactly where
+// physmem64_init/ata64_init/txfs64_mount already run today.
+//
+// Limitation: if the requested range falls within a 2MB chunk ALREADY
+// mapped for something else (e.g. overlapping a RAM region this
+// allocator manages), the existing entry's cache attributes are left
+// unchanged rather than upgraded to cache-disabled -- real hardware
+// could theoretically place an MMIO BAR close enough to RAM to share a
+// 2MB-aligned chunk, but this does not happen on any QEMU machine type
+// this kernel targets. Documented, not solved, this milestone (would
+// require per-4KB-page, not per-2MB-chunk, ownership tracking).
+void* physmem64_map_mmio(uint64_t phys, uint64_t size);
+
 // Diagnostic-only: is every byte of [phys, phys+len) currently part of
 // a region this allocator manages (whether that memory happens to be
 // free or allocated right now)? Returns 0 for anything permanently

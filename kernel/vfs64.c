@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "../include/vfs64.h"
 #include "../include/txfs64.h"
+#include "../include/blockdev64.h"
 #include "../include/heap64.h"
 #include "../include/process64.h"
 #include "../include/klog.h"
@@ -68,9 +69,29 @@ static const vfs64_backend_t txfs64_backend = {
     .write_file  = txfs64_write_file,
 };
 
+// Milestone 28: root-device selection policy -- with no partition
+// table and no notion of a preferred/boot device yet (see the
+// Milestone 28 summary for why that's an explicit, documented scope
+// boundary), the simplest safe policy is "the first registered block
+// device whose superblock actually validates as TxFS64". This can
+// never accidentally mount a random non-TxFS64 disk (txfs64_mount()
+// checks the on-disk magic before committing to a device and leaves
+// any previous state untouched on failure), and correctly finds
+// whichever backend this milestone's storage drivers happened to
+// register first -- ATA, AHCI, NVMe, or VirtIO-blk, in registration
+// order (kernel/kernel64.c's boot sequence decides that order; see its
+// own comment for why ATA is tried last as the universal fallback).
 int vfs64_init_root_txfs(void) {
-    if (txfs64_mount() < 0) return -1;
-    return vfs64_mount("/", &txfs64_backend);
+    for (blockdev64_t* d = blockdev64_iter(0); d; d = blockdev64_iter(d)) {
+        if (txfs64_mount(d) == 0) {
+            klog("vfs64: root TxFS64 device: ");
+            klog(d->name);
+            klog("\n");
+            return vfs64_mount("/", &txfs64_backend);
+        }
+    }
+    klog("vfs64: no registered block device has a valid TxFS64 superblock\n");
+    return -1;
 }
 
 // ── Path normalization ──────────────────────────────────────────────

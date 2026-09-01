@@ -274,6 +274,12 @@ kernel64:
 	gcc $(KFLAGS64) -c kernel/pipe64.c       -o build/pipe64.o
 	gcc $(KFLAGS64) -c kernel/shm64.c        -o build/shm64.o
 	gcc $(KFLAGS64) -c kernel/vfs64.c        -o build/vfs64.o
+	gcc $(KFLAGS64) -c kernel/kmutex64.c     -o build/kmutex64.o
+	gcc $(KFLAGS64) -c kernel/blockdev64.c   -o build/blockdev64.o
+	gcc $(KFLAGS64) -c kernel/pci64.c        -o build/pci64.o
+	gcc $(KFLAGS64) -c kernel/ahci64.c       -o build/ahci64.o
+	gcc $(KFLAGS64) -c kernel/nvme64.c       -o build/nvme64.o
+	gcc $(KFLAGS64) -c kernel/virtio_blk64.c -o build/virtio_blk64.o
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
 		build/boot64.o build/isr64.o build/switch64.o build/kernel64.o \
 		build/klog64.o build/idt64.o build/interrupt64.o build/irq64.o \
@@ -283,6 +289,8 @@ kernel64:
 		build/physmem64.o build/paging64.o build/usercopy64.o \
 		build/heap64.o build/lapic64.o build/uservm64.o \
 		build/pipe64.o build/shm64.o build/vfs64.o \
+		build/kmutex64.o build/blockdev64.o build/pci64.o \
+		build/ahci64.o build/nvme64.o build/virtio_blk64.o \
 		build/vgaterm64.o build/fbterm64.o build/console64.o \
 		build/ring3_syscall_stub64_blob.o
 	cp build/kernel64.bin iso64/boot/kernel64.bin
@@ -304,6 +312,32 @@ kernel64:
 run64: kernel64 user populate
 	qemu-system-x86_64 -m 256 -boot order=d -cdrom build/ToxenOS64.iso \
 		-drive file=build/disk.img,format=raw,if=ide \
+		-serial stdio
+
+# Milestone 28: the same build/disk.img (still legacy IDE for run64
+# above), attached through each of the new storage backends instead --
+# proves kernel/blockdev64.c's root-device selection and every driver's
+# real read/write path against the EXACT SAME on-disk TxFS64 filesystem,
+# not a separately-created one. AHCI has no prior QEMU run target in
+# this project; the ich9-ahci device syntax below is the standard QEMU
+# idiom (a SATA controller PCI function, with an ide-hd "disk" attached
+# to its first port).
+run64-ahci: kernel64 user populate
+	qemu-system-x86_64 -m 256 -boot order=d -cdrom build/ToxenOS64.iso \
+		-device ich9-ahci,id=ahci0 \
+		-drive file=build/disk.img,format=raw,if=none,id=ahcidisk0 \
+		-device ide-hd,drive=ahcidisk0,bus=ahci0.0 \
+		-serial stdio
+
+run64-virtio: kernel64 user populate
+	qemu-system-x86_64 -m 256 -boot order=d -cdrom build/ToxenOS64.iso \
+		-drive file=build/disk.img,format=raw,if=virtio \
+		-serial stdio
+
+run64-nvme: kernel64 user populate
+	qemu-system-x86_64 -m 256 -boot order=d -cdrom build/ToxenOS64.iso \
+		-drive file=build/disk.img,format=raw,if=none,id=nvmedisk0 \
+		-device nvme,drive=nvmedisk0,serial=toxnvme0 \
 		-serial stdio
 
 run: all build/target.img

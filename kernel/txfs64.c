@@ -1,8 +1,10 @@
 // kernel/txfs64.c — TxFS block/inode/directory manipulation for the
 // 64-bit kernel, keyed by inode number. Read-path logic mirrors
 // kernel/txfs.c's txfs_read_inode/txfs_get_block/txfs_dir_lookup/
-// txfs_lookup line-for-line, renamed and pointed at ata64_read instead
-// of ata_read.
+// txfs_lookup line-for-line, renamed and originally pointed at
+// ata64_read instead of ata_read. Milestone 28: block I/O now goes
+// through the generic blockdev64_read/write API (see g_dev below)
+// instead of calling ata64_read/ata64_write directly.
 //
 // Milestone 27: this file is no longer a self-contained "open files by
 // path, read through an internal fd table" API -- kernel/vfs64.c now
@@ -12,26 +14,52 @@
 // table entirely), and mounting this backend at "/". Everything here
 // operates directly on inode numbers.
 //
-// Also new this milestone: txfs64_write_at can allocate a single
+// Milestone 27 also added: txfs64_write_at can allocate a single
 // indirect block (and its 1024-pointer table) on demand, so files can
 // grow past the old 12-direct-block/48KB ceiling -- see its own header
 // comment for exactly how far and its rollback guarantee -- and
 // txfs64_free_all_blocks reclaims direct/indirect/double-indirect/
-// triple-indirect blocks alike on truncate/unlink/rmdir (previously
-// only the 12 direct blocks were ever freed, leaking anything beyond
-// them). Every public entry point is now wrapped in a pushfq/cli/
-// restore-flags critical section (kernel/physmem64.c's own pattern) so
-// the shared block_buf/sb scratch state is safe even though syscalls
-// run with interrupts enabled and can be preempted mid-operation by
-// another process's own filesystem call.
+// triple-indirect blocks alike on truncate/unlink/rmdir.
+//
+// Milestone 28: no longer talks to kernel/ata64.c directly -- every
+// disk access goes through kernel/blockdev64.c's generic block-device
+// API, against whichever device kernel/vfs64.c's root-selection policy
+// chose (see txfs64_mount() below; the actual selection loop lives in
+// vfs64_init_root_txfs()). Locking also changed: a plain cli-based
+// critical section (Milestone 27's choice) held interrupts disabled
+// across the ENTIRE protected operation, INCLUDING the disk I/O itself
+// -- fine for a handful of ATA PIO port reads, but AHCI/NVMe/VirtIO-blk
+// poll loops can legitimately take much longer, and holding cli that
+// long would stall the timer/keyboard system-wide. Every public entry
+// point below now takes kernel/kmutex64.c's sleeping mutex instead --
+// interrupts stay enabled the whole time, so the calling process
+// genuinely scheduler-blocks (or simply proceeds, if uncontended)
+// rather than the WHOLE SYSTEM pausing. kmutex64_t is not reentrant
+// (unlike cli, which nests safely), so the one case that used to call
+// one locking function from inside another (txfs64_rmdir calling
+// txfs64_dir_is_empty) is refactored into a private "_nolock" helper --
+// see txfs64_dir_is_empty_nolock below.
 #include <stdint.h>
 #include "../include/txfs64.h"
-#include "../include/ata64.h"
+#include "../include/blockdev64.h"
+#include "../include/kmutex64.h"
 #include "../include/heap64.h"
 #include "../include/klog.h"
 
 #define TXFS64_PTRS_PER_BLOCK (TXFS64_BLOCK_SIZE / 4)
-#define TXFS64_LBA_OFFSET     10240u  // GPT layout TxFS partition start
+#define TXFS64_LBA_OFFSET     10240u  // GPT layout TxFS partition start (512-byte LBA units)
+
+// The block device this TxFS64 instance talks to -- set once by
+// txfs64_mount() (called by vfs64_init_root_txfs()'s root-selection
+// loop), never changed afterward. A single mounted instance, matching
+// this kernel's current lack of a partition table/multi-mount
+// namespace (see the Milestone 28 summary for why that's an explicit,
+// documented scope boundary, not an oversight) -- but every read/write
+// already goes through this pointer rather than a hardcoded driver
+// call, so a future multi-instance TxFS64 would only need to stop
+// using a single file-scope global here, not restructure the block
+// I/O itself.
+static blockdev64_t* g_dev = 0;
 
 static void txfs64_strcpy(char* dst, const char* src, int max) {
     int i = 0;
@@ -49,26 +77,29 @@ static int txfs64_strcmp(const char* a, const char* b) {
 static uint8_t block_buf[TXFS64_BLOCK_SIZE];
 static txfs64_superblock_t sb;
 
-// Milestone 27: protects block_buf/sb (and every disk access made
+// Milestone 28: protects block_buf/sb (and every disk access made
 // while a public entry point below runs) against being preempted mid-
-// operation by another process's own filesystem call -- single-core,
-// so a plain cli/sti pair (nestable: each lock/unlock only restores
-// whatever IF state IT observed, so a public function calling another
-// public function, e.g. txfs64_rmdir calling txfs64_dir_is_empty, is
-// safe) is sufficient, matching the same discipline already used by
-// physmem64.c/heap64.c/process64.c/pipe64.c/shm64.c.
+// operation by another process's own filesystem call -- a real
+// kernel/kmutex64.c sleeping mutex, not a cli-based critical section
+// (see the file header comment for why). The `flags`-shaped return/
+// parameter is kept only so the ~30 existing call sites below (all of
+// which just do `uint64_t flags = txfs64_lock(); ...; txfs64_unlock
+// (flags);`) needed no changes beyond this one function's internals.
+static kmutex64_t g_txfs_mutex; // BSS-zeroed: locked=0, exactly kmutex64_init's own effect
+
 static inline uint64_t txfs64_lock(void) {
-    uint64_t flags;
-    __asm__ volatile ("pushfq\n\tpop %0\n\tcli" : "=r"(flags) :: "memory");
-    return flags;
+    kmutex64_lock(&g_txfs_mutex);
+    return 0;
 }
 static inline void txfs64_unlock(uint64_t flags) {
-    if (flags & (1ULL << 9)) __asm__ volatile ("sti" ::: "memory");
+    (void)flags;
+    kmutex64_unlock(&g_txfs_mutex);
 }
 
 static int txfs64_read_block(uint32_t block, uint8_t* buf) {
     uint32_t sectors = TXFS64_BLOCK_SIZE / 512;
-    return ata64_read(TXFS64_LBA_OFFSET + block * sectors, buf, sectors);
+    if (!g_dev) return -1;
+    return blockdev64_read(g_dev, (uint64_t)TXFS64_LBA_OFFSET + (uint64_t)block * sectors, buf, sectors);
 }
 
 static int txfs64_read_super(void) {
@@ -188,9 +219,14 @@ static int txfs64_resolve_path(const char* path) {
     return cur;
 }
 
-int txfs64_mount(void) {
+int txfs64_mount(blockdev64_t* dev) {
+    if (!dev) return -1;
+
     uint64_t flags = txfs64_lock();
+    blockdev64_t* saved = g_dev;
+    g_dev = dev;
     int r = txfs64_read_super();
+    if (r < 0) g_dev = saved; // not a valid TxFS64 device -- don't commit to it
     txfs64_unlock(flags);
     return r;
 }
@@ -296,7 +332,8 @@ static uint8_t txfs64_zero_block[TXFS64_BLOCK_SIZE];
 
 static int txfs64_write_block(uint32_t block, const uint8_t* buf) {
     uint32_t sectors = TXFS64_BLOCK_SIZE / 512;
-    return ata64_write(TXFS64_LBA_OFFSET + block * sectors, buf, sectors);
+    if (!g_dev) return -1;
+    return blockdev64_write(g_dev, (uint64_t)TXFS64_LBA_OFFSET + (uint64_t)block * sectors, buf, sectors);
 }
 
 // Write superblock back after modifying free_blocks or free_inodes.
@@ -882,14 +919,18 @@ int txfs64_rename(const char* src_path, const char* dest_path) {
     return 0;
 }
 
-int txfs64_dir_is_empty(const char* path) {
-    uint64_t flags = txfs64_lock();
+// Milestone 28: split into a private, lock-free core (called by
+// txfs64_rmdir, which is ALREADY holding the lock -- kmutex64_t is not
+// reentrant, unlike the cli-based critical section this replaced,
+// which tolerated a public function calling another public function)
+// and a public locking wrapper (used everywhere else).
+static int txfs64_dir_is_empty_nolock(const char* path) {
     int inum = txfs64_resolve_path(path);
-    if (inum < 0) { txfs64_unlock(flags); return 0; }
+    if (inum < 0) return 0;
 
     txfs64_inode_t inode;
-    if (txfs64_read_inode((uint32_t)inum, &inode) < 0) { txfs64_unlock(flags); return 0; }
-    if (((inode.mode >> 12) & 0xF) != TXFS64_TYPE_DIR) { txfs64_unlock(flags); return 0; }
+    if (txfs64_read_inode((uint32_t)inum, &inode) < 0) return 0;
+    if (((inode.mode >> 12) & 0xF) != TXFS64_TYPE_DIR) return 0;
 
     uint8_t buf[TXFS64_BLOCK_SIZE];
     uint32_t total = (uint32_t)(inode.size / sizeof(txfs64_dirent_t));
@@ -903,12 +944,18 @@ int txfs64_dir_is_empty(const char* path) {
         if (in_this > per) in_this = per;
         for (uint32_t i = 0; i < in_this; i++) {
             txfs64_dirent_t* de = (txfs64_dirent_t*)(buf + i * sizeof(txfs64_dirent_t));
-            if (de->inode) { txfs64_unlock(flags); return 0; }  // found live entry
+            if (de->inode) return 0;  // found live entry
         }
         checked += in_this;
     }
-    txfs64_unlock(flags);
     return 1;  // no live entries found
+}
+
+int txfs64_dir_is_empty(const char* path) {
+    uint64_t flags = txfs64_lock();
+    int r = txfs64_dir_is_empty_nolock(path);
+    txfs64_unlock(flags);
+    return r;
 }
 
 int txfs64_rmdir(const char* path) {
@@ -917,7 +964,7 @@ int txfs64_rmdir(const char* path) {
     if (txfs64_split_path(path, parent, sizeof(parent), leaf, sizeof(leaf)) < 0) { txfs64_unlock(flags); return -1; }
     if (!leaf[0]) { txfs64_unlock(flags); return -1; }
 
-    if (!txfs64_dir_is_empty(path)) { txfs64_unlock(flags); return -1; }  // refuse non-empty (nested lock -- safe, see header note)
+    if (!txfs64_dir_is_empty_nolock(path)) { txfs64_unlock(flags); return -1; }  // refuse non-empty
 
     int inum = txfs64_resolve_path(path);
     if (inum < 0) { txfs64_unlock(flags); return -1; }

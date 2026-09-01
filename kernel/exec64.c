@@ -18,6 +18,7 @@
 #include "../include/txfs64.h"
 #include "../include/memmap64.h"
 #include "../include/paging64.h"
+#include "../include/physmem64.h"
 #include "../include/klog.h"
 
 #define EXEC64_FILE_MAX  (64u * 1024u)
@@ -75,7 +76,7 @@ static void copy_segment_data(paging64_as_t* as, const seg_t* seg, const uint8_t
         // this point so this is just a cheap lookup (no new allocation),
         // and keeps all PT-slot knowledge inside paging64.c.
         uint64_t phys = paging64_map_user_page(as, page_va, (seg->flags & NEX64_PF_W) ? 1 : 0);
-        uint8_t* phys_page = phys_to_ptr(phys & ~0xFFFULL);
+        uint8_t* phys_page = (uint8_t*)physmem64_to_virt(phys & ~0xFFFULL);
         phys_page[va & 0xFFF] = file_data[seg->offset + i];
     }
 }

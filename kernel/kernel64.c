@@ -27,11 +27,18 @@
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
 // #define ISR64_RUN_TESTS 1
 
+// Define to run the Milestone 23 physical memory manager self-test
+// suite right after physmem64_init(), before anything else ever calls
+// physmem64_alloc_page/pages -- its exhaustion/reuse assertions require
+// starting from a freshly initialized allocator. Leaves every region's
+// free-page count restored to its pre-test value on a full pass.
+// #define PHYSMEM64_RUN_TESTS 1
+
 // Define to run the Milestone 22 kernel heap self-test suite right
 // after heap64_init(), before anything else ever calls kmalloc/kfree --
 // its span-count assertions require starting from an idle heap. Leaves
 // the heap fully released (zero spans) on a full pass, so the rest of
-// boot proceeds with an untouched physmem64 pool either way.
+// boot proceeds with an untouched physmem64 allocator either way.
 // #define HEAP64_RUN_TESTS 1
 
 // Define to run the Milestone 3B hardcoded ring3 smoke test in place of
@@ -185,11 +192,18 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     mb2_find_fb(mb_info_addr, &fb_addr, &fb_width, &fb_height, &fb_pitch, &fb_bpp);
     klog_hex("fb_addr:", (uint32_t)fb_addr);
     // physmem64_init MUST come before console64_init: the framebuffer
-    // mapping allocates a PD page via physmem64_alloc_page, and physmem64_init
-    // resets used_bitmap to 0 — if called after, it un-tracks that page and
-    // subsequent allocs zero it, destroying the FB page table entries.
-    physmem64_init();
+    // mapping (map_fb_phys, kernel/fbterm64.c) calls physmem64_alloc_page
+    // for its own PD table pages, which only works once physmem64_init has
+    // parsed the memory map and built its managed regions.
+    uint64_t fb_size = (uint64_t)fb_height * (uint64_t)fb_pitch;
+    physmem64_init(mb_info_addr, fb_addr, fb_size);
+#ifdef PHYSMEM64_RUN_TESTS
+    klog_hex("physmem64_selftest: all passed = ", (uint32_t)physmem64_selftest());
+#endif
     heap64_init();
+#ifdef HEAP64_RUN_TESTS
+    klog_hex("heap64_selftest: all passed = ", (uint32_t)heap64_selftest());
+#endif
     console64_init(fb_addr, fb_width, fb_height, fb_pitch, fb_bpp);
 
     out_line("ToxenOS64 -- Milestone 1: long-mode boot");
@@ -224,12 +238,8 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     tss64_init();
     out_line("TSS64 loaded (ltr)");
 
-    out_line("physmem64 pool initialized");
+    out_line("physmem64 initialized");
     out_line("heap64 initialized");
-
-#ifdef HEAP64_RUN_TESTS
-    out_kv("heap64_selftest: all passed = ", (uint64_t)heap64_selftest());
-#endif
 
 #ifdef ISR64_RUN_TESTS
     out_line("Triggering int3 (breakpoint) test...");

@@ -3,30 +3,92 @@
 
 #include <stdint.h>
 
-// Milestone 8: a tiny fixed-pool physical frame allocator. Deliberately
-// NOT a general physical-memory manager -- there is no multiboot2 mmap
-// parsing here, no support for physical memory outside this pool. The
-// pool lives in kernel BSS, which is itself inside the boot-time
-// flat-mapped first 64MB of physical RAM (kernel/boot64.asm's pd[0..31]),
-// so every page handed out by this allocator is already reachable via
-// the existing identity map AND high-half map with zero new mapping
-// infrastructure -- no per-page-table-page special-casing needed.
+// Milestone 23: real Multiboot2-memory-map-driven physical memory
+// manager. Replaces Milestone 8's fixed 64-page/256KB static pool.
+// See kernel/physmem64.c for the full design writeup (region layout,
+// reservation handling, direct-map bootstrap).
 //
-// 64 pages (256KB) covers one process's worst case (4 page-table pages +
-// up to 16 segment pages + 1 stack page = ~21) with headroom, since user
-// processes remain strictly serialized (create -> load -> run -> exit ->
-// free -> next) -- never more than one process's pages live at once.
-// Real physical memory management (multiboot mmap-driven, spanning all of
-// RAM) is future work for whenever something actually needs more than
-// this fixed pool.
-#define PHYSMEM64_POOL_PAGES 64
+// Public interface is deliberately unchanged from Milestone 8 for
+// physmem64_alloc_page()/physmem64_free_page() -- Milestone 22's
+// kernel/heap64.c keeps working against these two functions with no
+// changes required. physmem64_init()'s signature necessarily changes
+// (it now needs to see the Multiboot2 info pointer and the framebuffer
+// range to build reservations from them); its one call site
+// (kernel/kernel64.c) is updated accordingly.
 
-void     physmem64_init(void);
-// Returns the physical address of a freshly zeroed 4KB page, or 0 if the
-// pool is exhausted.
+// mb_info_addr: physical address of the Multiboot2 info block (as
+// passed to kernel_main64) -- parsed for the memory map tag (type 6).
+// fb_addr/fb_size: the framebuffer LFB range if one was found (0/0 if
+// not), reserved defensively even though it is normally already outside
+// any Multiboot2 "available" range.
+void physmem64_init(uint64_t mb_info_addr, uint64_t fb_addr, uint64_t fb_size);
+
+// Returns the physical address of one freshly zeroed 4KB page, or 0 if
+// every managed region is exhausted. Equivalent to physmem64_alloc_pages(1).
 uint64_t physmem64_alloc_page(void);
-// Frees a page previously returned by physmem64_alloc_page. Double-frees
-// and out-of-pool addresses are logged and ignored, not fatal.
+// Frees a page previously returned by physmem64_alloc_page/alloc_pages(_,1).
+// Invalid, out-of-region, or double-free addresses are logged and
+// ignored, not fatal. Equivalent to physmem64_free_pages(phys, 1).
 void     physmem64_free_page(uint64_t phys);
+
+// Milestone 23: allocates `count` PHYSICALLY CONTIGUOUS, freshly zeroed
+// 4KB pages (never spanning two regions, since regions are not
+// contiguous with each other by definition) and returns the physical
+// address of the first one, or 0 if no single region currently has a
+// large enough free run. This is the primitive kernel/heap64.c's
+// multi-page span growth was missing at Milestone 22.
+uint64_t physmem64_alloc_pages(uint64_t count);
+// Frees `count` contiguous pages previously returned together by one
+// physmem64_alloc_pages() call. Must describe exactly one prior
+// allocation (or a subset that was never itself freed) -- if ANY page
+// in the range is not currently allocated, the whole call is rejected
+// (logged, ignored) rather than partially freeing it.
+void     physmem64_free_pages(uint64_t phys, uint64_t count);
+
+// Turns a physical address returned by this allocator into a
+// dereferenceable kernel pointer, and back. Backed by a dedicated
+// direct-map window distinct from the kernel image's own high-half
+// mapping (memmap64.h's phys_to_ptr()/phys_of(), which remain for
+// kernel-image-symbol use only -- e.g. kernel/ring3_test64.c, never
+// modified). NOT valid for arbitrary physical addresses outside what
+// this allocator manages (MMIO, unmanaged holes, etc.).
+void*    physmem64_to_virt(uint64_t phys);
+uint64_t physmem64_to_phys(const void* virt);
+
+// Diagnostic-only: is every byte of [phys, phys+len) currently part of
+// a region this allocator manages (whether that memory happens to be
+// free or allocated right now)? Returns 0 for anything permanently
+// reserved (kernel image, boot structures, framebuffer, unmanaged
+// holes) or outside all detected RAM. Useful for verifying reservation
+// correctness; not needed on any normal allocation path.
+int physmem64_range_is_allocatable(uint64_t phys, uint64_t len);
+
+typedef struct {
+    uint64_t usable_ram_bytes;      // sum of Multiboot2 type=1 entries, before our own reservations
+    uint64_t reserved_bytes;        // usable_ram_bytes - bytes actually left in managed regions
+    uint64_t kernel_image_bytes;    // low memory + kernel image reservation size
+    uint64_t mb_info_bytes;         // Multiboot2 info block reservation size
+    uint64_t framebuffer_bytes;     // LFB reservation size (0 if no framebuffer)
+    uint64_t managed_pages;         // total pages actually available to the allocator
+    uint64_t free_pages;
+    uint64_t used_pages;
+    uint32_t region_count;
+    uint64_t largest_region_pages;
+    uint64_t largest_free_run_pages; // biggest single contiguous free run, across all regions
+} physmem64_stats_t;
+
+void physmem64_stats(physmem64_stats_t* out);
+// Logs one line per managed region (base, page count, free count,
+// pages spent on its own bitmap) via klog(). Verbose -- for interactive
+// debugging only, never called on the normal boot path.
+void physmem64_dump(void);
+
+// Runs the Milestone 23 self-test suite (single-page alloc/free, reuse,
+// contiguous multi-page alloc/free, safe exhaustion and recovery,
+// reservation correctness, bookkeeping consistency). Logs each case's
+// result and a final pass/fail tally via klog(). Returns 1 if every
+// case passed. Restores the allocator to its pre-test state on a full
+// pass (every page it borrowed is freed again).
+int physmem64_selftest(void);
 
 #endif // PHYSMEM64_H

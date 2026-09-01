@@ -295,7 +295,7 @@ static uint64_t map_fb_phys(uint64_t phys, uint32_t size)
         }
 
         uint64_t pd_phys = pdpt_low[gb_idx] & ~(uint64_t)0xFFF;
-        uint64_t* pd_ptr = (uint64_t*)phys_to_ptr(pd_phys);
+        uint64_t* pd_ptr = (uint64_t*)physmem64_to_virt(pd_phys);
         if (!(pd_ptr[pd_idx] & PT_PRESENT))
             pd_ptr[pd_idx] = addr | PT_PRESENT | PT_WRITABLE | PT_HUGE_2M;
     }

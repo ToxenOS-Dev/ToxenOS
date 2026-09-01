@@ -11,26 +11,26 @@
 // kernel: this heap grows and shrinks its physical backing dynamically,
 // per the Milestone 22 brief.
 //
-// A span is only ever grown by appending a page that physmem64 happens
-// to hand back contiguous with the span's current physical end -- there
-// is no "allocate N contiguous physical pages" primitive to ask for
-// (physmem64_alloc_page() hands out one page at a time with no
-// contiguity guarantee across separate calls). When a freshly obtained
-// page is NOT contiguous with the span currently being grown, it starts
-// a brand new, independent span instead of ever being spliced onto an
-// unrelated one -- the boundary-tag pointer arithmetic below requires
-// true address contiguity within a span, so two disjoint spans are
-// never merged into one logical block run. A single allocation request
-// larger than what fits within one span therefore fails even if the
-// SUM of free space across multiple spans would be enough; see
-// include/heap64.h and the Milestone 23 notes in the commit/summary for
-// why this is acceptable for now and what a real physical memory
-// manager should fix.
+// A span is grown by asking physmem64_alloc_pages() for exactly as many
+// PHYSICALLY CONTIGUOUS pages as the current request needs in one call
+// (Milestone 23's contiguous-allocation primitive); if physmem64 can't
+// currently satisfy that as one contiguous run (its regions may be
+// fragmented), growth falls back to a single page at a time instead of
+// failing outright. When a freshly obtained run is NOT contiguous with
+// the span currently being grown, it starts a brand new, independent
+// span instead of ever being spliced onto an unrelated one -- the
+// boundary-tag pointer arithmetic below requires true address
+// contiguity within a span, so two disjoint spans are never merged into
+// one logical block run. A single allocation request can therefore
+// still fail if it's larger than any one span/region can contiguously
+// provide even though the SUM of free space elsewhere would be enough --
+// an inherent limit of "no allocation may span two physically disjoint
+// regions", not something a bigger primitive can fix.
 //
-// Every page handed out by physmem64_alloc_page() lives inside the
-// boot-time flat-mapped low-64MB window (see include/physmem64.h), so
-// phys_to_ptr() (memmap64.h) gives a usable kernel VA for it with zero
-// extra page-table work -- this heap never touches paging64.c itself.
+// Every page handed out by physmem64_alloc_page()/alloc_pages() is
+// turned into a dereferenceable kernel pointer via
+// physmem64_to_virt() (include/physmem64.h) -- this heap never touches
+// paging64.c itself.
 //
 // Physical layout of one block (identical in spirit to mm.c):
 //
@@ -100,7 +100,7 @@ typedef struct {
 // ── State ────────────────────────────────────────────────────────────
 static heap64_block_t* free_lists[HEAP64_NUM_CLASSES];
 static heap64_span_t   spans[HEAP64_MAX_SPANS];
-static int             active_span_idx = -1; // spans[] index grow_by_one_page extends next, or -1
+static int             active_span_idx = -1; // spans[] index absorb_new_run_at extends next, or -1
 
 // ── Interrupt-safety ─────────────────────────────────────────────────
 static inline uint64_t heap64_lock(void) {
@@ -202,16 +202,16 @@ static inline heap64_span_t* active_span(void) {
     return active_span_idx >= 0 ? &spans[active_span_idx] : 0;
 }
 
-// Formats [va, va+HEAP64_PAGE_SIZE) as one free block spanning exactly
-// the new page, then left-coalesces it with whatever block currently
-// sits immediately before it in `span` (there is nothing to its right
-// yet -- this is only ever called to extend a span at its current
-// tail, so the invariant "span is fully tiled, no gaps" guarantees the
-// preceding block, if any, ends exactly at `va`).
-static void absorb_new_page(heap64_span_t* span, uint64_t va) {
+// Formats [va, va+run_bytes) as one free block spanning the whole new
+// run, then left-coalesces it with whatever block currently sits
+// immediately before it in `span` (there is nothing to its right yet --
+// this is only ever called to extend a span at its current tail, so the
+// invariant "span is fully tiled, no gaps" guarantees the preceding
+// block, if any, ends exactly at `va`).
+static void absorb_new_run(heap64_span_t* span, uint64_t va, uint64_t run_bytes) {
     heap64_block_t* b = (heap64_block_t*)va;
     b->magic = HEAP64_MAGIC_FREE;
-    b->size  = HEAP64_PAGE_SIZE - OVERHEAD;
+    b->size  = run_bytes - OVERHEAD;
     b->span  = span;
     write_footer(b);
 
@@ -249,34 +249,57 @@ static void release_span(heap64_span_t* span) {
     span->phys_end = 0;
 }
 
-// Obtains one more physical page and either extends the active span (if
-// physmem64 happened to hand back a page contiguous with it) or starts
-// a fresh, independent span. Returns 1 on success, 0 if physmem64 is
-// exhausted or every span slot is in use.
-static int grow_by_one_page(void) {
-    uint64_t phys = physmem64_alloc_page();
-    if (!phys) return 0;
-
+// Places a freshly obtained `pages`-page run (physically and, per
+// physmem64_to_virt()'s linear mapping, virtually contiguous) into the
+// heap: extends the active span in place if the run happens to abut it,
+// or starts a fresh, independent span otherwise -- the boundary-tag
+// arithmetic above requires true contiguity within one span, so two
+// unrelated runs are never spliced together.
+static void absorb_new_run_at(uint64_t phys, uint64_t pages) {
+    uint64_t run_bytes = pages * HEAP64_PAGE_SIZE;
     heap64_span_t* cur = active_span();
+
     if (cur && phys == cur->phys_end) {
         uint64_t va = cur->base + cur->size;
-        cur->size     += HEAP64_PAGE_SIZE;
-        cur->phys_end += HEAP64_PAGE_SIZE;
-        absorb_new_page(cur, va);
-        return 1;
+        cur->size     += run_bytes;
+        cur->phys_end += run_bytes;
+        absorb_new_run(cur, va, run_bytes);
+        return;
     }
 
     int idx = alloc_span_slot();
     if (idx < 0) {
-        physmem64_free_page(phys); // nowhere to track it -- give it straight back
-        return 0;
+        physmem64_free_pages(phys, pages); // nowhere to track it -- give it straight back
+        return;
     }
     heap64_span_t* ns = &spans[idx];
-    ns->base     = (uint64_t)phys_to_ptr(phys);
-    ns->size     = HEAP64_PAGE_SIZE;
-    ns->phys_end = phys + HEAP64_PAGE_SIZE;
+    ns->base     = (uint64_t)physmem64_to_virt(phys);
+    ns->size     = run_bytes;
+    ns->phys_end = phys + run_bytes;
     active_span_idx = idx;
-    absorb_new_page(ns, ns->base);
+    absorb_new_run(ns, ns->base, run_bytes);
+}
+
+// Tries to grow the heap by exactly `pages` PHYSICALLY CONTIGUOUS pages
+// in one physmem64_alloc_pages() call -- the real multi-page primitive
+// Milestone 23 added specifically to remove the "hope pages happen to
+// land contiguous" limitation this heap shipped with at Milestone 22.
+// Falls back to one page at a time if physmem64 can't currently satisfy
+// a `pages`-sized contiguous request (its regions may be fragmented) --
+// degrading to a smaller-but-still-useful grant rather than failing the
+// whole allocation outright when less is available. Returns 1 if at
+// least one page was obtained, 0 if physmem64 is fully exhausted or
+// this heap's own span table is full.
+static int grow_by_pages(uint64_t pages) {
+    uint64_t phys = physmem64_alloc_pages(pages);
+    if (phys) {
+        absorb_new_run_at(phys, pages);
+        return 1;
+    }
+
+    phys = physmem64_alloc_pages(1);
+    if (!phys) return 0;
+    absorb_new_run_at(phys, 1);
     return 1;
 }
 
@@ -314,7 +337,9 @@ void* kmalloc(uint64_t size) {
 
     heap64_block_t* b = find_fit(size);
     while (!b) {
-        if (!grow_by_one_page()) { heap64_unlock(flags); return 0; }
+        uint64_t pages_needed = (size + OVERHEAD + HEAP64_PAGE_SIZE - 1) / HEAP64_PAGE_SIZE;
+        if (pages_needed < 1) pages_needed = 1;
+        if (!grow_by_pages(pages_needed)) { heap64_unlock(flags); return 0; }
         b = find_fit(size);
     }
 

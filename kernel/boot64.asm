@@ -43,6 +43,20 @@ mb2_start:
     dd 1024                 ; preferred width
     dd 768                  ; preferred height
     dd 32                   ; preferred depth (bits per pixel)
+    ; Information request tag (type 1): explicitly ask for the memory
+    ; map (type 6), which kernel/physmem64.c parses to build the real
+    ; physical memory manager. GRUB provides this unconditionally in
+    ; practice (unlike the framebuffer tag above, there's no mode
+    ; negotiation involved), but requesting it explicitly is the
+    ; spec-correct way to depend on it rather than relying on observed
+    ; behavior. flags=1 (optional) so a hypothetical bootloader that
+    ; can't provide it doesn't refuse to boot at all -- physmem64_init()
+    ; degrades safely (0 managed pages, logged) if the tag is absent.
+    align 8
+    dw 1                    ; type: information request
+    dw 1                    ; flags: optional
+    dd 12                   ; size: 8-byte header + one u32 request
+    dd 6                    ; request: memory map (type 6)
     ; End tag
     align 8
     dw 0                    ; end tag

@@ -24,6 +24,16 @@
 // being copied here, not phys_of()'d (see memmap64.h's warning).
 extern uint64_t pml4[512];
 extern uint64_t pd[512];
+// Milestone 23: physmem64.c's physical direct-map window lives in
+// pdpt_high[0..509] (slot 510 is the kernel image, handled separately
+// below). Every process needs its OWN copy of these entries, exactly
+// like the flat kernel `pd[]` entries below -- physmem64_to_virt() is
+// called from exec64.c/paging64.c itself while the CALLER's (not yet
+// the new process's) CR3 is still active, and for a nested sys_spawn
+// that caller is another process, not the boot kernel -- so every
+// process's own table must carry a working copy of the direct map or
+// that access page-faults. See kernel/physmem64.c's header comment.
+extern uint64_t pdpt_high[512];
 
 static void free_if_set(uint64_t phys) {
     if (phys) physmem64_free_page(phys);
@@ -44,9 +54,9 @@ int paging64_create_as(paging64_as_t* as) {
     as->pt_phys = physmem64_alloc_page();
     if (!as->pt_phys) goto fail;
 
-    uint64_t* npml4 = (uint64_t*)phys_to_ptr(as->pml4_phys);
-    uint64_t* npdpt = (uint64_t*)phys_to_ptr(as->pdpt_phys);
-    uint64_t* npd   = (uint64_t*)phys_to_ptr(as->pd_phys);
+    uint64_t* npml4 = (uint64_t*)physmem64_to_virt(as->pml4_phys);
+    uint64_t* npdpt = (uint64_t*)physmem64_to_virt(as->pdpt_phys);
+    uint64_t* npd   = (uint64_t*)physmem64_to_virt(as->pd_phys);
 
     // Verbatim copy -- preserves the boot identity entry's exact flags
     // (no PAGE_USER), sharing the same physical RAM/page tables every
@@ -55,6 +65,12 @@ int paging64_create_as(paging64_as_t* as) {
     npml4[0] = pml4[0];
     npml4[PML4_HIGH_IDX] = as->pdpt_phys | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
     npdpt[PDPT_HIGH_IDX] = as->pd_phys   | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
+
+    // Milestone 23: verbatim copy of physmem64's direct-map entries --
+    // same reasoning as the pd[] copy below, just one level up. No
+    // PAGE_USER here either: this window is kernel-only in every
+    // process, exactly like the flat kernel mapping it sits beside.
+    for (int i = 0; i < PDPT_HIGH_IDX; i++) npdpt[i] = pdpt_high[i];
 
     // Verbatim copy of every boot kernel flat 2MB leaf -- same physical
     // kernel code/data, U=0 preserved exactly because the whole 8-byte
@@ -81,7 +97,7 @@ uint64_t paging64_map_user_page(paging64_as_t* as, uint64_t vaddr, int writable)
     }
 
     uint64_t slot = (vaddr - USER64_ELF_BASE) / 0x1000;
-    uint64_t* pt = (uint64_t*)phys_to_ptr(as->pt_phys);
+    uint64_t* pt = (uint64_t*)physmem64_to_virt(as->pt_phys);
 
     if (pt[slot] & PAGE_PRESENT) {
         if (writable) pt[slot] |= PAGE_WRITABLE;
@@ -109,7 +125,7 @@ int paging64_check_user_range(const paging64_as_t* as, uint64_t vaddr,
     if (vaddr < USER64_ELF_BASE || vaddr + len > USER64_ELF_BASE + 0x200000ULL) return -1;
     if (!as->pt_phys) return -1;
 
-    uint64_t* pt = (uint64_t*)phys_to_ptr(as->pt_phys);
+    uint64_t* pt = (uint64_t*)physmem64_to_virt(as->pt_phys);
     uint64_t start = vaddr & ~0xFFFULL;
     uint64_t end   = (vaddr + len + 0xFFFULL) & ~0xFFFULL;
 
@@ -130,7 +146,7 @@ uint64_t paging64_current_cr3(void) {
 
 void paging64_destroy_as(paging64_as_t* as) {
     if (as->pt_phys) {
-        uint64_t* pt = (uint64_t*)phys_to_ptr(as->pt_phys);
+        uint64_t* pt = (uint64_t*)physmem64_to_virt(as->pt_phys);
         for (int i = 0; i < 512; i++) {
             if (pt[i] & PAGE_PRESENT) physmem64_free_page(pt[i] & ~0xFFFULL);
         }

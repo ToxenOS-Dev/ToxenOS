@@ -6,16 +6,15 @@
 // Milestone 22: 64-bit kernel heap (kmalloc/kfree). See kernel/heap64.c
 // for the full design writeup.
 //
-// Deliberately depends on NOTHING from physmem64.h/physmem64.c beyond
-// its two public functions (physmem64_alloc_page/physmem64_free_page)
-// and phys_to_ptr()/phys_of() (memmap64.h). Milestone 23's planned
-// multiboot2-mmap-driven physical memory manager can replace physmem64's
-// current fixed-256KB-pool implementation without requiring any change
-// here, as long as the replacement preserves the same contract:
-// physmem64_alloc_page() returns the physical address of a freshly
-// zeroed 4KB page (or 0 if none available) that is reachable via
-// phys_to_ptr() with no additional page-table work, and
-// physmem64_free_page() releases a page previously returned that way.
+// Depends only on physmem64.h's public page allocation functions
+// (physmem64_alloc_page/alloc_pages and their free counterparts) and
+// physmem64_to_virt() -- never on physmem64's internal region/bitmap
+// layout. Milestone 23 replaced physmem64's original fixed-256KB-pool
+// implementation with a real Multiboot2-memory-map-driven allocator
+// without requiring any change here, and also added
+// physmem64_alloc_pages()/free_pages() (a real contiguous-run
+// primitive), which this heap's span growth now uses instead of the
+// original "hope single-page allocations land contiguous" workaround.
 
 void heap64_init(void);
 

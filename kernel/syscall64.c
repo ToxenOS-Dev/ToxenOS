@@ -21,7 +21,7 @@
 #include "../include/process64.h"
 #include "../include/uservm64.h"
 #include "../include/usercopy64.h"
-#include "../include/txfs64.h"
+#include "../include/vfs64.h"
 #include "../include/keyboard_buffer64.h"
 #include "../include/console64.h"
 #include "../include/pipe64.h"
@@ -72,6 +72,24 @@ static uint64_t sys64_getpid(void) {
     return (pid < 0) ? (uint64_t)-1 : (uint64_t)pid;
 }
 
+// Milestone 27: shared by every syscall that allocates a new handle
+// (open a file/directory, create a pipe, create shared memory) -- see
+// include/handle64.h. Defined here (before its first use) rather than
+// down by the IPC syscalls, now that file opens need it too.
+static int find_free_handle(process64_t* cur) {
+    for (int i = 0; i < PROCESS64_MAX_HANDLES; i++) {
+        if (cur->handles[i].kind == HANDLE64_UNUSED) return i;
+    }
+    return -1;
+}
+
+// Milestone 27: opens `path` through the VFS (kernel/vfs64.c), works
+// for both regular files (HANDLE64_FILE) and directories (HANDLE64_DIR)
+// -- the returned handle is a small per-process integer in the SAME
+// table pipes and shared memory use, not a separate fd namespace.
+// Reading/writing/closing it goes through SYS64_HANDLE_READ/WRITE/
+// CLOSE like any other handle; enumerating a directory handle's
+// entries goes through SYS64_READDIR_NEXT.
 static uint64_t sys64_open(uint64_t path_ptr) {
     process64_t* cur = process64_current();
     if (!cur) return (uint64_t)-1;
@@ -79,40 +97,15 @@ static uint64_t sys64_open(uint64_t path_ptr) {
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
 
-    int slot = -1;
-    for (int i = 0; i < PROCESS64_MAX_FDS; i++) {
-        if (cur->fds[i] < 0) { slot = i; break; }
-    }
+    int slot = find_free_handle(cur);
     if (slot < 0) return (uint64_t)-1;
 
-    int fd = txfs64_open(path);
-    if (fd < 0) return (uint64_t)-1;
+    vfs64_file_t* f;
+    if (vfs64_open(path, &f) < 0) return (uint64_t)-1;
 
-    cur->fds[slot] = fd;
+    cur->handles[slot].kind = f->node.is_dir ? HANDLE64_DIR : HANDLE64_FILE;
+    cur->handles[slot].obj  = f;
     return (uint64_t)slot;
-}
-
-static uint64_t sys64_read(int pfd, uint64_t buf_ptr, uint64_t len) {
-    process64_t* cur = process64_current();
-    if (!cur) return (uint64_t)-1;
-    if (pfd < 0 || pfd >= PROCESS64_MAX_FDS || cur->fds[pfd] < 0) return (uint64_t)-1;
-
-    if (len > SYS64_READ_MAX) len = SYS64_READ_MAX;
-    uint8_t kbuf[SYS64_READ_MAX];
-    int n = txfs64_read(cur->fds[pfd], kbuf, (uint32_t)len);
-    if (n < 0) return (uint64_t)-1;
-    if (n > 0 && copy_to_user64(buf_ptr, kbuf, (uint64_t)n) < 0) return (uint64_t)-1;
-    return (uint64_t)n;
-}
-
-static uint64_t sys64_close(int pfd) {
-    process64_t* cur = process64_current();
-    if (!cur) return (uint64_t)-1;
-    if (pfd < 0 || pfd >= PROCESS64_MAX_FDS || cur->fds[pfd] < 0) return (uint64_t)-1;
-
-    txfs64_close(cur->fds[pfd]);
-    cur->fds[pfd] = -1;
-    return 0;
 }
 
 static uint64_t sys64_stat(uint64_t path_ptr, uint64_t size_out_ptr, uint64_t type_out_ptr) {
@@ -121,30 +114,55 @@ static uint64_t sys64_stat(uint64_t path_ptr, uint64_t size_out_ptr, uint64_t ty
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
 
-    uint64_t size;
-    int is_dir;
-    if (txfs64_stat_type(path, &size, &is_dir) < 0) return (uint64_t)-1;
-    if (copy_to_user64(size_out_ptr, &size, sizeof(size)) < 0) return (uint64_t)-1;
-    if (type_out_ptr && copy_to_user64(type_out_ptr, &is_dir, sizeof(is_dir)) < 0) return (uint64_t)-1;
+    vfs64_node_t node;
+    if (vfs64_lookup(path, &node) < 0) return (uint64_t)-1;
+    if (copy_to_user64(size_out_ptr, &node.size, sizeof(node.size)) < 0) return (uint64_t)-1;
+    if (type_out_ptr && copy_to_user64(type_out_ptr, &node.is_dir, sizeof(node.is_dir)) < 0) return (uint64_t)-1;
     return 0;
 }
 
-// Milestone 15: exposes the already-existing txfs64_readdir to
-// userland (the new `ls` command) -- same validated-pointer shape as
-// every other M9 file syscall. out_ptr must point at a user buffer of
-// at least 256 bytes (txfs64_readdir's own contract).
+// Milestone 15: path+index directory enumeration (the `ls` command) --
+// stateless (re-resolves and re-scans from the start every call), so
+// concurrent callers or repeated calls on the same path never
+// interfere with each other. Milestone 27: goes through
+// vfs64_readdir_path instead of a txfs64 call directly. out_ptr must
+// point at a user buffer of at least 256 bytes. See SYS64_READDIR_NEXT
+// for the newer handle-based alternative (an open directory with its
+// own private enumeration cursor).
 static uint64_t sys64_readdir(uint64_t path_ptr, uint64_t out_ptr, uint32_t index) {
     if (!process64_current()) return (uint64_t)-1;
 
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
 
-    char name[256];
-    if (txfs64_readdir(path, name, index) < 0) return (uint64_t)-1;
+    char name[VFS64_NAME_MAX];
+    if (vfs64_readdir_path(path, index, name) < 0) return (uint64_t)-1;
 
     uint64_t len = 0;
     while (name[len] && len < sizeof(name) - 1) len++;
     if (copy_to_user64(out_ptr, name, len + 1) < 0) return (uint64_t)-1;
+    return 0;
+}
+
+// Milestone 27: reads the NEXT entry of an open directory handle,
+// advancing its own private cursor (vfs64_file_t::cursor) -- two
+// separate opens of the SAME directory, or two different processes
+// each iterating their own handle, never interfere with each other.
+// Returns 0 with `name_out` (>=256 bytes) filled, or -1 once past the
+// last entry or `h` isn't an open directory.
+static uint64_t sys64_readdir_next(int h, uint64_t name_out_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES || cur->handles[h].kind != HANDLE64_DIR) return (uint64_t)-1;
+
+    vfs64_file_t* f = (vfs64_file_t*)cur->handles[h].obj;
+    char name[VFS64_NAME_MAX];
+    if (vfs64_readdir(&f->node, (uint32_t)f->cursor, name) < 0) return (uint64_t)-1;
+    f->cursor++;
+
+    uint64_t len = 0;
+    while (name[len] && len < sizeof(name) - 1) len++;
+    if (copy_to_user64(name_out_ptr, name, len + 1) < 0) return (uint64_t)-1;
     return 0;
 }
 
@@ -245,13 +263,13 @@ static uint64_t sys64_get_args(uint64_t buf_ptr, uint64_t max_len) {
 
 #define SYS64_PATH_PROTECTED ((uint64_t)-2)
 
-static int txfs64_str_starts_with(const char* s, const char* pre) {
+static int sys64_str_starts_with(const char* s, const char* pre) {
     int i = 0;
     while (pre[i] && s[i] == pre[i]) i++;
     return pre[i] == 0 && (s[i] == 0 || s[i] == '/');
 }
 
-static int txfs64_str_eq_k(const char* a, const char* b) {
+static int sys64_str_eq_k(const char* a, const char* b) {
     int i = 0;
     while (a[i] && b[i]) { if (a[i] != b[i]) return 0; i++; }
     return a[i] == b[i];
@@ -275,9 +293,9 @@ static int sys64_is_protected(const char* path) {
         0
     };
     for (int i = 0; exact[i]; i++)
-        if (txfs64_str_eq_k(path, exact[i])) return 1;
+        if (sys64_str_eq_k(path, exact[i])) return 1;
     for (int i = 0; prefix[i]; i++)
-        if (txfs64_str_starts_with(path, prefix[i])) return 1;
+        if (sys64_str_starts_with(path, prefix[i])) return 1;
     return 0;
 }
 
@@ -288,7 +306,7 @@ static uint64_t sys64_mkdir(uint64_t path_ptr) {
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
     if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
-    return txfs64_mkdir(path) < 0 ? (uint64_t)-1 : 0;
+    return vfs64_mkdir(path) < 0 ? (uint64_t)-1 : 0;
 }
 
 static uint64_t sys64_mkfile(uint64_t path_ptr) {
@@ -296,7 +314,7 @@ static uint64_t sys64_mkfile(uint64_t path_ptr) {
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
     if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
-    return txfs64_create_file(path) < 0 ? (uint64_t)-1 : 0;
+    return vfs64_create_file(path) < 0 ? (uint64_t)-1 : 0;
 }
 
 static uint64_t sys64_write_file(uint64_t path_ptr, uint64_t data_ptr, uint64_t len) {
@@ -307,7 +325,7 @@ static uint64_t sys64_write_file(uint64_t path_ptr, uint64_t data_ptr, uint64_t 
     if (len > SYS64_WRITE_FILE_MAX) return (uint64_t)-1;
     uint8_t data[SYS64_WRITE_FILE_MAX];
     if (len > 0 && copy_from_user64(data, data_ptr, len) < 0) return (uint64_t)-1;
-    return txfs64_write_file(path, data, (uint32_t)len) < 0 ? (uint64_t)-1 : 0;
+    return vfs64_write_file(path, data, (uint32_t)len) < 0 ? (uint64_t)-1 : 0;
 }
 
 static uint64_t sys64_delete(uint64_t path_ptr) {
@@ -315,11 +333,11 @@ static uint64_t sys64_delete(uint64_t path_ptr) {
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
     if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
-    int r = txfs64_unlink(path);
+    int r = vfs64_unlink(path);
     if (r == 0) return 0;
     if (r == -2) {
         // target is a directory — remove it only if empty
-        return txfs64_rmdir(path) == 0 ? 0 : (uint64_t)-3;
+        return vfs64_rmdir(path) == 0 ? 0 : (uint64_t)-3;
     }
     return (uint64_t)-1;
 }
@@ -329,7 +347,7 @@ static uint64_t sys64_rmdir(uint64_t path_ptr) {
     char path[SYS64_PATH_MAX];
     if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
     if (sys64_is_protected(path)) return SYS64_PATH_PROTECTED;
-    return txfs64_rmdir(path) < 0 ? (uint64_t)-1 : 0;
+    return vfs64_rmdir(path) < 0 ? (uint64_t)-1 : 0;
 }
 
 static uint64_t sys64_rename(uint64_t src_ptr, uint64_t dest_ptr) {
@@ -338,7 +356,7 @@ static uint64_t sys64_rename(uint64_t src_ptr, uint64_t dest_ptr) {
     if (copy_user_cstr64(src,  src_ptr,  sizeof(src),  0) < 0) return (uint64_t)-1;
     if (copy_user_cstr64(dest, dest_ptr, sizeof(dest),  0) < 0) return (uint64_t)-1;
     if (sys64_is_protected(src) || sys64_is_protected(dest)) return SYS64_PATH_PROTECTED;
-    int r = txfs64_rename(src, dest);
+    int r = vfs64_rename(src, dest);
     if (r == -4) return (uint64_t)-4;
     return r < 0 ? (uint64_t)-1 : 0;
 }
@@ -373,13 +391,6 @@ static uint64_t sys64_munmap(uint64_t addr, uint64_t size) {
 // All of these go through the per-process handle table
 // (include/handle64.h, process64_t::handles[]) -- never a raw
 // pipe64_t*/shm64_t* or a global object ID crossing into userspace.
-
-static int find_free_handle(process64_t* cur) {
-    for (int i = 0; i < PROCESS64_MAX_HANDLES; i++) {
-        if (cur->handles[i].kind == HANDLE64_UNUSED) return i;
-    }
-    return -1;
-}
 
 static uint64_t sys64_pipe_create(uint64_t read_out_ptr, uint64_t write_out_ptr) {
     process64_t* cur = process64_current();
@@ -416,29 +427,63 @@ static uint64_t sys64_pipe_create(uint64_t read_out_ptr, uint64_t write_out_ptr)
     return 0;
 }
 
+// Milestone 27: the generic read/write path -- a pipe end and an open
+// file are both just "a handle you can read/write bytes through",
+// dispatched here by kind rather than exposing two separate ABIs. A
+// HANDLE64_FILE read/write is POSITIONED at the open-file object's own
+// cursor (vfs64_file_t::cursor), which this call advances by however
+// many bytes actually transferred -- growth (if writing past the
+// current end of file) is handled by kernel/vfs64.c/kernel/txfs64.c
+// underneath, transparently to the caller.
 static uint64_t sys64_handle_read(int h, uint64_t buf_ptr, uint64_t len) {
     process64_t* cur = process64_current();
     if (!cur) return (uint64_t)-1;
-    if (h < 0 || h >= PROCESS64_MAX_HANDLES || cur->handles[h].kind != HANDLE64_PIPE_READ) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES) return (uint64_t)-1;
 
-    if (len > SYS64_PIPE_MAX) len = SYS64_PIPE_MAX;
-    uint8_t kbuf[SYS64_PIPE_MAX];
-    int64_t n = pipe64_read((pipe64_t*)cur->handles[h].obj, kbuf, len);
-    if (n < 0) return (uint64_t)-1;
-    if (n > 0 && copy_to_user64(buf_ptr, kbuf, (uint64_t)n) < 0) return (uint64_t)-1;
-    return (uint64_t)n;
+    if (cur->handles[h].kind == HANDLE64_PIPE_READ) {
+        if (len > SYS64_PIPE_MAX) len = SYS64_PIPE_MAX;
+        uint8_t kbuf[SYS64_PIPE_MAX];
+        int64_t n = pipe64_read((pipe64_t*)cur->handles[h].obj, kbuf, len);
+        if (n < 0) return (uint64_t)-1;
+        if (n > 0 && copy_to_user64(buf_ptr, kbuf, (uint64_t)n) < 0) return (uint64_t)-1;
+        return (uint64_t)n;
+    }
+    if (cur->handles[h].kind == HANDLE64_FILE) {
+        vfs64_file_t* f = (vfs64_file_t*)cur->handles[h].obj;
+        if (len > SYS64_READ_MAX) len = SYS64_READ_MAX;
+        uint8_t kbuf[SYS64_READ_MAX];
+        int n = vfs64_read(&f->node, f->cursor, kbuf, (uint32_t)len);
+        if (n < 0) return (uint64_t)-1;
+        if (n > 0 && copy_to_user64(buf_ptr, kbuf, (uint64_t)n) < 0) return (uint64_t)-1;
+        f->cursor += (uint64_t)n;
+        return (uint64_t)n;
+    }
+    return (uint64_t)-1;
 }
 
 static uint64_t sys64_handle_write(int h, uint64_t buf_ptr, uint64_t len) {
     process64_t* cur = process64_current();
     if (!cur) return (uint64_t)-1;
-    if (h < 0 || h >= PROCESS64_MAX_HANDLES || cur->handles[h].kind != HANDLE64_PIPE_WRITE) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES) return (uint64_t)-1;
 
-    if (len > SYS64_PIPE_MAX) len = SYS64_PIPE_MAX;
-    uint8_t kbuf[SYS64_PIPE_MAX];
-    if (len > 0 && copy_from_user64(kbuf, buf_ptr, len) < 0) return (uint64_t)-1;
-    int64_t n = pipe64_write((pipe64_t*)cur->handles[h].obj, kbuf, len);
-    return (n < 0) ? (uint64_t)-1 : (uint64_t)n;
+    if (cur->handles[h].kind == HANDLE64_PIPE_WRITE) {
+        if (len > SYS64_PIPE_MAX) len = SYS64_PIPE_MAX;
+        uint8_t kbuf[SYS64_PIPE_MAX];
+        if (len > 0 && copy_from_user64(kbuf, buf_ptr, len) < 0) return (uint64_t)-1;
+        int64_t n = pipe64_write((pipe64_t*)cur->handles[h].obj, kbuf, len);
+        return (n < 0) ? (uint64_t)-1 : (uint64_t)n;
+    }
+    if (cur->handles[h].kind == HANDLE64_FILE) {
+        vfs64_file_t* f = (vfs64_file_t*)cur->handles[h].obj;
+        if (len > SYS64_READ_MAX) len = SYS64_READ_MAX;
+        uint8_t kbuf[SYS64_READ_MAX];
+        if (len > 0 && copy_from_user64(kbuf, buf_ptr, len) < 0) return (uint64_t)-1;
+        int n = vfs64_write(&f->node, f->cursor, kbuf, (uint32_t)len);
+        if (n < 0) return (uint64_t)-1;
+        f->cursor += (uint64_t)n;
+        return (uint64_t)n;
+    }
+    return (uint64_t)-1;
 }
 
 static uint64_t sys64_handle_close(int h) {
@@ -450,6 +495,8 @@ static uint64_t sys64_handle_close(int h) {
     case HANDLE64_PIPE_READ:  pipe64_close_read((pipe64_t*)cur->handles[h].obj); break;
     case HANDLE64_PIPE_WRITE: pipe64_close_write((pipe64_t*)cur->handles[h].obj); break;
     case HANDLE64_SHM:        shm64_release((shm64_t*)cur->handles[h].obj); break;
+    case HANDLE64_FILE:
+    case HANDLE64_DIR:        vfs64_file_release((vfs64_file_t*)cur->handles[h].obj); break;
     default: return (uint64_t)-1;
     }
     cur->handles[h].kind = HANDLE64_UNUSED;
@@ -495,12 +542,6 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_OPEN:
         tf->rax = sys64_open(tf->rdi);
-        break;
-    case SYS64_READ:
-        tf->rax = sys64_read((int)tf->rdi, tf->rsi, tf->rdx);
-        break;
-    case SYS64_CLOSE:
-        tf->rax = sys64_close((int)tf->rdi);
         break;
     case SYS64_STAT:
         tf->rax = sys64_stat(tf->rdi, tf->rsi, tf->rdx);
@@ -570,6 +611,9 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_SHM_MAP:
         tf->rax = sys64_shm_map((int)tf->rdi, (int)tf->rsi);
+        break;
+    case SYS64_READDIR_NEXT:
+        tf->rax = sys64_readdir_next((int)tf->rdi, tf->rsi);
         break;
     default:
         tf->rax = (uint64_t)-1;

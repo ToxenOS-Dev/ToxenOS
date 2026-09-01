@@ -9,8 +9,9 @@
 #define SYS64_EXIT   2
 #define SYS64_GETPID 3
 #define SYS64_OPEN   4
-#define SYS64_READ   5
-#define SYS64_CLOSE  6
+// SYS64_READ (5) / SYS64_CLOSE (6) retired Milestone 27 -- an open
+// file is read/written/closed through the generic SYS64_HANDLE_READ/
+// WRITE/CLOSE below, same as a pipe end; see sys_read/sys_close.
 #define SYS64_STAT   7
 #define SYS64_SPAWN  8
 #define SYS64_WAIT   9
@@ -34,6 +35,7 @@
 #define SYS64_HANDLE_CLOSE 27
 #define SYS64_SHM_CREATE   28
 #define SYS64_SHM_MAP      29
+#define SYS64_READDIR_NEXT 30
 // Return value -2 means the path is protected (kernel refused the op).
 #define SYS64_ERR_PROTECTED ((int64_t)-2)
 // Return value -3 from SYS64_DELETE means the folder is not empty.
@@ -69,17 +71,25 @@ static inline uint64_t sys_getpid(void) {
 }
 
 // Milestone 9: first userland file/process API. All return -1 on
-// failure (bad pointer, bad fd, file not found, etc.).
+// failure (bad pointer, bad handle, file not found, etc.). Milestone
+// 27: sys_open returns a handle from the same unified per-process
+// handle table pipes/shared-memory use (works for directories too --
+// see sys_readdir_next); sys_read/sys_close are no longer separate
+// syscalls of their own, just this file-specific NAME kept stable for
+// every existing caller -- they now route through the generic
+// SYS64_HANDLE_READ/SYS64_HANDLE_CLOSE (see sys_handle_read/
+// sys_handle_close below), which do the exact same thing for a
+// HANDLE64_FILE as these always did.
 static inline int64_t sys_open(const char* path) {
     return (int64_t)SYSCALL1(SYS64_OPEN, path);
 }
 
 static inline int64_t sys_read(int fd, char* buf, uint64_t len) {
-    return (int64_t)SYSCALL3(SYS64_READ, fd, buf, len);
+    return (int64_t)SYSCALL3(SYS64_HANDLE_READ, fd, buf, len);
 }
 
 static inline int64_t sys_close(int fd) {
-    return (int64_t)SYSCALL1(SYS64_CLOSE, fd);
+    return (int64_t)SYSCALL1(SYS64_HANDLE_CLOSE, fd);
 }
 
 // Milestone 11: is_dir_out may be NULL if the caller doesn't care about
@@ -222,6 +232,17 @@ static inline int64_t sys_shm_create(uint64_t size) {
 // sys_mmap, never treat it as signed.
 static inline uint64_t sys_shm_map(int h, int writable) {
     return SYSCALL2(SYS64_SHM_MAP, h, writable);
+}
+
+// Milestone 27: reads the NEXT entry of a directory handle returned by
+// sys_open() on a directory path, advancing that handle's OWN private
+// enumeration cursor (out >= 256 bytes). Returns 0 with `out` filled,
+// or -1 once past the last entry. Two opens of the same directory (in
+// one process or across processes) never interfere with each other --
+// unlike sys_readdir's path+index form, which re-scans from the start
+// every call, this remembers where it left off.
+static inline int64_t sys_readdir_next(int h, char* out) {
+    return (int64_t)SYSCALL2(SYS64_READDIR_NEXT, h, out);
 }
 
 // Milestone 19: write/create/delete. Return 0 = success, -1 = generic

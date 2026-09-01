@@ -19,7 +19,6 @@
 
 #define PROCESS64_MAX         8
 #define PROCESS64_KSTACK_SIZE (16u * 1024u)
-#define PROCESS64_MAX_FDS     4
 #define PROCESS64_ARGS_MAX    128
 #define PROCESS64_PATH_MAX    256
 
@@ -56,8 +55,13 @@ typedef struct {
     // process64_block_on/process64_wake_one/process64_wake_all.
     void*               wait_chan;
     uservm64_state_t    vm;             // Milestone 25: heap (brk) + anonymous/shared mmap state
-    int                 fds[PROCESS64_MAX_FDS];             // underlying txfs64 fd, or -1
-    handle64_t          handles[PROCESS64_MAX_HANDLES];     // Milestone 26: pipe/shm kernel-object handles
+    // Milestone 26: pipe/shm kernel-object handles. Milestone 27: also
+    // open files/directories (HANDLE64_FILE/HANDLE64_DIR, obj =
+    // vfs64_file_t*) -- the old separate fds[] array (a raw txfs64 fd
+    // per slot, with no "kind" and no reference counting) is gone; a
+    // process now has exactly ONE integer namespace for everything it
+    // has open, not two.
+    handle64_t          handles[PROCESS64_MAX_HANDLES];
     char                args[PROCESS64_ARGS_MAX];     // copied BY VALUE at spawn time
     char                path[PROCESS64_PATH_MAX];     // copied BY VALUE -- debug/diagnostics only
 } process64_t;
@@ -94,9 +98,10 @@ process64_t* process64_current(void);
 int process64_current_pid(void); // -1 if idle
 
 // Called by sys64_exit. Marks the current process ZOMBIE, releases its
-// address space and file descriptors (safe -- CR3 has already moved
-// off its tables by the time this runs; see kernel/process64.c), wakes
-// its parent if blocked specifically on this pid, and switches to
+// address space and every open handle (files, pipes, shared memory --
+// safe: CR3 has already moved off its tables by the time this runs;
+// see kernel/process64.c), wakes its parent if blocked specifically on
+// this pid, and switches to
 // whatever the scheduler picks next. Never returns.
 void process64_exit_current(int code);
 

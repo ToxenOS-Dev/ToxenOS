@@ -16,9 +16,19 @@
 // Milestone 9: first userland file/process API. All pointer args are
 // user pointers, validated by kernel/usercopy64.c before use -- a bad
 // pointer fails the syscall (-1), it never reaches the kernel raw.
-#define SYS64_OPEN   4   // (const char* path)                      -> per-process fd (0..3) or -1
-#define SYS64_READ   5   // (int fd, char* buf, uint64_t len)       -> bytes read, 0=EOF, -1=error
-#define SYS64_CLOSE  6   // (int fd)                                -> 0 or -1
+//
+// Milestone 27: SYS64_OPEN now returns a handle from the SAME unified
+// per-process handle table pipes/shared-memory use (include/handle64.h),
+// not a separate small fds[] namespace -- works for both files
+// (HANDLE64_FILE) and directories (HANDLE64_DIR). SYS64_READ (5) and
+// SYS64_CLOSE (6) are RETIRED as distinct syscall numbers: reading/
+// writing/closing an open file now goes through the generic
+// SYS64_HANDLE_READ/WRITE/CLOSE below (which dispatch on handle kind),
+// exactly like a pipe end. Both numbers are reserved -- never reused
+// for something else, to keep old disassembly/notes unambiguous.
+#define SYS64_OPEN   4   // (const char* path) -> handle, or -1
+// #define SYS64_READ  5  -- retired, see SYS64_HANDLE_READ
+// #define SYS64_CLOSE 6  -- retired, see SYS64_HANDLE_CLOSE
 #define SYS64_STAT   7   // (const char* path, uint64_t* size_out, int* is_dir_out [nullable]) -> 0 or -1
 #define SYS64_SPAWN  8   // (const char* path, const char* args [nullable]) -> child pid or -1
 #define SYS64_WAIT   9   // (uint32_t pid)                          -> child exit code or -1
@@ -76,16 +86,21 @@
 // SYS64_STAT's size_out/type_out) rather than packing two small ints
 // into one rax, since a pipe genuinely has two independent handles.
 #define SYS64_PIPE_CREATE  24 // (int* read_h_out, int* write_h_out)      -> 0 or -1
-// SYS64_HANDLE_READ/WRITE work on a PIPE_READ/PIPE_WRITE handle only
-// (wrong kind -> -1). Semantics match kernel/pipe64.c's pipe64_read/
-// pipe64_write exactly: blocks the calling process (real scheduler
-// block, not polling) as needed, returns fewer bytes than requested
-// only at true EOF, returns -1 for a broken pipe (no peer left).
+// Milestone 27: the generic read/write path for anything handle-shaped
+// -- dispatches on the handle's kind. PIPE_READ/PIPE_WRITE: semantics
+// match kernel/pipe64.c's pipe64_read/pipe64_write exactly (blocks the
+// calling process -- a real scheduler block, not polling -- as needed,
+// returns fewer bytes than requested only at true EOF, returns -1 for
+// a broken pipe with no peer left). HANDLE64_FILE: a POSITIONED read/
+// write at the open file's own cursor (advanced by however many bytes
+// actually transferred), growing the file on write past its current
+// end exactly like SYS64_WRITE_FILE, via kernel/vfs64.c/txfs64.c. Any
+// other handle kind (SHM, DIR, or a mismatched pipe end) fails (-1).
 #define SYS64_HANDLE_READ  25 // (int handle, char* buf, uint64_t len)    -> bytes read, 0=EOF, -1=error
 #define SYS64_HANDLE_WRITE 26 // (int handle, const char* buf, uint64_t len) -> bytes written, -1=error/broken pipe
-// Closes ANY handle kind (pipe end or shared-memory) -- releases its
-// reference, same cleanup process exit performs automatically for
-// every handle still open at that point.
+// Closes ANY handle kind (pipe end, shared-memory, open file, or open
+// directory) -- releases its reference, same cleanup process exit
+// performs automatically for every handle still open at that point.
 #define SYS64_HANDLE_CLOSE 27 // (int handle) -> 0 or -1
 // Creates a new shared-memory object of at least `size` bytes
 // (rounded up to whole pages), returning a SHM handle -- NOT yet
@@ -102,6 +117,17 @@
 // kernel/uservm64.c tells shared and anonymous regions apart
 // internally, so no separate "shm unmap" syscall is needed.
 #define SYS64_SHM_MAP      29 // (int handle, int writable) -> mapped address, or (uint64_t)-1
+
+// Milestone 27: reads the NEXT entry of an open directory handle
+// (SYS64_OPEN on a directory path), advancing that handle's OWN
+// private enumeration cursor -- two opens of the same directory (in
+// one process or across processes) never interfere with each other.
+// name_out must point at a user buffer of at least 256 bytes. Returns
+// 0 with name_out filled, or -1 once past the last entry or `handle`
+// isn't an open directory. The older path+index SYS64_READDIR (14)
+// keeps working unchanged for existing callers (ls.c) -- both go
+// through kernel/vfs64.c underneath.
+#define SYS64_READDIR_NEXT 30 // (int handle, char* name_out) -> 0 or -1
 
 void syscall64_dispatch(trapframe64_t* tf);
 

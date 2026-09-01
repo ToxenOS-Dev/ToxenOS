@@ -82,12 +82,12 @@
 #include "../include/exec64.h"
 #include "../include/paging64.h"
 #include "../include/tss64.h"
-#include "../include/txfs64.h"
 #include "../include/isr64.h"
 #include "../include/gdt64.h"
 #include "../include/physmem64.h"
 #include "../include/pipe64.h"
 #include "../include/shm64.h"
+#include "../include/vfs64.h"
 #include "../include/klog.h"
 
 extern void context_switch64(uint64_t* old_rsp_ptr, uint64_t* new_rsp_ptr);
@@ -204,10 +204,11 @@ static void perform_switch(int old_idx, int new_idx, process64_t* to_cleanup) {
         // -present page" sweep is what reclaims those.
         uservm64_teardown(&to_cleanup->vm, &to_cleanup->as);
         paging64_destroy_as(&to_cleanup->as);
+        // Milestone 27: close_all_handles now also releases open files/
+        // directories (HANDLE64_FILE/HANDLE64_DIR) -- the old separate
+        // fds[]/txfs64_close cleanup loop that used to run here is gone,
+        // folded into this one pass over the unified handle table.
         close_all_handles(to_cleanup);
-        for (int i = 0; i < PROCESS64_MAX_FDS; i++) {
-            if (to_cleanup->fds[i] >= 0) { txfs64_close(to_cleanup->fds[i]); to_cleanup->fds[i] = -1; }
-        }
     }
 
     current_idx = new_idx;
@@ -272,7 +273,6 @@ void process64_init(void) {
         procs[i].state = PROCESS64_UNUSED;
         procs[i].pid = 0;
         procs[i].wait_chan = 0;
-        for (int f = 0; f < PROCESS64_MAX_FDS; f++) procs[i].fds[f] = -1;
         for (int h = 0; h < PROCESS64_MAX_HANDLES; h++) {
             procs[i].handles[h].kind = HANDLE64_UNUSED;
             procs[i].handles[h].obj  = 0;
@@ -284,21 +284,25 @@ void process64_init(void) {
     g_switch_count = 0;
 }
 
-// Milestone 26: releases every open IPC handle in `p`'s table --
-// closing a pipe end (waking the opposite side / dropping the pipe's
-// refcount) or releasing a shared-memory reference (freeing its
-// physical pages only if this was the last reference anywhere).
+// Milestone 26/27: releases every open handle in `p`'s table -- closing
+// a pipe end (waking the opposite side / dropping the pipe's refcount),
+// releasing a shared-memory reference (freeing its physical pages only
+// if this was the last reference anywhere), or releasing an open file/
+// directory (kfree'ing its vfs64_file_t only if this was the last
+// reference -- e.g. spawn-inherited by a still-running child).
 // Independent of uservm64_teardown/paging64_destroy_as, which handle
-// this process's own VIRTUAL MAPPINGS of shared objects (a separate
-// reference -- see kernel/shm64.c) -- a process can hold a handle
-// without ever mapping it, or map-then-close the handle while keeping
-// the mapping, so both paths must run at exit.
+// this process's own VIRTUAL MAPPINGS of shared-memory objects (a
+// separate reference -- see kernel/shm64.c) -- a process can hold a
+// handle without ever mapping it, or map-then-close the handle while
+// keeping the mapping, so both paths must run at exit.
 static void close_all_handles(process64_t* p) {
     for (int i = 0; i < PROCESS64_MAX_HANDLES; i++) {
         switch (p->handles[i].kind) {
         case HANDLE64_PIPE_READ:  pipe64_close_read((pipe64_t*)p->handles[i].obj); break;
         case HANDLE64_PIPE_WRITE: pipe64_close_write((pipe64_t*)p->handles[i].obj); break;
         case HANDLE64_SHM:        shm64_release((shm64_t*)p->handles[i].obj); break;
+        case HANDLE64_FILE:
+        case HANDLE64_DIR:        vfs64_file_release((vfs64_file_t*)p->handles[i].obj); break;
         default: break;
         }
         p->handles[i].kind = HANDLE64_UNUSED;
@@ -334,18 +338,18 @@ int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uin
     p->exit_code       = 0;
     p->wait_chan       = 0;
     uservm64_init(&p->vm);
-    for (int i = 0; i < PROCESS64_MAX_FDS; i++) p->fds[i] = -1;
     for (int i = 0; i < PROCESS64_MAX_HANDLES; i++) {
         p->handles[i].kind = HANDLE64_UNUSED;
         p->handles[i].obj  = 0;
     }
 
-    // Milestone 26: explicit, whole-table handle inheritance -- see the
-    // header comment on process64_spawn for why this (rather than an
-    // explicit transfer syscall) is enough for this milestone. Each
+    // Milestone 26/27: explicit, whole-table handle inheritance -- see
+    // the header comment on process64_spawn for why this (rather than
+    // an explicit transfer syscall) is enough for this milestone. Each
     // inherited handle bumps its object's refcount: the parent's and
     // child's handle-table entries are now two INDEPENDENT references
-    // to the same pipe end / shared-memory object.
+    // to the same pipe end / shared-memory object / open file or
+    // directory.
     if (parent_pid != 0) {
         process64_t* parent = find_by_pid(parent_pid);
         if (parent) {
@@ -361,6 +365,11 @@ int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uin
                     break;
                 case HANDLE64_SHM:
                     shm64_add_ref((shm64_t*)parent->handles[i].obj);
+                    p->handles[i] = parent->handles[i];
+                    break;
+                case HANDLE64_FILE:
+                case HANDLE64_DIR:
+                    vfs64_file_add_ref((vfs64_file_t*)parent->handles[i].obj);
                     p->handles[i] = parent->handles[i];
                     break;
                 default:

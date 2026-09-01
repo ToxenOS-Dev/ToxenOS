@@ -3,12 +3,30 @@
 
 #include <stdint.h>
 
-// Read-only TxFS subset for the x86_64 kernel — Milestone 4 (filesystem
-// access). On-disk structs below are duplicated from include/txfs.h
-// (NOT included directly, since txfs.h pulls in vfs.h for the
-// fs_driver_t-returning txfs_init(), which this milestone doesn't use)
-// -- must stay in sync with include/txfs.h: same field order, same
-// types, same packing.
+// TxFS subset for the x86_64 kernel. On-disk structs below are
+// duplicated from include/txfs.h (NOT included directly, since txfs.h
+// pulls in vfs.h for the fs_driver_t-returning txfs_init(), which this
+// kernel doesn't use) -- must stay in sync with include/txfs.h: same
+// field order, same types, same packing.
+//
+// Milestone 27: this file is now a block/inode/directory manipulation
+// library keyed by INODE NUMBER, not a self-contained "open files by
+// path, read through a cursor" API -- kernel/vfs64.c is the only
+// caller, and owns path normalization, the open-file/cursor concept,
+// and mounting this backend at "/". The old txfs64_open/read/close and
+// their private open_files[] table are gone: cursor/refcount state now
+// lives entirely in kernel/vfs64.c's vfs64_file_t, one per open()
+// call, in the SAME per-process handle table pipes/shared-memory
+// objects use (include/handle64.h) -- there is no longer a second,
+// txfs64-specific fd namespace.
+//
+// Metadata note: txfs64_inode_t's uid/created/modified fields are
+// parsed/preserved but not otherwise meaningful yet -- ToxenOS has no
+// process credential system and no RTC-backed clock wired into this
+// kernel, so every inode created here always has uid=0/created=0/
+// modified=0, and nothing anywhere reads or enforces them. They are
+// reserved for a future credentials/timestamp milestone, not
+// currently interpreted.
 
 #define TXFS64_MAGIC         0x54584653  // "TXFS"
 #define TXFS64_BLOCK_SIZE    4096
@@ -59,30 +77,47 @@ typedef struct {
 // partition offset), -1 on bad magic.
 int txfs64_mount(void);
 
-// Returns an fd >= 0 on success, -1 if the path doesn't resolve to an
-// existing file. No O_CREAT, no permission checks (no process/user
-// concept exists in the 64-bit kernel yet) -- read-only, single-context.
-int txfs64_open(const char* path);
-int txfs64_read(int fd, uint8_t* buf, uint32_t size);
-int txfs64_close(int fd);
+// Resolves an ALREADY-NORMALIZED absolute path ("/a/b/c" or "/") to an
+// inode number plus its cached size/type. Path syntax normalization
+// (repeated slashes, "." / "..", overflow checks) is kernel/vfs64.c's
+// job, not this file's -- by the time a path reaches here it is
+// assumed clean. Returns 0 with *out fields set, or -1 if any
+// component doesn't exist or a non-directory appears where a directory
+// was expected.
+int txfs64_lookup(const char* path, uint32_t* inum_out, uint64_t* size_out, int* is_dir_out);
 
-// Lists the index'th non-empty entry of the directory at path into
-// out (>=256 bytes). Returns 0 on success, -1 if path/index is invalid.
-int txfs64_readdir(const char* path, char* out, uint32_t index);
-int txfs64_stat(const char* path, uint64_t* size_out);
+// Positioned read/write directly by inode number -- no fd/cursor
+// concept here, kernel/vfs64.c's vfs64_file_t owns that. Both always
+// re-read the inode from disk first (never a stale cached copy), so
+// two independently-opened views of the same file always see the
+// CURRENT on-disk size, not whatever it was at open time.
+//
+// txfs64_write_at grows the file (allocating direct blocks, then a
+// single indirect block and its pointer table, on demand) if
+// offset+len exceeds the current size -- see kernel/txfs64.c's header
+// comment for exactly how far growth extends and its rollback
+// guarantee on failure. Returns bytes read/written, or -1.
+int txfs64_read_at(uint32_t inum, uint64_t offset, uint8_t* buf, uint32_t len);
+int txfs64_write_at(uint32_t inum, uint64_t offset, const uint8_t* buf, uint32_t len);
 
-// Milestone 11: same lookup as txfs64_stat, plus the entry's type.
-int txfs64_stat_type(const char* path, uint64_t* size_out, int* is_dir_out);
+// Directory enumeration by inode number + 0-based index (skips unused
+// slots, same semantics as the old path-based txfs64_readdir). Returns
+// 0 with `name_out` (>=256 bytes) filled, or -1 once index runs past
+// the last live entry.
+int txfs64_readdir_at(uint32_t inum, uint32_t index, char* name_out);
 
-// Milestone 19: write/create/delete operations. All validate their
-// arguments and return 0 on success, -1 on failure. txfs64_write_file
-// replaces the entire contents of an existing file; it does NOT create
-// the file (call txfs64_create_file first if needed). File data is
-// limited to TXFS64_DIRECT_BLOCKS * TXFS64_BLOCK_SIZE = 48KB per file
-// for this milestone (indirect block allocation not yet implemented).
+// Write/create/delete operations -- all validate their arguments and
+// return 0 on success, -1 on failure (except where noted). Paths are
+// normalized by kernel/vfs64.c before reaching here, same as lookup.
 // txfs64_rmdir refuses non-empty directories (returns -1).
 int txfs64_mkdir(const char* path);
 int txfs64_create_file(const char* path);
+// Replaces a file's entire contents (truncate-then-write, fully
+// reclaiming any indirect blocks the old content had) -- does NOT
+// create the file; call txfs64_create_file first if needed. Unlike
+// Milestone 19, no longer capped at 12 direct blocks: internally this
+// is just txfs64_truncate() + txfs64_write_at(inum, 0, data, len), so
+// it inherits the same indirect-block growth and rollback behavior.
 int txfs64_write_file(const char* path, const uint8_t* data, uint32_t len);
 int txfs64_unlink(const char* path);
 int txfs64_rmdir(const char* path);
@@ -92,5 +127,26 @@ int txfs64_rmdir(const char* path);
 int txfs64_rename(const char* src_path, const char* dest_path);
 // Returns 1 if the directory at path has zero live entries (safe to rmdir).
 int txfs64_dir_is_empty(const char* path);
+
+// ── Diagnostics ──────────────────────────────────────────────────────
+typedef struct {
+    uint32_t total_blocks;
+    uint32_t free_blocks;
+    uint32_t total_inodes;
+    uint32_t free_inodes;
+} txfs64_stats_t;
+void txfs64_stats(txfs64_stats_t* out);
+// Logs superblock stats via klog(). For interactive debugging only.
+void txfs64_dump(void);
+
+// Runs the Milestone 27 self-test suite: indirect-block write growth
+// past the old 12-block/48KB limit, direct->indirect boundary
+// crossing, full block reclamation on delete, out-of-space rollback
+// leaking no blocks, and repeated create/write/delete cycles with zero
+// block/heap drift. Operates directly on inode numbers (no process/VFS
+// layer involved) -- see kernel/vfs64.c's own vfs64_selftest for the
+// higher-level path/handle/process integration tests. Logs each case
+// and a final tally via klog(). Returns 1 if every case passed.
+int txfs64_selftest(void);
 
 #endif // TXFS64_H

@@ -2,12 +2,11 @@
 #define HANDLE64_H
 
 // Milestone 26: per-process kernel-object handle table for IPC objects
-// (pipes, shared memory). Deliberately separate from the existing
-// fds[] array (kernel/txfs64.c file descriptors, include/process64.h) --
-// fds[] stores a raw txfs64 integer per slot with no notion of "kind"
-// or a reference-counted kernel object behind it, so it cannot cleanly
-// represent a pipe end or a shared-memory object (audited before
-// starting this milestone; see the Milestone 26 summary). A handle is
+// (pipes, shared memory). Milestone 27: also the home for open files
+// and directories, retiring the separate txfs64-specific fds[] array
+// that used to live on process64_t -- see kernel/vfs64.c and the
+// Milestone 27 summary for why one process should not have two
+// unrelated integer namespaces for "things it has open". A handle is
 // a small per-process integer -- an index into this table -- that
 // userspace passes back to the kernel. It is never a raw kernel
 // pointer and never a global object ID: two different processes'
@@ -21,13 +20,21 @@ typedef enum {
     HANDLE64_PIPE_READ,
     HANDLE64_PIPE_WRITE,
     HANDLE64_SHM,
+    HANDLE64_FILE,  // Milestone 27: obj = vfs64_file_t* (regular file)
+    HANDLE64_DIR,   // Milestone 27: obj = vfs64_file_t* (directory, cursor == enumeration index)
 } handle64_kind_t;
 
 typedef struct {
     handle64_kind_t kind;
-    void* obj; // pipe64_t* (PIPE_READ/PIPE_WRITE) or shm64_t* (SHM); NULL if UNUSED
+    void* obj; // pipe64_t* / shm64_t* / vfs64_file_t*, by kind; NULL if UNUSED
 } handle64_t;
 
-#define PROCESS64_MAX_HANDLES 8
+// Milestone 27: bumped from 8 now that files/directories share this one
+// table too (previously fds[] gave files their own separate 4 slots on
+// top of this table's 8) -- gives comfortable headroom for realistic
+// combined usage (a few open files/dirs plus inherited pipe/shm
+// handles) without artificially constraining tests that exercise mixed
+// handle kinds at once.
+#define PROCESS64_MAX_HANDLES 16
 
 #endif // HANDLE64_H

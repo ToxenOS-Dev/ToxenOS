@@ -32,7 +32,7 @@
 #include "../include/exec64.h"
 #include "../include/nex64.h"
 #include "../include/elf64.h"
-#include "../include/txfs64.h"
+#include "../include/vfs64.h"
 #include "../include/memmap64.h"
 #include "../include/paging64.h"
 #include "../include/uservm64.h"
@@ -187,13 +187,20 @@ static int load_elf64(paging64_as_t* as, const uint8_t* file_buf, uint32_t file_
 }
 
 int exec64_load(paging64_as_t* as, const char* path, uint64_t* entry_out, uint64_t* stack_top_out) {
-    uint64_t size;
-    if (txfs64_stat(path, &size) < 0 || size == 0 || size > EXEC64_FILE_MAX) {
-        klog("exec64: file missing, empty, or too large for the parse buffer: ");
+    // Milestone 27: goes through the VFS lookup/read directly rather
+    // than an open-file/handle object -- this runs from
+    // kernel/process64.c's process64_spawn, BEFORE the process being
+    // loaded has a process64_t (or a handle table) at all, so there is
+    // no "current process" to own an open-file handle here. A one-shot
+    // "resolve, then read the whole thing" is all this needs.
+    vfs64_node_t node;
+    if (vfs64_lookup(path, &node) < 0 || node.is_dir || node.size == 0 || node.size > EXEC64_FILE_MAX) {
+        klog("exec64: file missing, empty, a directory, or too large for the parse buffer: ");
         klog(path);
         klog("\n");
         return -1;
     }
+    uint64_t size = node.size;
 
     // Milestone 24: a fresh buffer per call -- see the file header
     // comment for why this can no longer be one shared static array.
@@ -203,17 +210,7 @@ int exec64_load(paging64_as_t* as, const char* path, uint64_t* entry_out, uint64
         return -1;
     }
 
-    int fd = txfs64_open(path);
-    if (fd < 0) {
-        klog("exec64: open failed: ");
-        klog(path);
-        klog("\n");
-        kfree(file_buf);
-        return -1;
-    }
-
-    int n = txfs64_read(fd, file_buf, (uint32_t)size);
-    txfs64_close(fd);
+    int n = vfs64_read(&node, 0, file_buf, (uint32_t)size);
     if (n < 0 || (uint64_t)n != size) {
         klog("exec64: short read\n");
         kfree(file_buf);

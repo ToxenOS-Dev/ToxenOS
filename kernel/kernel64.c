@@ -16,6 +16,7 @@
 #include "../include/ring3_test64.h"
 #include "../include/ata64.h"
 #include "../include/txfs64.h"
+#include "../include/vfs64.h"
 #include "../include/exec64.h"
 #include "../include/process64.h"
 #include "../include/uservm64.h"
@@ -68,6 +69,20 @@
 // timing requirements as PROCESS64_RUN_TESTS -- requires
 // `make populate PACKAGE_DEBUG64=1` for shm_test64.nex64.
 // #define SHM64_RUN_TESTS 1
+
+// Define to run the Milestone 27 TxFS64 block/indirect-write self-test
+// suite right after TxFS64 mounts, before init64/shell64 launch --
+// operates directly on inode numbers, no process/VFS-handle machinery
+// needed, so (unlike the other post-Milestone-24 suites) this one does
+// NOT require PACKAGE_DEBUG64 or any extra fixture on the disk image.
+// #define TXFS64_RUN_TESTS 1
+
+// Define to run the Milestone 27 VFS-level self-test suite (path
+// normalization, open/read/write/close through the unified handle
+// table, directory enumeration, spawn inheritance, mixed handle kinds)
+// -- same timing requirements as PROCESS64_RUN_TESTS -- requires
+// `make populate PACKAGE_DEBUG64=1` for vfs_test64.nex64.
+// #define VFS64_RUN_TESTS 1
 
 // Define to run the Milestone 3B hardcoded ring3 smoke test in place of
 // the normal interactive boot below -- the two are mutually exclusive
@@ -311,23 +326,26 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     ata64_init();
     out_line("ATA64 initialized");
 
-    if (txfs64_mount() == 0) {
+    if (vfs64_init_root_txfs() == 0) {
         out_line("TxFS64 mounted");
-        int fd = txfs64_open("/hello.ts");
-        if (fd >= 0) {
+        vfs64_node_t node;
+        if (vfs64_lookup("/hello.ts", &node) == 0 && !node.is_dir) {
             uint8_t buf[512];
-            int n = txfs64_read(fd, buf, sizeof(buf) - 1);
+            int n = vfs64_read(&node, 0, buf, sizeof(buf) - 1);
             buf[n > 0 ? (uint32_t)n : 0] = 0;
             out_kv("/hello.ts size: ", (uint64_t)n);
             klog((char*)buf);
             klog("\n");
-            txfs64_close(fd);
         } else {
             out_line("/hello.ts: open failed");
         }
     } else {
         out_line("TxFS64 mount failed (bad magic)");
     }
+
+#ifdef TXFS64_RUN_TESTS
+    klog_hex("txfs64_selftest: all passed = ", (uint32_t)txfs64_selftest());
+#endif
 
 #ifdef PROCESS64_RUN_TESTS
     klog_hex("process64_selftest: all passed = ", (uint32_t)process64_selftest());
@@ -343,6 +361,10 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
 
 #ifdef SHM64_RUN_TESTS
     klog_hex("shm64_selftest: all passed = ", (uint32_t)shm64_selftest());
+#endif
+
+#ifdef VFS64_RUN_TESTS
+    klog_hex("vfs64_selftest: all passed = ", (uint32_t)vfs64_selftest());
 #endif
 
 #if defined(RING3_TEST64_RUN)

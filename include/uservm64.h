@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "memmap64.h"
 #include "paging64.h"
+#include "shm64.h"
 
 // Milestone 25: userspace virtual-address layout + brk/mmap.
 //
@@ -55,12 +56,24 @@
 
 // ── Per-process mmap bookkeeping ─────────────────────────────────────
 // A sorted (by base, non-overlapping), kmalloc'd singly-linked list --
-// deliberately not a fixed-size table. Anonymous, private, RW-only
-// mappings (no flags field yet -- see kernel/uservm64.c's header
-// comment for what's deliberately out of scope this milestone).
+// deliberately not a fixed-size table. Two region kinds share ONE list
+// (Milestone 26): private anonymous (RW-only, physical pages owned
+// outright by this process, freed directly on unmap -- unchanged from
+// Milestone 25) and shared-memory-backed (physical pages owned by a
+// separate, reference-counted shm64_t object -- see include/shm64.h --
+// unmapping here only drops THIS mapping's reference, never frees the
+// pages itself). `kind` is what tells uservm64_munmap/uservm64_teardown
+// which cleanup rule applies to a given region.
+typedef enum {
+    UVM64_REGION_ANON = 0,
+    UVM64_REGION_SHM,
+} uvm64_region_kind_t;
+
 typedef struct uservm64_region_s {
     uint64_t base;
     uint64_t size;
+    uvm64_region_kind_t kind;
+    shm64_t* shm;   // valid iff kind == UVM64_REGION_SHM, else NULL
     struct uservm64_region_s* next;
 } uservm64_region_t;
 
@@ -91,22 +104,54 @@ int uservm64_brk(uservm64_state_t* vm, paging64_as_t* as, uint64_t new_brk, uint
 // set on success. On any failure partway through mapping the requested
 // pages, everything mapped so far for THIS call is unmapped/freed
 // before returning -1 -- no partial mapping is ever left behind.
+// Creates a UVM64_REGION_ANON region.
 int uservm64_mmap(uservm64_state_t* vm, paging64_as_t* as, uint64_t size, uint64_t* addr_out);
 
-// Unmaps exactly one previously-mmap'd region: `addr`/`size` (rounded up
+// Milestone 26: maps ALL of `shm`'s pages into `as`, choosing the
+// address itself (same first-fit gap search as uservm64_mmap, over the
+// SAME mmap_list -- shared and private-anon regions coexist in one
+// address range and can't overlap each other either). `writable`
+// selects PAGING64_WRITE per-page; a read-only mapping still shares the
+// exact same physical pages, just without the writable bit set in
+// (hardware-enforced -- see kernel/paging64.c's PAGE_WRITABLE) THIS
+// process's own page table -- another process can map the same object
+// read-write at the same time. On success, calls shm64_add_ref(shm) --
+// this mapping is now its own independent reference, on top of
+// whatever handle reference got the caller `shm` in the first place
+// (see include/shm64.h). Creates a UVM64_REGION_SHM region. Returns 0
+// with *addr_out set, or -1 (no address-space gap large enough, or
+// paging64_map failed partway through -- already-mapped pages for THIS
+// call are unmapped again before returning, and shm64_add_ref is only
+// called once full success is certain).
+int uservm64_map_shm(uservm64_state_t* vm, paging64_as_t* as, shm64_t* shm, int writable, uint64_t* addr_out);
+
+// Unmaps exactly one previously-mapped region: `addr`/`size` (rounded up
 // to a page count) must match a tracked region exactly -- no partial
-// unmap of a region in this milestone. Frees every physical page in it
-// and removes it from the tracking list. Returns 0 or -1 (no matching
-// region).
+// unmap of a region in this milestone. For a UVM64_REGION_ANON region,
+// frees every physical page in it (unchanged from Milestone 25). For a
+// UVM64_REGION_SHM region, only clears this process's page-table
+// entries and calls shm64_release(region->shm) -- the physical pages
+// are untouched unless this was the object's last reference anywhere
+// (see include/shm64.h). Either way, removes the region from the
+// tracking list. Returns 0 or -1 (no matching region).
 int uservm64_munmap(uservm64_state_t* vm, paging64_as_t* as, uint64_t addr, uint64_t size);
 
-// Frees the kmalloc'd mmap-region bookkeeping list (NOT the physical
-// pages themselves -- kernel/paging64.c's paging64_destroy_as already
-// walks and frees every physical page mapped anywhere in the process's
-// user region, heap and mmap pages included, since it doesn't
-// distinguish by purpose). Called once from kernel/process64.c as part
-// of process exit, alongside paging64_destroy_as.
-void uservm64_teardown(uservm64_state_t* vm);
+// Releases this process's stake in every tracked region before its
+// address space is torn down. For each UVM64_REGION_SHM region: clears
+// its page-table entries (via paging64_unmap, NOT paging64_unmap_and_
+// free -- see below) and calls shm64_release() to drop this mapping's
+// reference. This MUST run before paging64_destroy_as(): that function
+// generically frees every still-PRESENT page in the user region back to
+// physmem64 with no notion of sharing, so any shared PTE not already
+// cleared by the time it runs would have its physical page yanked out
+// from under every other process still mapping (or holding a handle
+// to) the same shm64_t object. UVM64_REGION_ANON regions need no
+// action here (unchanged from Milestone 25) -- paging64_destroy_as's
+// blanket sweep is what reclaims those, since they were never shared.
+// Also frees the kmalloc'd mmap-region bookkeeping list itself. Called
+// once from kernel/process64.c as part of process exit, immediately
+// before paging64_destroy_as.
+void uservm64_teardown(uservm64_state_t* vm, paging64_as_t* as);
 
 // Runs the Milestone 25 self-test suite (brk growth/shrink/zero-fill/
 // bounds, mmap/munmap, multi-page operations, partial-failure rollback,

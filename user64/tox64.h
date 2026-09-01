@@ -28,6 +28,12 @@
 #define SYS64_BRK    21
 #define SYS64_MMAP   22
 #define SYS64_MUNMAP 23
+#define SYS64_PIPE_CREATE  24
+#define SYS64_HANDLE_READ  25
+#define SYS64_HANDLE_WRITE 26
+#define SYS64_HANDLE_CLOSE 27
+#define SYS64_SHM_CREATE   28
+#define SYS64_SHM_MAP      29
 // Return value -2 means the path is protected (kernel refused the op).
 #define SYS64_ERR_PROTECTED ((int64_t)-2)
 // Return value -3 from SYS64_DELETE means the folder is not empty.
@@ -161,8 +167,61 @@ static inline uint64_t sys_mmap(uint64_t size) {
 
 // Unmaps a region previously returned by sys_mmap -- addr/size must
 // match a live mapping exactly (no partial unmap). Returns 0 or -1.
+// Also the correct call for unmapping a shared-memory mapping returned
+// by sys_shm_map -- the kernel tells the two apart internally.
 static inline int64_t sys_munmap(uint64_t addr, uint64_t size) {
     return (int64_t)SYSCALL2(SYS64_MUNMAP, addr, size);
+}
+
+// Milestone 26: IPC -- pipes and shared memory, referred to by small
+// per-process handle numbers (never a raw pointer or global ID). A
+// handle created before sys_spawn is automatically inherited by the
+// child at the SAME handle number -- see include/handle64.h and
+// kernel/process64.c's process64_spawn for the exact inheritance rule.
+
+// Creates a new pipe. On success, *read_h and *write_h are set to this
+// process's own handle numbers for the two ends. Returns 0 or -1.
+static inline int64_t sys_pipe_create(int* read_h, int* write_h) {
+    return (int64_t)SYSCALL2(SYS64_PIPE_CREATE, read_h, write_h);
+}
+
+// Reads/writes through a pipe handle (must be the matching end -- a
+// write handle passed to sys_handle_read, or vice versa, fails with
+// -1). Blocks (a real scheduler block, not a busy-wait) exactly as
+// documented on kernel/pipe64.c's pipe64_read/pipe64_write: a read
+// blocks while the pipe is empty and a writer remains, returning fewer
+// bytes than requested (possibly 0) only once it's genuinely empty AND
+// every writer has closed (EOF); a write blocks while the pipe is full
+// and a reader remains, returning -1 if no reader is left at all.
+static inline int64_t sys_handle_read(int h, char* buf, uint64_t len) {
+    return (int64_t)SYSCALL3(SYS64_HANDLE_READ, h, buf, len);
+}
+static inline int64_t sys_handle_write(int h, const char* buf, uint64_t len) {
+    return (int64_t)SYSCALL3(SYS64_HANDLE_WRITE, h, buf, len);
+}
+
+// Closes any handle kind (a pipe end or a shared-memory object) --
+// releases its reference. Returns 0 or -1 (bad/already-closed handle).
+static inline int64_t sys_handle_close(int h) {
+    return (int64_t)SYSCALL1(SYS64_HANDLE_CLOSE, h);
+}
+
+// Creates a new shared-memory object of at least `size` bytes (rounded
+// up to whole pages) and returns a handle to it -- NOT yet mapped
+// anywhere. Returns the handle (>= 0), or -1 on failure.
+static inline int64_t sys_shm_create(uint64_t size) {
+    return (int64_t)SYSCALL1(SYS64_SHM_CREATE, size);
+}
+
+// Maps the shared-memory object referenced by `h` into this process's
+// own address space at a kernel-chosen address -- writable != 0 for
+// read/write, 0 for a read-only mapping (a write to it, by userspace
+// OR by the kernel copying into it on this process's behalf, is
+// rejected/faults). Returns that address, or (uint64_t)-1 on failure
+// -- compare the raw return value against -1 exactly like sys_brk/
+// sys_mmap, never treat it as signed.
+static inline uint64_t sys_shm_map(int h, int writable) {
+    return SYSCALL2(SYS64_SHM_MAP, h, writable);
 }
 
 // Milestone 19: write/create/delete. Return 0 = success, -1 = generic

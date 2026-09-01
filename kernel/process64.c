@@ -86,6 +86,8 @@
 #include "../include/isr64.h"
 #include "../include/gdt64.h"
 #include "../include/physmem64.h"
+#include "../include/pipe64.h"
+#include "../include/shm64.h"
 #include "../include/klog.h"
 
 extern void context_switch64(uint64_t* old_rsp_ptr, uint64_t* new_rsp_ptr);
@@ -125,6 +127,24 @@ static void hex_to_str(uint64_t val, char* out) {
     for (int i = 0; i < 16; i++) { out[2 + (15 - i)] = h[val & 0xF]; val >>= 4; }
     out[18] = 0;
 }
+
+// Milestone 26: same pushfq/cli/restore-flags critical-section pattern
+// already used by physmem64.c/heap64.c -- protects the procs[] table
+// scan+mutate in process64_wake_one/wake_all against being itself
+// preempted mid-scan by a timer tick.
+static inline uint64_t process64_lock(void) {
+    uint64_t flags;
+    __asm__ volatile ("pushfq\n\tpop %0\n\tcli" : "=r"(flags) :: "memory");
+    return flags;
+}
+static inline void process64_unlock(uint64_t flags) {
+    if (flags & (1ULL << 9)) __asm__ volatile ("sti" ::: "memory");
+}
+
+// Milestone 26: defined below (near process64_init) -- forward-declared
+// here since perform_switch's cleanup path (above process64_init in
+// this file) needs to call it.
+static void close_all_handles(process64_t* p);
 
 // ── Fresh-process stack bootstrap ───────────────────────────────────
 // Builds the [callee-saved][return addr][trapframe64_t] layout described
@@ -173,13 +193,18 @@ static void perform_switch(int old_idx, int new_idx, process64_t* to_cleanup) {
     }
 
     if (to_cleanup) {
-        // uservm64_teardown only frees the kmalloc'd mmap-region
-        // bookkeeping list; the actual physical heap/mmap/image/stack
-        // pages are all freed by paging64_destroy_as below, which walks
-        // the whole user region without needing to know which purpose
-        // each mapped page served.
-        uservm64_teardown(&to_cleanup->vm);
+        // Milestone 26: uservm64_teardown now ALSO clears the PTEs of
+        // (and drops this mapping's reference to) every shared-memory
+        // region -- it must run BEFORE paging64_destroy_as, which
+        // otherwise cannot tell a shared page from a privately-owned
+        // one and would free it out from under any other process still
+        // mapping/holding the same shm64_t object. Private anon
+        // heap/mmap/image/stack pages are untouched by uservm64_teardown
+        // (as before) -- paging64_destroy_as's generic "free every still
+        // -present page" sweep is what reclaims those.
+        uservm64_teardown(&to_cleanup->vm, &to_cleanup->as);
         paging64_destroy_as(&to_cleanup->as);
+        close_all_handles(to_cleanup);
         for (int i = 0; i < PROCESS64_MAX_FDS; i++) {
             if (to_cleanup->fds[i] >= 0) { txfs64_close(to_cleanup->fds[i]); to_cleanup->fds[i] = -1; }
         }
@@ -225,6 +250,16 @@ static process64_t* find_child(uint32_t parent_pid, uint32_t pid) {
     return 0;
 }
 
+// Milestone 26: arbitrary lookup by pid alone (not restricted to a
+// specific parent) -- used only by process64_spawn to find ITS caller
+// (the new process's parent) so its handle table can be inherited.
+static process64_t* find_by_pid(uint32_t pid) {
+    for (int i = 0; i < PROCESS64_MAX; i++) {
+        if (procs[i].state != PROCESS64_UNUSED && procs[i].pid == pid) return &procs[i];
+    }
+    return 0;
+}
+
 static void reap(process64_t* p) {
     p->state = PROCESS64_UNUSED;
     p->pid = 0;
@@ -236,12 +271,39 @@ void process64_init(void) {
     for (int i = 0; i < PROCESS64_MAX; i++) {
         procs[i].state = PROCESS64_UNUSED;
         procs[i].pid = 0;
+        procs[i].wait_chan = 0;
         for (int f = 0; f < PROCESS64_MAX_FDS; f++) procs[i].fds[f] = -1;
+        for (int h = 0; h < PROCESS64_MAX_HANDLES; h++) {
+            procs[i].handles[h].kind = HANDLE64_UNUSED;
+            procs[i].handles[h].obj  = 0;
+        }
     }
     current_idx = -1;
     idle_kernel_rsp = 0;
     next_pid = 1;
     g_switch_count = 0;
+}
+
+// Milestone 26: releases every open IPC handle in `p`'s table --
+// closing a pipe end (waking the opposite side / dropping the pipe's
+// refcount) or releasing a shared-memory reference (freeing its
+// physical pages only if this was the last reference anywhere).
+// Independent of uservm64_teardown/paging64_destroy_as, which handle
+// this process's own VIRTUAL MAPPINGS of shared objects (a separate
+// reference -- see kernel/shm64.c) -- a process can hold a handle
+// without ever mapping it, or map-then-close the handle while keeping
+// the mapping, so both paths must run at exit.
+static void close_all_handles(process64_t* p) {
+    for (int i = 0; i < PROCESS64_MAX_HANDLES; i++) {
+        switch (p->handles[i].kind) {
+        case HANDLE64_PIPE_READ:  pipe64_close_read((pipe64_t*)p->handles[i].obj); break;
+        case HANDLE64_PIPE_WRITE: pipe64_close_write((pipe64_t*)p->handles[i].obj); break;
+        case HANDLE64_SHM:        shm64_release((shm64_t*)p->handles[i].obj); break;
+        default: break;
+        }
+        p->handles[i].kind = HANDLE64_UNUSED;
+        p->handles[i].obj  = 0;
+    }
 }
 
 int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uint32_t* pid_out) {
@@ -270,9 +332,44 @@ int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uin
     p->pid             = next_pid++;
     p->parent_pid      = parent_pid;
     p->exit_code       = 0;
-    p->waiting_for_pid = 0;
+    p->wait_chan       = 0;
     uservm64_init(&p->vm);
     for (int i = 0; i < PROCESS64_MAX_FDS; i++) p->fds[i] = -1;
+    for (int i = 0; i < PROCESS64_MAX_HANDLES; i++) {
+        p->handles[i].kind = HANDLE64_UNUSED;
+        p->handles[i].obj  = 0;
+    }
+
+    // Milestone 26: explicit, whole-table handle inheritance -- see the
+    // header comment on process64_spawn for why this (rather than an
+    // explicit transfer syscall) is enough for this milestone. Each
+    // inherited handle bumps its object's refcount: the parent's and
+    // child's handle-table entries are now two INDEPENDENT references
+    // to the same pipe end / shared-memory object.
+    if (parent_pid != 0) {
+        process64_t* parent = find_by_pid(parent_pid);
+        if (parent) {
+            for (int i = 0; i < PROCESS64_MAX_HANDLES; i++) {
+                switch (parent->handles[i].kind) {
+                case HANDLE64_PIPE_READ:
+                    pipe64_add_ref_read((pipe64_t*)parent->handles[i].obj);
+                    p->handles[i] = parent->handles[i];
+                    break;
+                case HANDLE64_PIPE_WRITE:
+                    pipe64_add_ref_write((pipe64_t*)parent->handles[i].obj);
+                    p->handles[i] = parent->handles[i];
+                    break;
+                case HANDLE64_SHM:
+                    shm64_add_ref((shm64_t*)parent->handles[i].obj);
+                    p->handles[i] = parent->handles[i];
+                    break;
+                default:
+                    break;
+                }
+            }
+        }
+    }
+
     copy_str(p->args, args, PROCESS64_ARGS_MAX);
     copy_str(p->path, path, PROCESS64_PATH_MAX);
 
@@ -301,17 +398,53 @@ int process64_current_pid(void) {
     return current_idx >= 0 ? (int)procs[current_idx].pid : -1;
 }
 
-static void wake_parent_if_waiting(process64_t* child) {
+// ── Generalized blocking (Milestone 26) ─────────────────────────────
+// See include/process64.h's header comment for the full contract.
+void process64_block_on(void* chan) {
+    process64_t* cur = &procs[current_idx];
+    cur->state = PROCESS64_BLOCKED;
+    cur->wait_chan = chan;
+    yield_to_next_or_idle(0);
+    // Resumes here once woken (state was set back to READY and later
+    // scheduled by process64_tick or another yield point) -- interrupts
+    // are whatever the CALLER had them as before its own first call into
+    // this function (unaffected by however long this process was off-
+    // CPU); only the caller's own saved-flags restore re-enables them.
+}
+
+void process64_wake_one(void* chan) {
+    uint64_t flags = process64_lock();
     for (int i = 0; i < PROCESS64_MAX; i++) {
-        if (procs[i].state == PROCESS64_BLOCKED &&
-            procs[i].pid == child->parent_pid &&
-            procs[i].waiting_for_pid == child->pid) {
+        if (procs[i].state == PROCESS64_BLOCKED && procs[i].wait_chan == chan) {
             procs[i].state = PROCESS64_READY;
-            return;
+            procs[i].wait_chan = 0;
+            break;
         }
     }
-    // No table entry to wake if parent_pid == 0 (kernel/debug caller) --
-    // process64_wait's no-current-process path just polls via hlt.
+    process64_unlock(flags);
+}
+
+void process64_wake_all(void* chan) {
+    uint64_t flags = process64_lock();
+    for (int i = 0; i < PROCESS64_MAX; i++) {
+        if (procs[i].state == PROCESS64_BLOCKED && procs[i].wait_chan == chan) {
+            procs[i].state = PROCESS64_READY;
+            procs[i].wait_chan = 0;
+        }
+    }
+    process64_unlock(flags);
+}
+
+void process64_log_waiters(const char* label, void* chan) {
+    for (int i = 0; i < PROCESS64_MAX; i++) {
+        if (procs[i].state == PROCESS64_BLOCKED && procs[i].wait_chan == chan) {
+            char pidbuf[24];
+            dec_to_str(procs[i].pid, pidbuf);
+            klog(label);
+            klog(pidbuf);
+            klog(" ");
+        }
+    }
 }
 
 static void exit_current(int code, const char* why) {
@@ -332,7 +465,13 @@ static void exit_current(int code, const char* why) {
     klog(codebuf);
     klog("\n");
 
-    wake_parent_if_waiting(self);
+    // Milestone 26: channel identity for "waiting on THIS child" is the
+    // child's own (stable, unique while alive) process64_t* -- see
+    // process64_wait below. wake_all rather than wake_one purely out of
+    // caution (at most one process can legally be waiting per child
+    // under the current parent-only-wait rule, so they're equivalent
+    // here); harmless no-op if nobody happens to be waiting yet.
+    process64_wake_all(self);
     yield_to_next_or_idle(self);
     for (;;) { } // unreachable -- self is ZOMBIE, never selected as a switch target again
 }
@@ -361,14 +500,21 @@ int process64_wait(uint32_t pid) {
     process64_t* child = find_child(cur->pid, pid);
     if (!child) return -1;
 
+    // Milestone 26: the condition check and the block MUST be atomic --
+    // without this cli, a timer tick could preempt this process right
+    // after the while-condition reads "not ZOMBIE yet" but before
+    // process64_block_on marks it BLOCKED; if the child happened to run
+    // to completion during that preemption, its exit_current() would
+    // call process64_wake_all(child) and find nobody BLOCKED yet (this
+    // process hasn't set that state), permanently losing the wakeup.
+    // process64_block_on() never touches RFLAGS itself, so this one
+    // cli/restore-flags pair covers every recheck of the loop, not just
+    // the first -- see include/process64.h's contract comment.
+    uint64_t flags = process64_lock();
     while (child->state != PROCESS64_ZOMBIE) {
-        cur->state = PROCESS64_BLOCKED;
-        cur->waiting_for_pid = pid;
-        yield_to_next_or_idle(0);
-        // Resumes here once woken (or spuriously) -- re-checked by the
-        // while condition either way. cur/child are stable pointers into
-        // the static procs[] table, valid across the block.
+        process64_block_on(child); // channel identity = the child's own process64_t*
     }
+    process64_unlock(flags);
 
     int code = child->exit_code;
     reap(child);

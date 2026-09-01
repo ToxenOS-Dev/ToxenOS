@@ -19,6 +19,7 @@
 #include "../include/physmem64.h"
 #include "../include/heap64.h"
 #include "../include/process64.h"
+#include "../include/shm64.h"
 #include "../include/klog.h"
 
 void uservm64_init(uservm64_state_t* vm) {
@@ -106,6 +107,46 @@ int uservm64_mmap(uservm64_state_t* vm, paging64_as_t* as, uint64_t size, uint64
 
     node->base = base;
     node->size = rounded;
+    node->kind = UVM64_REGION_ANON;
+    node->shm  = 0;
+    node->next = 0;
+    insert_sorted(vm, node);
+
+    *addr_out = base;
+    return 0;
+}
+
+int uservm64_map_shm(uservm64_state_t* vm, paging64_as_t* as, shm64_t* shm, int writable, uint64_t* addr_out) {
+    uint64_t size = (uint64_t)shm->npages * 0x1000ULL;
+    uint64_t base = find_mmap_gap(vm, size);
+    if (!base) return -1;
+
+    uservm64_region_t* node = (uservm64_region_t*)kmalloc(sizeof(uservm64_region_t));
+    if (!node) return -1;
+
+    uint32_t flags = writable ? PAGING64_WRITE : 0;
+    uint32_t i;
+    for (i = 0; i < shm->npages; i++) {
+        uint64_t phys = shm->base_phys + (uint64_t)i * 0x1000ULL;
+        if (paging64_map(as, base + (uint64_t)i * 0x1000ULL, phys, flags) < 0) break;
+    }
+    if (i < shm->npages) {
+        // Roll back exactly what THIS call mapped -- these PTEs are
+        // cleared only (paging64_unmap, never _and_free): the physical
+        // pages belong to `shm`, not to this mapping attempt.
+        for (uint32_t j = 0; j < i; j++) paging64_unmap(as, base + (uint64_t)j * 0x1000ULL, 0);
+        kfree(node);
+        return -1;
+    }
+
+    // Success is certain now -- this mapping becomes its own reference,
+    // independent of whatever handle the caller used to reach `shm`.
+    shm64_add_ref(shm);
+
+    node->base = base;
+    node->size = size;
+    node->kind = UVM64_REGION_SHM;
+    node->shm  = shm;
     node->next = 0;
     insert_sorted(vm, node);
 
@@ -123,18 +164,34 @@ int uservm64_munmap(uservm64_state_t* vm, paging64_as_t* as, uint64_t addr, uint
     if (!*pp) return -1;
 
     uservm64_region_t* node = *pp;
-    for (uint64_t i = 0; i < node->size / 0x1000ULL; i++) {
-        paging64_unmap_and_free(as, node->base + i * 0x1000ULL);
+    if (node->kind == UVM64_REGION_SHM) {
+        for (uint64_t i = 0; i < node->size / 0x1000ULL; i++) {
+            paging64_unmap(as, node->base + i * 0x1000ULL, 0); // no phys free -- shm64_t owns the pages
+        }
+        shm64_release(node->shm); // drop THIS mapping's reference
+    } else {
+        for (uint64_t i = 0; i < node->size / 0x1000ULL; i++) {
+            paging64_unmap_and_free(as, node->base + i * 0x1000ULL);
+        }
     }
     *pp = node->next;
     kfree(node);
     return 0;
 }
 
-void uservm64_teardown(uservm64_state_t* vm) {
+void uservm64_teardown(uservm64_state_t* vm, paging64_as_t* as) {
     uservm64_region_t* r = vm->mmap_list;
     while (r) {
         uservm64_region_t* next = r->next;
+        if (r->kind == UVM64_REGION_SHM) {
+            for (uint64_t i = 0; i < r->size / 0x1000ULL; i++) {
+                paging64_unmap(as, r->base + i * 0x1000ULL, 0);
+            }
+            shm64_release(r->shm);
+        }
+        // UVM64_REGION_ANON: nothing to do here -- paging64_destroy_as's
+        // blanket "free every still-present page" sweep (called right
+        // after this, by kernel/process64.c) reclaims those.
         kfree(r);
         r = next;
     }
@@ -162,7 +219,7 @@ static int setup_as(paging64_as_t* as, uservm64_state_t* vm) {
 }
 
 static void teardown_as(paging64_as_t* as, uservm64_state_t* vm) {
-    uservm64_teardown(vm);
+    uservm64_teardown(vm, as);
     paging64_destroy_as(as);
 }
 

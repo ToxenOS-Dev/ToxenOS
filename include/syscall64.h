@@ -65,6 +65,44 @@
 #define SYS64_MMAP   22 // (uint64_t size)               -> mapped address, or (uint64_t)-1
 #define SYS64_MUNMAP 23 // (uint64_t addr, uint64_t size) -> 0 or -1
 
+// Milestone 26: IPC -- pipes and shared memory. Both are referred to by
+// a small per-process HANDLE number (include/handle64.h), never a raw
+// pipe/shm pointer or a global object ID -- see kernel/process64.c's
+// handle table. Handles are inherited (whole-table, same slot numbers)
+// by every child a process spawns AFTER creating them; there is no
+// other way to move a handle between processes this milestone.
+//
+// SYS64_PIPE_CREATE writes both ends out via pointers (same pattern as
+// SYS64_STAT's size_out/type_out) rather than packing two small ints
+// into one rax, since a pipe genuinely has two independent handles.
+#define SYS64_PIPE_CREATE  24 // (int* read_h_out, int* write_h_out)      -> 0 or -1
+// SYS64_HANDLE_READ/WRITE work on a PIPE_READ/PIPE_WRITE handle only
+// (wrong kind -> -1). Semantics match kernel/pipe64.c's pipe64_read/
+// pipe64_write exactly: blocks the calling process (real scheduler
+// block, not polling) as needed, returns fewer bytes than requested
+// only at true EOF, returns -1 for a broken pipe (no peer left).
+#define SYS64_HANDLE_READ  25 // (int handle, char* buf, uint64_t len)    -> bytes read, 0=EOF, -1=error
+#define SYS64_HANDLE_WRITE 26 // (int handle, const char* buf, uint64_t len) -> bytes written, -1=error/broken pipe
+// Closes ANY handle kind (pipe end or shared-memory) -- releases its
+// reference, same cleanup process exit performs automatically for
+// every handle still open at that point.
+#define SYS64_HANDLE_CLOSE 27 // (int handle) -> 0 or -1
+// Creates a new shared-memory object of at least `size` bytes
+// (rounded up to whole pages), returning a SHM handle -- NOT yet
+// mapped anywhere (see SYS64_SHM_MAP). -1 on failure (bad size, or no
+// single contiguous physical run big enough).
+#define SYS64_SHM_CREATE   28 // (uint64_t size) -> handle, or (uint64_t)-1
+// Maps the object referenced by `handle` (must be a SHM handle) into
+// the caller's OWN address space, kernel-choosing the address --
+// writable != 0 for read/write, 0 for read-only (enforced by the
+// hardware page tables: a read-only mapping's pages genuinely cannot
+// be written by userspace OR by the kernel copying into them via
+// copy_to_user64, see kernel/paging64.c's paging64_check_user_range).
+// Unmapping a shared-memory region uses the EXISTING SYS64_MUNMAP --
+// kernel/uservm64.c tells shared and anonymous regions apart
+// internally, so no separate "shm unmap" syscall is needed.
+#define SYS64_SHM_MAP      29 // (int handle, int writable) -> mapped address, or (uint64_t)-1
+
 void syscall64_dispatch(trapframe64_t* tf);
 
 #endif // SYSCALL64_H

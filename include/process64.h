@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "paging64.h"
 #include "uservm64.h"
+#include "handle64.h"
 
 // Milestone 24: unified process model + preemptive scheduler.
 //
@@ -31,7 +32,7 @@ typedef enum {
     PROCESS64_UNUSED,   // free slot -- must be the zero value (procs[] starts zeroed)
     PROCESS64_READY,    // runnable, waiting for the scheduler to pick it
     PROCESS64_RUNNING,  // currently on the CPU (at most one, single-core)
-    PROCESS64_BLOCKED,  // inside sys_wait(), waiting for waiting_for_pid to exit
+    PROCESS64_BLOCKED,  // blocked on wait_chan (see process64_block_on/wake_*)
     PROCESS64_ZOMBIE,   // exited/faulted; exit_code valid; address space already
                         // released; slot itself still held until the parent reaps it
 } process64_state_t;
@@ -45,9 +46,18 @@ typedef struct {
     uint64_t            kernel_stack_size;
     paging64_as_t        as;            // this process's own address space
     int                 exit_code;
-    uint32_t            waiting_for_pid; // valid while state == BLOCKED
-    uservm64_state_t    vm;             // Milestone 25: heap (brk) + anonymous mmap state
-    int                 fds[PROCESS64_MAX_FDS];       // underlying txfs64 fd, or -1
+    // Milestone 26: generalized from "waiting_for_pid" -- valid while
+    // state == BLOCKED, an opaque event identity (a stable pointer: a
+    // child process64_t*, or the address of a byte inside a pipe64_t/
+    // future kernel object) rather than a pid. sys_wait blocking on a
+    // child, pipe read/write blocking, and any future blocking kernel
+    // object (keyboard, sockets, GUI messages) all share this ONE
+    // mechanism instead of a special case per syscall -- see
+    // process64_block_on/process64_wake_one/process64_wake_all.
+    void*               wait_chan;
+    uservm64_state_t    vm;             // Milestone 25: heap (brk) + anonymous/shared mmap state
+    int                 fds[PROCESS64_MAX_FDS];             // underlying txfs64 fd, or -1
+    handle64_t          handles[PROCESS64_MAX_HANDLES];     // Milestone 26: pipe/shm kernel-object handles
     char                args[PROCESS64_ARGS_MAX];     // copied BY VALUE at spawn time
     char                path[PROCESS64_PATH_MAX];     // copied BY VALUE -- debug/diagnostics only
 } process64_t;
@@ -63,6 +73,19 @@ void process64_init(void);
 // process's pid (real spawns), or 0 for a process spawned directly by
 // kernel/debug code with no user-space parent (only process64_wait()
 // called with no current process can ever reap such a process).
+//
+// Milestone 26: if `parent_pid` names a real, currently-tracked
+// process, every open handle in ITS handle table (pipe ends, shared-
+// memory objects) is copied into the SAME slot number in the new
+// child's table, and the referenced object's refcount is bumped once
+// per inherited handle -- explicit, whole-table, spawn-time
+// inheritance (deliberately simple, mirroring how Unix fork()
+// preserves fd numbers across the call): a parent that creates a pipe
+// or shared-memory object BEFORE spawning can rely on the child seeing
+// the exact same handle numbers afterward. There is no other way for a
+// handle to cross process boundaries this milestone (no explicit
+// transfer/passing syscall) -- see the Milestone 26 summary for why
+// that is sufficient for now.
 int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uint32_t* pid_out);
 
 // The current process, or NULL if the CPU is running the idle/boot
@@ -96,6 +119,42 @@ int process64_wait(uint32_t pid);
 // otherwise leaves the current context running untouched (does NOT
 // switch to idle just because nothing ELSE happens to be ready).
 void process64_tick(void);
+
+// ── Generalized blocking (Milestone 26) ─────────────────────────────
+// A small BSD-style "sleep on a channel" primitive: `chan` is any
+// stable address that both the blocker and the waker agree identifies
+// the same event -- a child process64_t* (process64_wait, below), or
+// the address of a byte inside a pipe64_t (kernel/pipe64.c's
+// read_chan/write_chan). This is the ONE mechanism every blocking
+// kernel object uses, instead of a bespoke state machine per syscall;
+// a future keyboard/socket/GUI-message object blocks and wakes the
+// exact same way.
+//
+// Contract (see kernel/pipe64.c for the canonical example): the CALLER
+// is responsible for disabling interrupts (the same pushfq/cli/
+// restore-on-exit pattern already used by physmem64.c/heap64.c) around
+// the ENTIRE "check condition, maybe call process64_block_on, maybe
+// loop and recheck" sequence -- process64_block_on() itself never
+// touches RFLAGS, so interrupts stay masked across every recheck of the
+// loop, and only the caller's own restore (once the loop finally exits)
+// re-enables them. This is what prevents a wakeup that happens between
+// the condition check and the actual block from being lost forever.
+// Must be called with current_idx >= 0 (a real process, never idle).
+void process64_block_on(void* chan);
+
+// Moves the first (process64_wake_one) or every (process64_wake_all)
+// BLOCKED process whose wait_chan == chan back to READY. Safe to call
+// with nobody blocked on `chan` (a no-op). Does not itself switch
+// contexts -- the woken process(es) simply become eligible for the
+// next scheduling point (a timer tick, or the caller's own next yield).
+void process64_wake_one(void* chan);
+void process64_wake_all(void* chan);
+
+// Diagnostics helper: klogs "<label><pid> " for every process currently
+// BLOCKED on `chan` (nothing logged if none) -- lets kernel/pipe64.c and
+// kernel/shm64.c's own dump functions show waiting pids without needing
+// direct access to the private procs[] table.
+void process64_log_waiters(const char* label, void* chan);
 
 // ── Diagnostics ──────────────────────────────────────────────────────
 // Logs the scheduler's current state and every non-UNUSED process's

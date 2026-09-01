@@ -24,10 +24,13 @@
 #include "../include/txfs64.h"
 #include "../include/keyboard_buffer64.h"
 #include "../include/console64.h"
+#include "../include/pipe64.h"
+#include "../include/shm64.h"
 #include "../include/klog.h"
 
 #define SYS64_WRITE_MAX 256
 #define SYS64_READ_MAX  1024
+#define SYS64_PIPE_MAX  1024 // per-call cap for SYS64_HANDLE_READ/WRITE on a pipe, same spirit as SYS64_READ_MAX
 #define SYS64_PATH_MAX  256
 #define SYS64_ARGS_MAX  PROCESS64_ARGS_MAX
 
@@ -366,6 +369,119 @@ static uint64_t sys64_munmap(uint64_t addr, uint64_t size) {
     return uservm64_munmap(&cur->vm, &cur->as, addr, size) < 0 ? (uint64_t)-1 : 0;
 }
 
+// ── Milestone 26: IPC -- pipes and shared memory ────────────────────
+// All of these go through the per-process handle table
+// (include/handle64.h, process64_t::handles[]) -- never a raw
+// pipe64_t*/shm64_t* or a global object ID crossing into userspace.
+
+static int find_free_handle(process64_t* cur) {
+    for (int i = 0; i < PROCESS64_MAX_HANDLES; i++) {
+        if (cur->handles[i].kind == HANDLE64_UNUSED) return i;
+    }
+    return -1;
+}
+
+static uint64_t sys64_pipe_create(uint64_t read_out_ptr, uint64_t write_out_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+
+    int rslot = find_free_handle(cur);
+    if (rslot < 0) return (uint64_t)-1;
+    // Reserve rslot's kind immediately so the second find_free_handle
+    // scan can't pick the SAME slot for the write end.
+    cur->handles[rslot].kind = HANDLE64_PIPE_READ;
+    int wslot = find_free_handle(cur);
+    if (wslot < 0) { cur->handles[rslot].kind = HANDLE64_UNUSED; return (uint64_t)-1; }
+
+    pipe64_t* p;
+    if (pipe64_create(&p) < 0) {
+        cur->handles[rslot].kind = HANDLE64_UNUSED;
+        return (uint64_t)-1;
+    }
+    cur->handles[rslot].obj = p;
+    cur->handles[wslot].kind = HANDLE64_PIPE_WRITE;
+    cur->handles[wslot].obj = p;
+
+    int r = rslot, w = wslot;
+    if (copy_to_user64(read_out_ptr, &r, sizeof(r)) < 0 ||
+        copy_to_user64(write_out_ptr, &w, sizeof(w)) < 0) {
+        // Bad user pointer -- undo everything, leaking neither the
+        // pipe object nor the two handle slots.
+        pipe64_close_read(p);
+        pipe64_close_write(p);
+        cur->handles[rslot].kind = HANDLE64_UNUSED;
+        cur->handles[wslot].kind = HANDLE64_UNUSED;
+        return (uint64_t)-1;
+    }
+    return 0;
+}
+
+static uint64_t sys64_handle_read(int h, uint64_t buf_ptr, uint64_t len) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES || cur->handles[h].kind != HANDLE64_PIPE_READ) return (uint64_t)-1;
+
+    if (len > SYS64_PIPE_MAX) len = SYS64_PIPE_MAX;
+    uint8_t kbuf[SYS64_PIPE_MAX];
+    int64_t n = pipe64_read((pipe64_t*)cur->handles[h].obj, kbuf, len);
+    if (n < 0) return (uint64_t)-1;
+    if (n > 0 && copy_to_user64(buf_ptr, kbuf, (uint64_t)n) < 0) return (uint64_t)-1;
+    return (uint64_t)n;
+}
+
+static uint64_t sys64_handle_write(int h, uint64_t buf_ptr, uint64_t len) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES || cur->handles[h].kind != HANDLE64_PIPE_WRITE) return (uint64_t)-1;
+
+    if (len > SYS64_PIPE_MAX) len = SYS64_PIPE_MAX;
+    uint8_t kbuf[SYS64_PIPE_MAX];
+    if (len > 0 && copy_from_user64(kbuf, buf_ptr, len) < 0) return (uint64_t)-1;
+    int64_t n = pipe64_write((pipe64_t*)cur->handles[h].obj, kbuf, len);
+    return (n < 0) ? (uint64_t)-1 : (uint64_t)n;
+}
+
+static uint64_t sys64_handle_close(int h) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES) return (uint64_t)-1;
+
+    switch (cur->handles[h].kind) {
+    case HANDLE64_PIPE_READ:  pipe64_close_read((pipe64_t*)cur->handles[h].obj); break;
+    case HANDLE64_PIPE_WRITE: pipe64_close_write((pipe64_t*)cur->handles[h].obj); break;
+    case HANDLE64_SHM:        shm64_release((shm64_t*)cur->handles[h].obj); break;
+    default: return (uint64_t)-1;
+    }
+    cur->handles[h].kind = HANDLE64_UNUSED;
+    cur->handles[h].obj = 0;
+    return 0;
+}
+
+static uint64_t sys64_shm_create(uint64_t size) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+
+    int slot = find_free_handle(cur);
+    if (slot < 0) return (uint64_t)-1;
+
+    shm64_t* s;
+    if (shm64_create(size, &s) < 0) return (uint64_t)-1;
+
+    cur->handles[slot].kind = HANDLE64_SHM;
+    cur->handles[slot].obj = s;
+    return (uint64_t)slot;
+}
+
+static uint64_t sys64_shm_map(int h, int writable) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES || cur->handles[h].kind != HANDLE64_SHM) return (uint64_t)-1;
+
+    uint64_t addr;
+    if (uservm64_map_shm(&cur->vm, &cur->as, (shm64_t*)cur->handles[h].obj, writable, &addr) < 0) return (uint64_t)-1;
+    return addr;
+}
+
 void syscall64_dispatch(trapframe64_t* tf) {
     switch (tf->rax) {
     case SYS64_WRITE:
@@ -436,6 +552,24 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_MUNMAP:
         tf->rax = sys64_munmap(tf->rdi, tf->rsi);
+        break;
+    case SYS64_PIPE_CREATE:
+        tf->rax = sys64_pipe_create(tf->rdi, tf->rsi);
+        break;
+    case SYS64_HANDLE_READ:
+        tf->rax = sys64_handle_read((int)tf->rdi, tf->rsi, tf->rdx);
+        break;
+    case SYS64_HANDLE_WRITE:
+        tf->rax = sys64_handle_write((int)tf->rdi, tf->rsi, tf->rdx);
+        break;
+    case SYS64_HANDLE_CLOSE:
+        tf->rax = sys64_handle_close((int)tf->rdi);
+        break;
+    case SYS64_SHM_CREATE:
+        tf->rax = sys64_shm_create(tf->rdi);
+        break;
+    case SYS64_SHM_MAP:
+        tf->rax = sys64_shm_map((int)tf->rdi, (int)tf->rsi);
         break;
     default:
         tf->rax = (uint64_t)-1;

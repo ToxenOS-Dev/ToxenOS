@@ -36,6 +36,7 @@
 #include "../include/ps2_64.h"
 #include "../include/input64.h"
 #include "../include/mouse64.h"
+#include "../include/rustffi64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
@@ -119,6 +120,22 @@
 // Needs `make populate PACKAGE_DEBUG64=1` -- see user64/input_test64.c.
 // #define INPUT_TEST64_RUN 1
 
+// Define to run the Milestone 31 Rust/C integration self-test suite
+// (rust/toxenos_rs/src/selftest.rs) right after heap64_init() -- it
+// needs kmalloc/kfree and physmem64_alloc_page/free_page already
+// working, same timing requirement as every allocator-touching C
+// self-test in this file, but nothing else (no process/VFS layer
+// involved). Logs each case and a pass/fail summary via klog().
+// #define RUST64_SELFTEST_RUN 1
+
+// Define to hand the first enumerated PCI device to the Milestone 31
+// Rust PCI demo module (rust/toxenos_rs/src/pcidemo.rs) right after
+// pci64_enumerate() -- read-only, never touches the device's registers
+// or takes ownership of it. A no-op (logs nothing) if no PCI device was
+// found, which never happens under QEMU (the host bridge is always
+// device 0 on bus 0).
+// #define RUST64_PCI_DEMO_RUN 1
+
 // Define to log full PCI enumeration and block-device registry
 // diagnostics (kernel/pci64.c's pci64_dump(), kernel/blockdev64.c's
 // blockdev64_dump()) right after storage drivers initialize --
@@ -159,6 +176,21 @@
 // demo this used to fall into is gone (there is only one process model
 // now); this just idles forever with zero processes instead.
 // #define KERNEL64_DIAG_ONLY 1
+
+// Define to deliberately trigger a Rust panic in place of the normal
+// interactive boot -- verifies rust/toxenos_rs/src/panic.rs's handler
+// (mutually exclusive with every other debug mode above/below: a panic
+// halts forever, there's no "resume boot afterward"). See
+// rust/toxenos_rs/src/selftest.rs's toxenos_rust_panic_test.
+// #define RUST64_PANIC_TEST_RUN 1
+
+// Define to deliberately request an impossible allocation in place of
+// the normal interactive boot -- observes stable no_std Rust's actual
+// out-of-memory behavior (see rust/toxenos_rs/src/selftest.rs's
+// toxenos_rust_alloc_fail_test and the Milestone 31 summary's findings).
+// Mutually exclusive with normal boot, same reasoning as
+// RUST64_PANIC_TEST_RUN above.
+// #define RUST64_ALLOC_FAIL_TEST_RUN 1
 
 // Milestone 13: the NORMAL boot path (none of the debug flags above
 // defined) launches /init64.nex64, which launches /shell64.nex64 by
@@ -337,6 +369,30 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
 #ifdef HEAP64_RUN_TESTS
     klog_hex("heap64_selftest: all passed = ", (uint32_t)heap64_selftest());
 #endif
+
+#ifdef RUST64_SELFTEST_RUN
+    {
+        // Milestone 31: prove the Rust self-test leaves zero heap/
+        // physical-page drift, the same before/after-snapshot pattern
+        // every C self-test in this codebase already uses.
+        heap64_stats_t hbefore, hafter;
+        physmem64_stats_t pbefore, pafter;
+        heap64_stats(&hbefore);
+        physmem64_stats(&pbefore);
+
+        klog_hex("toxenos_rust_selftest: fail_mask = ", (uint32_t)toxenos_rust_selftest());
+
+        heap64_stats(&hafter);
+        physmem64_stats(&pafter);
+        int no_drift = hafter.used_bytes == hbefore.used_bytes &&
+                        hafter.span_count == hbefore.span_count &&
+                        pafter.used_pages == pbefore.used_pages &&
+                        pafter.free_pages == pbefore.free_pages;
+        klog(no_drift ? "toxenos_rust_selftest: no heap/physical-page drift PASS\n"
+                       : "toxenos_rust_selftest: no heap/physical-page drift FAIL\n");
+    }
+#endif
+
     console64_init(fb_addr, fb_width, fb_height, fb_pitch, &fb_fmt);
 
 #ifdef DISPLAY64_RUN_TESTS
@@ -445,6 +501,20 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     // what actually has the TxFS64 filesystem on it, that is preferred
     // over an unrelated ATA drive coincidentally also present.
     pci64_enumerate();
+
+#ifdef RUST64_PCI_DEMO_RUN
+    {
+        pci64_device_t* first = pci64_iter(0);
+        if (first) {
+            toxenos_pci_info_t info;
+            pci64_fill_rust_info(first, &info);
+            toxenos_rust_pci_demo(&info);
+        } else {
+            out_line("RUST64_PCI_DEMO_RUN: no PCI device found");
+        }
+    }
+#endif
+
     ahci64_init();
     nvme64_init();
     virtio_blk64_init();
@@ -560,6 +630,17 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
 #elif defined(KERNEL64_DIAG_ONLY)
     // Falls straight into the idle loop below -- no userland, no VGA
     // clear, diagnostics stay on screen.
+#elif defined(RUST64_PANIC_TEST_RUN)
+    // Milestone 31: deliberately panics inside Rust code to prove
+    // rust/toxenos_rs/src/panic.rs reports useful diagnostics via klog()
+    // and then reaches the exact same kernel64_halt_forever() path a
+    // C-side unhandled exception uses. Never returns -- boot stops here
+    // by design, exactly like RING3_TEST64_RUN/KERNEL64_DIAG_ONLY above.
+    toxenos_rust_panic_test();
+#elif defined(RUST64_ALLOC_FAIL_TEST_RUN)
+    // Milestone 31: observes stable no_std Rust's actual out-of-memory
+    // behavior against an impossible allocation request. Never returns.
+    toxenos_rust_alloc_fail_test();
 #else
     // Milestone 13: normal interactive boot. One last line on the
     // diagnostics screen, then clear it before init64/shell64 ever get

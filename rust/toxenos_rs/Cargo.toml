@@ -1,0 +1,41 @@
+[package]
+name = "toxenos_rs"
+version = "0.1.0"
+edition = "2021"
+
+# Milestone 31: built as a static archive (a plain collection of .o-style
+# object code, no Rust-specific dynamic linking machinery) so the
+# existing `ld` invocation in the top-level Makefile can link it
+# straight into kernel64.bin alongside the C/assembly objects, exactly
+# like any other archive dependency -- no change to the kernel's linker
+# script or overall build architecture.
+[lib]
+crate-type = ["staticlib"]
+
+# Zero dependencies, deliberately. The one thing that looked like it
+# might need one -- freestanding memcpy/memset/memcmp/memmove, since
+# this kernel has no libc and (audited -- see kernel/*.c) no existing
+# C-side implementations under those exact names to route to either --
+# turned out not to: `compiler_builtins`' own "mem" feature (the usual
+# way no_std kernels get these) requires nightly-only internals as of
+# 0.1.160, so src/mem.rs provides tiny freestanding implementations of
+# just those four symbols directly instead. See that file and the
+# Milestone 31 summary's symbol-audit section for the full story.
+[dependencies]
+
+# panic = "abort" here is redundant with the -C panic=abort passed via
+# RUSTFLAGS in the Makefile (both must agree; see build.mk/Makefile
+# comments), but stated explicitly so `cargo build` alone (without the
+# Makefile's RUSTFLAGS) still produces a crate that never assumes an
+# unwinder exists.
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+opt-level = "s"    # optimize for size -- kernel code, not a hot loop
+lto = true         # lets the linker drop unreferenced core/alloc monomorphizations
+codegen-units = 1  # required for LTO to be maximally effective
+strip = true       # debug info isn't loaded into any ELF section `size` counts
+                    # anyway, but there's no reason to carry it in the .a either

@@ -4,6 +4,7 @@
 #include "../include/pci64.h"
 #include "../include/heap64.h"
 #include "../include/klog.h"
+#include "../include/rustffi64.h"
 
 static inline void outl(uint16_t port, uint32_t val) {
     __asm__ volatile ("outl %0,%1" :: "a"(val), "Nd"(port));
@@ -255,4 +256,21 @@ void pci64_dump(void) {
         }
     }
     klog("pci64: dump end ---\n");
+}
+
+// Milestone 31: see include/rustffi64.h for why this is a dedicated
+// flatten-and-copy function rather than handing Rust a raw
+// pci64_device_t* to interpret itself.
+void pci64_fill_rust_info(const pci64_device_t* dev, toxenos_pci_info_t* out) {
+    out->bus = dev->bus; out->slot = dev->slot; out->func = dev->func;
+    out->vendor_id = dev->vendor_id; out->device_id = dev->device_id;
+    out->class_code = dev->class_code; out->subclass = dev->subclass;
+    out->prog_if = dev->prog_if; out->revision = dev->revision;
+    out->header_type = dev->header_type;
+    out->irq_line = dev->irq_line; out->irq_pin = dev->irq_pin;
+    for (int i = 0; i < 6; i++) {
+        out->bar_types[i] = (uint32_t)dev->bar[i].type;
+        out->bar_addrs[i] = dev->bar[i].address;
+        out->bar_sizes[i] = dev->bar[i].size;
+    }
 }

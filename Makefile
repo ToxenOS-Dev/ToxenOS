@@ -78,6 +78,53 @@ UFLAGS64 := -ffreestanding -fno-stack-protector -fno-pic -m64 \
             -Wall -Wextra -Wno-unused-parameter \
             -I user64
 
+# ── Milestone 31: Rust kernel/driver support ─────────────────────────────────
+# rustc's BUILTIN `x86_64-unknown-none` target (stable-compatible: `core`
+# and `alloc` ship prebuilt for it via `rustup target add x86_64-unknown-none`,
+# no nightly toolchain or `-Z build-std` needed), with every codegen
+# assumption controlled explicitly via -C flags to match KFLAGS64's own
+# C-side choices above rather than trusting the target's defaults:
+#   code-model=kernel        <-> -mcmodel=kernel
+#   relocation-model=static  <-> -fno-pic -fno-pie
+#   no-redzone=yes           <-> -mno-red-zone
+#   target-feature=-sse...   <-> -mno-mmx -mno-sse -mno-sse2 (no float
+#                                 code exists on either side of the
+#                                 boundary, so disabling these outright,
+#                                 rather than emulating them in software,
+#                                 is correct here)
+#   panic=abort              -- no unwinder exists in this kernel; see
+#                                 rust/toxenos_rs/src/panic.rs
+# See the Milestone 31 summary for the full target/toolchain rationale.
+RUST_TARGET     := x86_64-unknown-none
+RUSTFLAGS64     := -C code-model=kernel -C relocation-model=static \
+                   -C no-redzone=yes -C panic=abort \
+                   -C target-feature=-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2
+RUST_CRATE_DIR  := rust/toxenos_rs
+RUST_TARGET_DIR := build/rust_target
+RUST_LIB        := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libtoxenos_rs.a
+RUST_SRCS       := $(wildcard $(RUST_CRATE_DIR)/src/*.rs)
+
+# Rebuilds whenever any Rust source or Cargo.toml changes; a normal
+# `make kernel64` picks this up automatically (see that target's
+# prerequisites below) -- no separate manual Rust build step.
+$(RUST_LIB): $(RUST_SRCS) $(RUST_CRATE_DIR)/Cargo.toml
+	@if ! command -v cargo >/dev/null 2>&1; then \
+		echo "error: 'cargo' not found -- Milestone 31 needs a Rust toolchain."; \
+		echo "  Install one from https://rustup.rs, then run:"; \
+		echo "    rustup target add $(RUST_TARGET)"; \
+		exit 1; \
+	fi
+	@if ! rustup target list --installed 2>/dev/null | grep -qx "$(RUST_TARGET)"; then \
+		echo "error: Rust target '$(RUST_TARGET)' is not installed for the active toolchain."; \
+		echo "  Run: rustup target add $(RUST_TARGET)"; \
+		exit 1; \
+	fi
+	RUSTFLAGS="$(RUSTFLAGS64)" cargo build \
+		--manifest-path $(RUST_CRATE_DIR)/Cargo.toml \
+		--target $(RUST_TARGET) \
+		--target-dir $(RUST_TARGET_DIR) \
+		--release
+
 # ── Kernel object files ───────────────────────────────────────────────────────
 KOBJS := \
 	build/boot.o build/isr.o build/switch.o \
@@ -235,7 +282,7 @@ build/target.img:
 # kernel/pic.c is reused VERBATIM here (compiled a second time under
 # KFLAGS64, same precedent as klog.c below) — it's pure port I/O with no
 # 32-bit-specific dependency, so there's no need to fork a pic64.c.
-kernel64:
+kernel64: $(RUST_LIB)
 	@mkdir -p build iso64/boot
 	nasm -f elf64 kernel/boot64.asm        -o build/boot64.o
 	nasm -f elf64 kernel/isr64.asm         -o build/isr64.o
@@ -299,7 +346,8 @@ kernel64:
 		build/pixfmt64.o build/display64.o build/ps2_64.o \
 		build/input64.o build/mouse64.o \
 		build/vgaterm64.o build/fbterm64.o build/console64.o \
-		build/ring3_syscall_stub64_blob.o
+		build/ring3_syscall_stub64_blob.o \
+		$(RUST_LIB)
 	cp build/kernel64.bin iso64/boot/kernel64.bin
 	@if command -v grub2-mkrescue >/dev/null 2>&1; then \
 		grub2-mkrescue --modules="multiboot2 all_video" \

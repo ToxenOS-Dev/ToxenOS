@@ -14,4 +14,10 @@ int         klog_get_size(void);
 // Returns number of bytes written (not counting NUL).
 int         klog_read(char* out, int max);
 
+// kernel/interrupt64.c's fatal path: logs "*** halting ***", disables
+// interrupts, and parks in an infinite `hlt` loop. Never returns.
+// Milestone 31: exported specifically so Rust's panic handler can
+// funnel into this exact same path instead of reimplementing its own.
+__attribute__((noreturn)) void kernel64_halt_forever(void);
+
 #endif // KLOG_H

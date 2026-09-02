@@ -1,6 +1,7 @@
 # Build outputs
 build/
- 
+rust/toxenos_rs/target/
+
 # Temporary files
 /tmp/fat_raw.img
  

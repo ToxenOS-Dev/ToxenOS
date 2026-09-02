@@ -80,7 +80,11 @@ static void print_report(trapframe64_t* tf)
     klog(cpl == 3 ? "3 (ring3/user)\n" : "0 (ring0/kernel)\n");
 }
 
-static void halt_forever(void)
+// Milestone 31: exported (not `static`) so Rust's panic handler
+// (rust/toxenos_rs/src/panic.rs) can funnel into the exact same fatal
+// path a C-side unrecoverable kernel exception uses, rather than
+// reimplementing its own halt loop -- see include/klog.h's declaration.
+void kernel64_halt_forever(void)
 {
     klog("*** halting ***\n");
     __asm__ volatile ("cli");
@@ -92,7 +96,7 @@ static void halt_forever(void)
 // process via process64_fault_current() -- never returns. Otherwise
 // (kernel-mode fault, or a ring3 fault with no tracked process e.g. the
 // Milestone 3B/5 RING3_TEST64_RUN stub) falls through to the existing
-// halt_forever() -- there's no recovering from a genuinely broken
+// kernel64_halt_forever() -- there's no recovering from a genuinely broken
 // kernel context, and an untracked ring3 fault has nowhere safe to jump
 // back to.
 static void terminate_faulting_user_or_halt(trapframe64_t* tf)
@@ -108,7 +112,7 @@ static void terminate_faulting_user_or_halt(trapframe64_t* tf)
             process64_fault_current();  // never returns
         }
     }
-    halt_forever();
+    kernel64_halt_forever();
 }
 
 // error_code bit layout matches the 32-bit page_fault_handler:

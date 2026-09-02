@@ -51,6 +51,10 @@ uint8_t ps2_64_read_data(void) {
     return inb(PS2_DATA);
 }
 
+int ps2_64_output_full(void) {
+    return (inb(PS2_STATUS) & PS2_STATUS_OUTPUT_FULL) != 0;
+}
+
 void ps2_64_write_kbd(uint8_t data) {
     wait_input_clear();
     outb(PS2_DATA, data);

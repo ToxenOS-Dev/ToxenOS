@@ -65,6 +65,24 @@ void pipe64_close_write(pipe64_t* p);
 // writer remains (EOF). len == 0 returns 0 immediately.
 int64_t pipe64_read(pipe64_t* p, uint8_t* kbuf, uint64_t len);
 
+// Milestone 30: non-blocking counterpart, needed because ToxenOS has no
+// select()/poll()/epoll() equivalent and no threads -- a userspace
+// compositor multiplexing its input handle plus one pipe per connected
+// client has no way to wait on "whichever of these is ready first"
+// other than polling each with a non-blocking read. Never blocks, and
+// deliberately ALL-OR-NOTHING (unlike pipe64_read, which happily
+// returns a short read): either all `len` bytes are already buffered,
+// consumed atomically, and `len` is returned, or NOTHING is consumed
+// and -2 is returned (pipe not yet full enough, but at least one
+// writer remains). This matters because the compositor protocol
+// (user64/wmproto64.h) is fixed-size messages over a byte-stream pipe
+// -- a short read here would silently desync the framing (the next
+// read would start mid-message), which the caller has no way to detect
+// or recover from. Returns 0 only for genuine EOF (fewer than `len`
+// bytes buffered AND no writer remains -- there can never be a full
+// `len` again). len == 0 returns 0 immediately.
+int64_t pipe64_try_read(pipe64_t* p, uint8_t* kbuf, uint64_t len);
+
 // Writes up to `len` bytes from `kbuf`. Blocks while the pipe is full
 // and at least one reader remains. Returns -1 if there are no readers
 // at all -- checked both up front (immediate failure, nothing

@@ -40,6 +40,11 @@
 #define SYS64_DISPLAY_OPEN 32
 #define SYS64_DISPLAY_PRESENT 33
 #define DISPLAY64_FORMAT_LOGICAL_XRGB8888 1
+#define SYS64_HANDLE_TRY_READ 34
+#define SYS64_SHM_TOKEN 35
+#define SYS64_SHM_OPEN_TOKEN 36
+#define SYS64_SHM_SIZE 37
+#define SYS64_ERR_WOULDBLOCK ((int64_t)-2)
 // Return value -2 means the path is protected (kernel refused the op).
 #define SYS64_ERR_PROTECTED ((int64_t)-2)
 // Return value -3 from SYS64_DELETE means the folder is not empty.
@@ -332,6 +337,33 @@ static inline int64_t sys_display_open(uint32_t* width_out, uint32_t* height_out
 // this process owns (see sys_display_open). Returns 0 or -1.
 static inline int64_t sys_display_present(int handle, const display64_present_req_t* req) {
     return (int64_t)SYSCALL2(SYS64_DISPLAY_PRESENT, handle, req);
+}
+
+// Milestone 30: non-blocking counterpart to sys_handle_read, for a pipe
+// or input handle (a file handle just behaves like sys_handle_read).
+// Returns bytes read (>=0, 0=EOF), -1 on error, or SYS64_ERR_WOULDBLOCK
+// if nothing is available right now -- needed because ToxenOS has no
+// select()/poll() equivalent, so a process multiplexing several handles
+// (e.g. a compositor's input handle plus one pipe per client) must poll
+// each non-blockingly in turn.
+static inline int64_t sys_handle_try_read(int h, char* buf, uint64_t len) {
+    return (int64_t)SYSCALL3(SYS64_HANDLE_TRY_READ, h, buf, len);
+}
+
+// Milestone 30: cross-process shared-memory handoff by opaque token --
+// see include/shm64.h's header comment on shm64_t::token. Never exposes
+// a pointer or physical address.
+static inline int64_t sys_shm_token(int h) {
+    return (int64_t)SYSCALL1(SYS64_SHM_TOKEN, h);
+}
+static inline int64_t sys_shm_open_token(uint64_t token) {
+    return (int64_t)SYSCALL1(SYS64_SHM_OPEN_TOKEN, token);
+}
+// Actual mapped byte size (whole pages) of a SHM handle -- required to
+// validate a claimed width/height/stride against reality before a
+// compositor touches a client's surface. Returns -1 on failure.
+static inline int64_t sys_shm_size(int h) {
+    return (int64_t)SYSCALL1(SYS64_SHM_SIZE, h);
 }
 
 // Composed userland helper, not a 1:1 syscall wrapper -- hence "tox_"

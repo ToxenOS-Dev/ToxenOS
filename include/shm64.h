@@ -28,6 +28,7 @@ typedef struct shm64 {
     uint64_t base_phys;   // physmem64_alloc_pages(npages) -- one contiguous run
     uint32_t npages;
     uint32_t refcount;
+    uint64_t token;        // Milestone 30: opaque, process-independent lookup key -- see shm64_find_by_token
     struct shm64* dbg_next; // intrusive list of every live shm object, diagnostics only
 } shm64_t;
 
@@ -41,6 +42,21 @@ typedef struct shm64 {
 // physmem64 has no single contiguous run big enough) -- nothing is
 // left allocated on failure.
 int shm64_create(uint64_t size, shm64_t** out);
+
+// Milestone 30: shared-memory handles are per-process integers (an
+// index into THAT process's own handle table -- include/handle64.h),
+// meaningless to any other process. A compositor mapping a client's
+// window surface is a genuinely different, unrelated, already-running
+// process, so handle inheritance (parent->child at spawn, Milestone 26)
+// cannot get it there. `token` is a monotonically-increasing, opaque
+// 64-bit value assigned at creation (NOT a pointer or physical address
+// -- see kernel/syscall64.c's SYS64_SHM_TOKEN/SYS64_SHM_OPEN_TOKEN) that
+// the CREATING process can hand to another process over any channel it
+// likes (e.g. a pipe message); that other process then calls
+// SYS64_SHM_OPEN_TOKEN to obtain its OWN handle to the SAME object
+// (bumping refcount exactly like spawn inheritance does). Returns NULL
+// if no live object has that token.
+shm64_t* shm64_find_by_token(uint64_t token);
 
 // +1 reference -- called when mapping the object (kernel/uservm64.c)
 // or when a handle referencing it is duplicated (spawn inheritance,

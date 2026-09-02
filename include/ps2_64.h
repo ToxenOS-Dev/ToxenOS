@@ -44,4 +44,17 @@ void ps2_64_write_kbd(uint8_t data);
 // byte is already known to be there; see kernel/keyboard64.c/mouse64.c).
 uint8_t ps2_64_read_data(void);
 
+// Milestone 30: reports whether a byte is currently sitting in the
+// controller's output buffer (status register bit 0), without
+// consuming it -- used by kernel/mouse64.c to drain any byte the
+// device pushed between its last expected handshake reply and the
+// point IRQ12 is unmasked. Necessary because "Enable Data Reporting"
+// can cause the device to start streaming immediately; if even one
+// byte of a real packet arrives before pic_unmask(12) is reached, it
+// sits latched at the controller and is delivered as the very first
+// post-`sti` IRQ12 -- but as a lone byte, permanently one-behind every
+// packet boundary after it, since nothing else would ever notice or
+// correct for a partial packet silently started this early.
+int ps2_64_output_full(void);
+
 #endif // PS2_64_H

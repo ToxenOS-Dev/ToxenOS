@@ -646,8 +646,39 @@ static int txfs64_dir_append(uint32_t dir_inum, uint32_t child_inum,
     txfs64_inode_t dir;
     if (txfs64_read_inode(dir_inum, &dir) < 0) return -1;
 
-    uint32_t per_block   = TXFS64_BLOCK_SIZE / sizeof(txfs64_dirent_t);
-    uint32_t total_slots = (uint32_t)(dir.size / sizeof(txfs64_dirent_t));
+    uint32_t per_block    = TXFS64_BLOCK_SIZE / sizeof(txfs64_dirent_t);
+    uint32_t total_slots  = (uint32_t)(dir.size / sizeof(txfs64_dirent_t));
+
+    // Milestone 30: reuse a dead slot (txfs64_dir_remove_entry only ever
+    // zeroes an entry's inode field, never shrinks dir.size or frees the
+    // block) before appending a brand new one -- without this, a
+    // directory that sees repeated create/delete cycles at the same
+    // path (any long-lived directory eventually does) grows forever and
+    // never gives back the blocks backing dead slots, even once every
+    // live entry in a block is gone. Existing on-disk layout is
+    // unchanged; this only changes where new entries land.
+    {
+        uint8_t buf[TXFS64_BLOCK_SIZE];
+        for (uint32_t b = 0; b * per_block < total_slots; b++) {
+            uint32_t blk = txfs64_get_block(&dir, b);
+            if (!blk) break;
+            if (txfs64_read_block(blk, buf) < 0) break;
+
+            uint32_t in_this = total_slots - b * per_block;
+            if (in_this > per_block) in_this = per_block;
+
+            for (uint32_t i = 0; i < in_this; i++) {
+                txfs64_dirent_t* de = (txfs64_dirent_t*)(buf + i * sizeof(txfs64_dirent_t));
+                if (de->inode) continue;
+                de->inode    = child_inum;
+                de->name_len = 0;
+                de->type     = type;
+                txfs64_strcpy(de->name, name, 255);
+                return txfs64_write_block(blk, buf);
+            }
+        }
+    }
+
     uint32_t block_idx   = total_slots / per_block;
     uint32_t slot_in_blk = total_slots % per_block;
 

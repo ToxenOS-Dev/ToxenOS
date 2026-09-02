@@ -466,15 +466,47 @@ static uint64_t sys64_handle_read(int h, uint64_t buf_ptr, uint64_t len) {
     // never polling -- see input64_read_blocking) for exactly ONE
     // structured event, then copies it out. `len` must be at least one
     // event's worth; this deliberately doesn't batch multiple events
-    // per call (Milestone 30's compositor doesn't need that yet, and it
-    // would need a non-blocking peek this milestone has no reason to
-    // add).
+    // per call.
     if (cur->handles[h].kind == HANDLE64_INPUT) {
         if (len < sizeof(input64_event_t)) return (uint64_t)-1;
         input64_event_t ev;
         if (input64_read_blocking(&ev) < 0) return (uint64_t)-1;
         if (copy_to_user64(buf_ptr, &ev, sizeof(ev)) < 0) return (uint64_t)-1;
         return (uint64_t)sizeof(ev);
+    }
+    return (uint64_t)-1;
+}
+
+// Milestone 30: non-blocking counterpart, used by kernel/../user64's
+// compositor to multiplex its input handle against one pipe per
+// connected client (see include/syscall64.h's header comment on
+// SYS64_HANDLE_TRY_READ). HANDLE64_FILE reads never block regardless,
+// so that case just delegates to the normal path.
+static uint64_t sys64_handle_try_read(int h, uint64_t buf_ptr, uint64_t len) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES) return (uint64_t)-1;
+
+    if (cur->handles[h].kind == HANDLE64_PIPE_READ) {
+        if (len > SYS64_PIPE_MAX) len = SYS64_PIPE_MAX;
+        uint8_t kbuf[SYS64_PIPE_MAX];
+        int64_t n = pipe64_try_read((pipe64_t*)cur->handles[h].obj, kbuf, len);
+        if (n == -2) return SYS64_ERR_WOULDBLOCK;
+        if (n < 0) return (uint64_t)-1;
+        if (n > 0 && copy_to_user64(buf_ptr, kbuf, (uint64_t)n) < 0) return (uint64_t)-1;
+        return (uint64_t)n;
+    }
+    if (cur->handles[h].kind == HANDLE64_INPUT) {
+        if (len < sizeof(input64_event_t)) return (uint64_t)-1;
+        input64_event_t ev;
+        int r = input64_try_read(&ev);
+        if (r == -2) return SYS64_ERR_WOULDBLOCK;
+        if (r < 0) return (uint64_t)-1;
+        if (copy_to_user64(buf_ptr, &ev, sizeof(ev)) < 0) return (uint64_t)-1;
+        return (uint64_t)sizeof(ev);
+    }
+    if (cur->handles[h].kind == HANDLE64_FILE) {
+        return sys64_handle_read(h, buf_ptr, len);
     }
     return (uint64_t)-1;
 }
@@ -547,6 +579,39 @@ static uint64_t sys64_shm_map(int h, int writable) {
     uint64_t addr;
     if (uservm64_map_shm(&cur->vm, &cur->as, (shm64_t*)cur->handles[h].obj, writable, &addr) < 0) return (uint64_t)-1;
     return addr;
+}
+
+// Milestone 30: see include/syscall64.h's header comment on
+// SYS64_SHM_TOKEN/SYS64_SHM_OPEN_TOKEN and include/shm64.h's on
+// shm64_t::token for the full cross-process handoff rationale.
+static uint64_t sys64_shm_token(int h) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES || cur->handles[h].kind != HANDLE64_SHM) return (uint64_t)-1;
+    return ((shm64_t*)cur->handles[h].obj)->token;
+}
+
+static uint64_t sys64_shm_size(int h) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES || cur->handles[h].kind != HANDLE64_SHM) return (uint64_t)-1;
+    return (uint64_t)((shm64_t*)cur->handles[h].obj)->npages * 0x1000ULL;
+}
+
+static uint64_t sys64_shm_open_token(uint64_t token) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+
+    shm64_t* s = shm64_find_by_token(token);
+    if (!s) return (uint64_t)-1;
+
+    int slot = find_free_handle(cur);
+    if (slot < 0) return (uint64_t)-1;
+
+    shm64_add_ref(s);
+    cur->handles[slot].kind = HANDLE64_SHM;
+    cur->handles[slot].obj = s;
+    return (uint64_t)slot;
 }
 
 // ── Milestone 29: structured input + userspace display present ──────
@@ -734,6 +799,18 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_DISPLAY_PRESENT:
         tf->rax = sys64_display_present((int)tf->rdi, tf->rsi);
+        break;
+    case SYS64_HANDLE_TRY_READ:
+        tf->rax = sys64_handle_try_read((int)tf->rdi, tf->rsi, tf->rdx);
+        break;
+    case SYS64_SHM_TOKEN:
+        tf->rax = sys64_shm_token((int)tf->rdi);
+        break;
+    case SYS64_SHM_OPEN_TOKEN:
+        tf->rax = sys64_shm_open_token(tf->rdi);
+        break;
+    case SYS64_SHM_SIZE:
+        tf->rax = sys64_shm_size((int)tf->rdi);
         break;
     default:
         tf->rax = (uint64_t)-1;

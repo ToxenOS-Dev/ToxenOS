@@ -444,6 +444,12 @@ user64: tools/elf2nex64
 	tools/elf2nex64 build/user64/input_test64.elf64 build/user64/input_test64.nex64
 	gcc $(UFLAGS64) user64/display_test64.c -o build/user64/display_test64.elf64
 	tools/elf2nex64 build/user64/display_test64.elf64 build/user64/display_test64.nex64
+	gcc $(UFLAGS64) user64/compositor64.c -o build/user64/compositor64.elf64
+	tools/elf2nex64 build/user64/compositor64.elf64 build/user64/compositor64.nex64
+	gcc $(UFLAGS64) user64/gfx_demo64.c -o build/user64/gfx_demo64.elf64
+	tools/elf2nex64 build/user64/gfx_demo64.elf64 build/user64/gfx_demo64.nex64
+	gcc $(UFLAGS64) user64/gfx_interactive64.c -o build/user64/gfx_interactive64.elf64
+	tools/elf2nex64 build/user64/gfx_interactive64.elf64 build/user64/gfx_interactive64.nex64
 	gcc $(UFLAGS64) user64/init64.c -o build/user64/init64.elf64
 	tools/elf2nex64 build/user64/init64.elf64 build/user64/init64.nex64
 	gcc $(UFLAGS64) user64/shell64.c -o build/user64/shell64.elf64
@@ -543,6 +549,13 @@ populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 	tools/txfs_write build/fs.img build/user64/init64.nex64 /init64.nex64
 	# Milestone 10: ToxenOS64's first interactive shell.
 	tools/txfs_write build/fs.img build/user64/shell64.nex64 /shell64.nex64
+	# Milestone 30: compositor + demo graphical clients -- always
+	# packaged (not PACKAGE_DEBUG64-gated) since init64's
+	# INIT64_GRAPHICAL_MODE flag needs them for a normal graphical boot,
+	# not just debug testing.
+	tools/txfs_write build/fs.img build/user64/compositor64.nex64 /compositor64.nex64
+	tools/txfs_write build/fs.img build/user64/gfx_demo64.nex64 /gfx_demo64.nex64
+	tools/txfs_write build/fs.img build/user64/gfx_interactive64.nex64 /gfx_interactive64.nex64
 	# Milestone 16: the 64-bit debug/test fixtures below are no longer on
 	# the disk image by default -- they're root-level clutter with zero
 	# relevance to normal boot, only ever consumed by kernel/kernel64.c's

@@ -15,6 +15,7 @@
 #include "../include/klog.h"
 
 static shm64_t* g_shm_list = 0; // intrusive list of every live shm object, diagnostics only
+static uint64_t g_next_token = 1; // 0 is never a valid token
 
 static void dec_to_str_local(uint64_t val, char* out) {
     char tmp[24];
@@ -50,12 +51,23 @@ int shm64_create(uint64_t size, shm64_t** out) {
     s->refcount = 1;
 
     uint64_t flags = shm64_lock();
+    s->token = g_next_token++;
     s->dbg_next = g_shm_list;
     g_shm_list = s;
     shm64_unlock(flags);
 
     *out = s;
     return 0;
+}
+
+shm64_t* shm64_find_by_token(uint64_t token) {
+    uint64_t flags = shm64_lock();
+    shm64_t* found = 0;
+    for (shm64_t* s = g_shm_list; s; s = s->dbg_next) {
+        if (s->token == token) { found = s; break; }
+    }
+    shm64_unlock(flags);
+    return found;
 }
 
 static void unlink_and_free(shm64_t* s) {

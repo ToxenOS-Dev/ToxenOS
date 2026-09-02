@@ -24,6 +24,18 @@
 // re-enabling this flag, or the sys_spawn below will fail.
 // #define INIT64_TEST_MODE 1
 
+// Milestone 30: define to launch the graphical environment
+// (/compositor64.nex64, which owns the Milestone 29 display/input
+// handles and spawns its own demo clients) instead of the text shell.
+// Default OFF, matching every other milestone's convention of gating
+// new, higher-risk functionality behind an explicit flag rather than
+// silently changing the default boot path every existing regression
+// test relies on -- the text shell remains the unconditional default
+// so a compositor bug never destabilizes the rest of the test suite.
+// If the compositor process exits (normally or via a fault), init64
+// falls back to the text shell rather than leaving the user stranded.
+// #define INIT64_GRAPHICAL_MODE 1
+
 static int my_strlen(const char* s) {
     int i = 0;
     while (s[i]) i++;
@@ -115,6 +127,25 @@ void _start(void) {
         put("init64: sys_spawn(/exec64_test.nex64) failed\n");
     }
     put("init64: done\n");
+#elif defined(INIT64_GRAPHICAL_MODE)
+    // Milestone 30: launch the compositor instead of the text shell.
+    // If it exits for any reason (clean exit, unhandled fault -- either
+    // way process64_wait returns), fall back to the shell rather than
+    // leaving the user with no usable console at all.
+    int64_t comp_pid = sys_spawn("/compositor64.nex64", 0);
+    if (comp_pid < 0) {
+        put("init64: sys_spawn(/compositor64.nex64) failed, falling back to shell\n");
+    } else {
+        int64_t code = sys_wait((uint32_t)comp_pid);
+        put_line_int("init64: compositor64 exited, code=", code);
+        put("init64: falling back to text shell\n");
+    }
+    int64_t shell_pid = sys_spawn("/shell64.nex64", 0);
+    if (shell_pid < 0) {
+        put("init64: sys_spawn(/shell64.nex64) failed\n");
+    } else {
+        sys_wait((uint32_t)shell_pid);
+    }
 #else
     // Milestone 13: normal boot -- no banner of our own, just hand off
     // straight to the shell.

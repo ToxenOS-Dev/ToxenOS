@@ -64,6 +64,16 @@ int input64_read_blocking(input64_event_t* out) {
     return 0;
 }
 
+int input64_try_read(input64_event_t* out) {
+    uint64_t flags = lock();
+    if (count == 0) { unlock(flags); return -2; }
+    *out = queue[head];
+    head = (head + 1) % INPUT64_QUEUE_CAP;
+    count--;
+    unlock(flags);
+    return 0;
+}
+
 int input64_acquire(void) {
     uint64_t flags = lock();
     if (owner_pid != 0) { unlock(flags); return -1; }

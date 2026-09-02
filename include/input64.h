@@ -110,6 +110,13 @@ void input64_push(const input64_event_t* ev);
 // context can't be a consumer).
 int input64_read_blocking(input64_event_t* out);
 
+// Milestone 30: non-blocking counterpart -- same rationale as
+// pipe64_try_read (no select()/poll() equivalent, and a compositor
+// must multiplex this queue against one pipe per connected client).
+// Returns 0 with *out set if an event was available, -1 if there is no
+// current process, or -2 if the queue is empty (would-block).
+int input64_try_read(input64_event_t* out);
+
 // Milestone 29 access policy: for now ToxenOS has no credential system,
 // so a simple single-consumer policy stands in for real access control
 // -- see include/handle64.h/kernel/syscall64.c's SYS64_INPUT_OPEN.

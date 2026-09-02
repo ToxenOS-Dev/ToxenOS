@@ -181,6 +181,42 @@
 // display).
 #define SYS64_DISPLAY_PRESENT 33 // (int handle, const display64_present_req_t* req) -> 0 or -1
 
+// Milestone 30: non-blocking counterpart to SYS64_HANDLE_READ, for a
+// HANDLE64_PIPE_READ or HANDLE64_INPUT handle only (HANDLE64_FILE reads
+// never block anyway, so it behaves identically to SYS64_HANDLE_READ
+// there). Needed because ToxenOS has no select()/poll() equivalent and
+// no threads -- a userspace compositor multiplexing its input handle
+// against one pipe per connected client has no other way to wait on
+// "whichever is ready first" than polling each non-blockingly. Returns
+// bytes read (>=0, 0 = EOF), (uint64_t)-1 on error/bad handle, or
+// (uint64_t)-2 if nothing is available right now (would-block).
+#define SYS64_HANDLE_TRY_READ 34 // (int handle, char* buf, uint64_t len) -> bytes, 0=EOF, -1=error, -2=would-block
+#define SYS64_ERR_WOULDBLOCK ((uint64_t)-2)
+
+// Milestone 30: cross-process shared-memory handoff by opaque token
+// (include/shm64.h's header comment on shm64_t::token has the full
+// rationale -- handle numbers are per-process and spawn-inheritance-only,
+// which cannot get a client's window-surface handle to an unrelated,
+// already-running compositor process). SYS64_SHM_TOKEN queries the
+// stable token for a SHM handle the caller already owns (for sending to
+// another process over a pipe); SYS64_SHM_OPEN_TOKEN looks up a live
+// object by that token and creates a NEW handle to it in the CALLING
+// process's own table (bumping refcount). Neither ever exposes a
+// pointer or physical address -- the token is an opaque monotonic
+// counter value with no meaning outside these two calls.
+#define SYS64_SHM_TOKEN      35 // (int handle) -> uint64_t token, or (uint64_t)-1
+#define SYS64_SHM_OPEN_TOKEN 36 // (uint64_t token) -> handle, or -1
+
+// Milestone 30: a process that opened a shm object by token (i.e. did
+// NOT create it) has no other way to learn its actual byte size --
+// necessary so a compositor can bound its OWN reads of a client-claimed
+// surface (width/height/stride in the wm protocol are just numbers the
+// client sent; the compositor must clamp against the object's real
+// mapped size before touching it, or a malicious/buggy client could
+// crash the compositor with an out-of-bounds read into its own
+// unmapped address space).
+#define SYS64_SHM_SIZE 37 // (int handle) -> uint64_t byte size (whole pages), or (uint64_t)-1
+
 void syscall64_dispatch(trapframe64_t* tf);
 
 #endif // SYSCALL64_H

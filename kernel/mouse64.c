@@ -13,19 +13,33 @@ static int      g_packet_size = 3;
 static uint32_t g_packets_received = 0;
 static uint32_t g_resync_drops = 0;
 static uint32_t g_prev_buttons = 0;
+// Milestone 30: discards exactly one assembled packet right after
+// init. Observed under QEMU: the very first packet received after
+// enabling data reporting can be stale/spurious -- e.g. a byte the
+// controller already delivered to a polling read during the handshake
+// can leave an edge-triggered IRQ12 request latched at the PIC despite
+// being masked at the time, which then fires the instant it's unmasked
+// (well after `sti`) with nothing genuinely new in the data port to
+// back it up. This is a well-known PS/2 quirk real drivers commonly
+// handle the same way: unconditionally discard the first post-enable
+// packet rather than trying to out-race or explain the exact hardware
+// timing that produced it.
+static int g_discard_first_packet = 0;
 
 static uint8_t packet_buf[4];
 static int     packet_idx = 0;
 
-static void set_sample_rate(uint8_t rate) {
-    ps2_64_write_aux(0xF3); ps2_64_read_data(); // ACK
-    ps2_64_write_aux(rate); ps2_64_read_data(); // ACK
-}
-
 static void process_packet(const uint8_t* p)
 {
     g_packets_received++;
+    if (g_discard_first_packet) { g_discard_first_packet = 0; return; }
     uint8_t b0 = p[0];
+#ifdef MOUSE64_DEBUG
+    klog_hex("mouse64: packet b0=", p[0]);
+    klog_hex("mouse64: packet b1=", p[1]);
+    klog_hex("mouse64: packet b2=", p[2]);
+    klog_hex("mouse64: prev_buttons=", g_prev_buttons);
+#endif
 
     // Overflow bits set -- the device itself flags this sample as
     // unreliable; discard the motion rather than report a garbage jump.
@@ -90,6 +104,10 @@ void mouse64_handler(void)
     uint8_t data;
     __asm__ volatile ("inb $0x60, %0" : "=a"(data));
 
+#ifdef MOUSE64_DEBUG
+    klog_hex("mouse64: raw byte=", data);
+#endif
+
     if (packet_idx == 0 && !(data & 0x08)) {
         // Not a valid first byte (the protocol invariant bit is clear)
         // -- drop it and keep waiting for a genuine packet start. This
@@ -120,23 +138,33 @@ int mouse64_init(void)
     ps2_64_read_data(); // device ID (0x00 for a standard mouse)
     g_detected = 1;
 
-    // IntelliMouse wheel negotiation: the standard "magic" sample-rate
+    // IntelliMouse wheel negotiation (the standard "magic" sample-rate
     // sequence, then Get Device ID -- a device that responds with ID 3
-    // supports the 4th (wheel) packet byte. Not required for basic
-    // operation; falls back to plain 3-byte packets otherwise.
-    set_sample_rate(200);
-    set_sample_rate(100);
-    set_sample_rate(80);
-    ps2_64_write_aux(0xF2);
-    ps2_64_read_data(); // ACK
-    uint8_t id = ps2_64_read_data();
-    if (id == 3) {
-        g_has_wheel = 1;
-        g_packet_size = 4;
-    }
+    // supports the 4th, wheel-delta packet byte) is DELIBERATELY
+    // DISABLED here, not merely skipped. Milestone 30 testing found
+    // that under this QEMU version, negotiating it successfully (ID
+    // comes back as 3) does not reliably match the actual packet
+    // stream this environment's mouse-event injection produces: the
+    // driver ends up expecting 4-byte packets against a 3-byte stream,
+    // and the byte-3/packet-0 framing permanently drifts (each
+    // "packet" boundary shifts by one real byte, so packet_idx==0's
+    // bit-3 resync check only catches the drift probabilistically
+    // rather than immediately) -- observed as spurious/garbled
+    // POINTER_BUTTON and POINTER_WHEEL events out of pure motion input.
+    // Wheel support was always explicitly optional (Milestone 29's
+    // scope), so the robust choice is to stay on the universally
+    // correct standard 3-byte packet format rather than chase a
+    // negotiation whose real-world reliability this milestone could
+    // not establish. Revisit if a genuine need for wheel events arises.
 
     ps2_64_write_aux(0xF6); ps2_64_read_data(); // Set Defaults, ACK
     ps2_64_write_aux(0xF4); ps2_64_read_data(); // Enable Data Reporting, ACK
+
+    // Drain any byte the device already pushed now that reporting is
+    // active, on general principle (cheap, bounded, and harmless either
+    // way) -- see ps2_64_output_full()'s header comment.
+    for (int i = 0; i < 16 && ps2_64_output_full(); i++) ps2_64_read_data();
+    g_discard_first_packet = 1;
 
     irq64_register(12, mouse64_handler);
     pic_unmask(12);

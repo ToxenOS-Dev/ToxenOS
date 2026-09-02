@@ -137,6 +137,29 @@ int64_t pipe64_read(pipe64_t* p, uint8_t* kbuf, uint64_t len) {
     return (int64_t)got;
 }
 
+// Milestone 30: see include/pipe64.h's header comment. Never blocks,
+// and deliberately all-or-nothing -- a short read would desync the
+// compositor protocol's fixed-size message framing.
+int64_t pipe64_try_read(pipe64_t* p, uint8_t* kbuf, uint64_t len) {
+    if (len == 0) return 0;
+
+    uint64_t flags = pipe64_lock();
+    if (p->count < len) {
+        int would_block = (p->writers > 0);
+        pipe64_unlock(flags);
+        return would_block ? -2 : 0;
+    }
+
+    for (uint64_t i = 0; i < len; i++) {
+        kbuf[i] = p->buffer[p->tail];
+        p->tail = (p->tail + 1) % p->capacity;
+    }
+    p->count -= (uint32_t)len;
+    process64_wake_all(&p->write_chan);
+    pipe64_unlock(flags);
+    return (int64_t)len;
+}
+
 int64_t pipe64_write(pipe64_t* p, const uint8_t* kbuf, uint64_t len) {
     if (len == 0) return 0;
 

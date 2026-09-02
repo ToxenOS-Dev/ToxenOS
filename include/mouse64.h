@@ -9,13 +9,13 @@
 //
 // Initialization sequence (see kernel/mouse64.c for the full detail):
 //   1. Reset the device (0xFF), read its self-test result.
-//   2. Attempt the standard IntelliMouse "magic" sample-rate sequence
-//      (200, 100, 80) followed by Get Device ID (0xF2) to negotiate a
-//      4th (wheel) packet byte -- falls back to plain 3-byte packets if
-//      the device doesn't respond as an IntelliMouse. Not a blocker: a
-//      device that doesn't support this just gets no wheel events.
-//   3. Set Defaults (0xF6) and Enable Data Reporting (0xF4).
-//   4. Register IRQ12 and unmask it.
+//   2. Set Defaults (0xF6) and Enable Data Reporting (0xF4).
+//   3. Register IRQ12 and unmask it.
+// Always uses the standard 3-byte packet format (no wheel support --
+// see kernel/mouse64.c's header comment on why the IntelliMouse 4-byte
+// negotiation was deliberately removed after Milestone 30 testing found
+// it desyncs packet framing under this QEMU version's mouse-event
+// injection path).
 // Requires ps2_64_init() to have already run (enables port 2 and its
 // IRQ in the 8042 configuration byte).
 //
@@ -31,7 +31,7 @@ void mouse64_handler(void);
 
 typedef struct {
     uint32_t detected;         // 1 if a mouse responded during init
-    uint32_t has_wheel;        // 1 if IntelliMouse wheel negotiation succeeded
+    uint32_t has_wheel;        // always 0 -- wheel negotiation is disabled, see above
     uint32_t packets_received;
     uint32_t resync_drops;     // bytes discarded while resynchronizing
 } mouse64_stats_t;

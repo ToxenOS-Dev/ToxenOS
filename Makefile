@@ -503,6 +503,18 @@ user64: tools/elf2nex64
 	tools/elf2nex64 build/user64/gfx_interactive64.elf64 build/user64/gfx_interactive64.nex64
 	gcc $(UFLAGS64) user64/gfx_crash_test64.c -o build/user64/gfx_crash_test64.elf64
 	tools/elf2nex64 build/user64/gfx_crash_test64.elf64 build/user64/gfx_crash_test64.nex64
+	# Milestone 32.1: a SEPARATE binary, built from the exact same
+	# source with one extra -D flag, that reacts to WM_MSG_TEST_SHUTDOWN
+	# (see wmproto64.h) by exiting cleanly -- used only by
+	# compositor_stall_test64.c's self-test driver so a disposable test
+	# compositor instance never leaks as a permanently-running orphan
+	# holding the exclusive display/input handles. The real
+	# compositor64.nex64 above is completely unaffected (not rebuilt
+	# with this flag).
+	gcc $(UFLAGS64) -DCOMPOSITOR64_TEST_MODE user64/compositor64.c -o build/user64/compositor64_test.elf64
+	tools/elf2nex64 build/user64/compositor64_test.elf64 build/user64/compositor64_test.nex64
+	gcc $(UFLAGS64) user64/compositor_stall_test64.c -o build/user64/compositor_stall_test64.elf64
+	tools/elf2nex64 build/user64/compositor_stall_test64.elf64 build/user64/compositor_stall_test64.nex64
 	gcc $(UFLAGS64) user64/init64.c -o build/user64/init64.elf64
 	tools/elf2nex64 build/user64/init64.elf64 build/user64/init64.nex64
 	gcc $(UFLAGS64) user64/shell64.c -o build/user64/shell64.elf64
@@ -635,6 +647,8 @@ populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 		tools/txfs_write build/fs.img build/user64/vfs_test64.nex64 /vfs_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/service_test64.nex64 /service_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/gfx_crash_test64.nex64 /gfx_crash_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/compositor64_test.nex64 /compositor64_test.nex64; \
+		tools/txfs_write build/fs.img build/user64/compositor_stall_test64.nex64 /compositor_stall_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/input_test64.nex64 /input_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/display_test64.nex64 /display_test64.nex64; \
 	fi

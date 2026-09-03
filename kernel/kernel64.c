@@ -127,6 +127,18 @@
 // Needs `make populate PACKAGE_DEBUG64=1` -- see user64/input_test64.c.
 // #define INPUT_TEST64_RUN 1
 
+// Define to run the Milestone 32.1 compositor event-delivery
+// regression test right after storage/display/input are up (same
+// timing requirement as DISPLAY_TEST64_RUN/INPUT_TEST64_RUN below --
+// needs real display/input hardware) -- see
+// user64/compositor_stall_test64.c for the full scenario (a disposable
+// test compositor instance, a normal client, a client that floods
+// requests without ever reading replies, and a late-connecting client)
+// and kernel/kernel64.c's own invocation below for the pass/fail +
+// repeated-cycle leak check. Requires `make populate PACKAGE_DEBUG64=1`
+// for compositor64_test.nex64/compositor_stall_test64.nex64.
+// #define COMPOSITOR_STALL_TEST64_RUN 1
+
 // Define to run the Milestone 31 Rust/C integration self-test suite
 // (rust/toxenos_rs/src/selftest.rs) right after heap64_init() -- it
 // needs kmalloc/kfree and physmem64_alloc_page/free_page already
@@ -604,6 +616,40 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
         int code = -1;
         if (process64_spawn("/input_test64.nex64", 0, 0, &pid) == 0) code = process64_wait(pid);
         out_kv("input_test64: exit code = ", (uint64_t)(int64_t)code);
+    }
+#endif
+
+// Milestone 32.1: see this file's own header comment on
+// COMPOSITOR_STALL_TEST64_RUN. Runs the primary pass/fail scenario
+// once, then 5 further full cycles (each spawning a disposable test
+// compositor + 3 clients from scratch) purely to compare heap/
+// physical-page stats before vs after -- same before/after-snapshot
+// pattern every other repeated-cycle case in this codebase uses.
+#ifdef COMPOSITOR_STALL_TEST64_RUN
+    {
+        #define COMPOSITOR_STALL_TEST_PATH "/compositor_stall_test64.nex64"
+        uint32_t pid = 0;
+        int code = -1;
+        if (process64_spawn(COMPOSITOR_STALL_TEST_PATH, "", 0, &pid) == 0) code = process64_wait(pid);
+        klog(code == 42 ? "compositor_stall_test64: PASS\n" : "compositor_stall_test64: FAIL\n");
+        out_kv("compositor_stall_test64: exit code = ", (uint64_t)(int64_t)code);
+
+        heap64_stats_t hbefore, hafter;
+        physmem64_stats_t pbefore, pafter;
+        heap64_stats(&hbefore);
+        physmem64_stats(&pbefore);
+        int cycles_ok = 1;
+        for (int i = 0; i < 5; i++) {
+            uint32_t cpid = 0;
+            if (process64_spawn(COMPOSITOR_STALL_TEST_PATH, "", 0, &cpid) < 0) { cycles_ok = 0; break; }
+            if (process64_wait(cpid) != 42) { cycles_ok = 0; break; }
+        }
+        heap64_stats(&hafter);
+        physmem64_stats(&pafter);
+        int no_drift = hafter.used_bytes == hbefore.used_bytes && hafter.span_count == hbefore.span_count &&
+                        pafter.used_pages == pbefore.used_pages && pafter.free_pages == pbefore.free_pages;
+        klog(cycles_ok ? "compositor_stall_test64: repeated cycles PASS\n" : "compositor_stall_test64: repeated cycles FAIL\n");
+        klog(no_drift ? "compositor_stall_test64: no heap/physical-page drift PASS\n" : "compositor_stall_test64: no heap/physical-page drift FAIL\n");
     }
 #endif
 

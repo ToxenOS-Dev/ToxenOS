@@ -161,12 +161,32 @@ static void put_kv(const char* label, uint64_t v) {
 #define TITLE_TEXT_COLOR 0xFFFFFF
 #define CURSOR_COLOR 0xFFFF00
 
+// Milestone 32.1: bounded per-connection outgoing event queue -- see
+// queue_event()'s header comment for the full delivery/coalescing/
+// backpressure design this exists to support. A plain fixed array (no
+// heap allocation): nothing to leak, disconnect just needs to reset
+// evt_count.
+#define CONN_EVT_QUEUE_MAX 32
+
 typedef struct {
     int in_use;
     int req_r;         // compositor's own handle: read end of client's request pipe
     int evt_w;         // compositor's own handle: write end of client's event pipe
     uint32_t client_id;
     int said_hello;
+    wm_msg_t evt_queue[CONN_EVT_QUEUE_MAX]; // FIFO, oldest at index 0
+    int evt_count;
+    // Milestone 32.1: set by queue_event() when this connection's
+    // outgoing queue overflowed with a critical (non-coalescible) event
+    // it could not absorb, or by flush_conn_queue() when the event pipe
+    // turns out to be broken. The ACTUAL disconnect_conn() call is
+    // always deferred to one safe point in the main loop (see
+    // disconnect_stalled_conns()) -- queue_event()/flush_conn_queue()
+    // are called from deep inside per-event/per-window loops elsewhere
+    // in this file, and never tearing a connection down from there
+    // avoids any question of whether some caller might still touch
+    // g_windows[]/g_conns[] state for this connection after the call.
+    int pending_disconnect;
 } conn_t;
 
 typedef struct {
@@ -259,25 +279,122 @@ static void raise_window(int idx) {
     g_zorder[g_zorder_count++] = idx;
 }
 
-static void send_to_conn(int conn_index, const wm_msg_t* m) {
+// Milestone 32.1: queues `m` for delivery to `conn_index`, replacing
+// the Milestone 30 design that wrote directly (and blockingly) to the
+// client's event pipe -- see this file's own header comment and the
+// Milestone 32 summary for why that could freeze the ENTIRE compositor
+// (a single-threaded process that also owns input, service accepts,
+// and presentation) on nothing worse than one client that stopped
+// reading. Actual delivery happens later, non-blockingly, in
+// flush_conn_queue() -- called once per main-loop iteration for every
+// connection, so under normal conditions (a client draining its event
+// pipe promptly, as every well-behaved client does) a queued event is
+// written out to the real pipe within the same iteration it was
+// generated in, with no observable delay.
+//
+// Two message types are deliberately COALESCIBLE -- queued at most
+// ONCE per window at any time, folding a newer occurrence into the
+// existing queued one instead of appending a second entry:
+//   - WM_MSG_POINTER_MOTION: only the LATEST position before the
+//     client next reads matters; older positions carry no information
+//     a client would ever act on differently. Coalescing this is safe
+//     and is what keeps a fast mouse from ever being able to fill the
+//     queue on its own.
+//   - WM_MSG_POINTER_WHEEL: coalesced by SUMMING the new delta (m->x,
+//     see wmproto64.h) into the existing queued entry, rather than
+//     replacing it -- this is the one coalescible type where simply
+//     keeping "the latest" would silently lose scroll distance; summing
+//     preserves the total even though the event COUNT is reduced.
+// Every other type (WM_MSG_KEY_EVENT, WM_MSG_POINTER_BUTTON,
+// WM_MSG_FOCUS, WM_MSG_CLOSE_REQUEST, and every control/reply message
+// -- WELCOME/WINDOW_CREATED/ACK/ERROR) is CRITICAL: each one is a
+// discrete state transition or a reply a blocking client library call
+// is waiting on, so none of these may ever be silently dropped while
+// there is any alternative. They are appended to the FIFO tail and
+// never coalesced or reordered.
+//
+// Backpressure policy: the queue is bounded (CONN_EVT_QUEUE_MAX). If a
+// COALESCIBLE event has nowhere to coalesce into and the queue is
+// full, it is simply dropped -- always safe, since (by definition of
+// being coalescible) a fresher equivalent event will follow soon and
+// supersede it. If a CRITICAL event cannot be appended because the
+// queue is genuinely full of other undelivered critical events, that
+// is this milestone's defined threshold for "this client has stopped
+// draining for too long": the connection is flagged for disconnect
+// (see conn_t::pending_disconnect) rather than the event being lost or
+// this function ever blocking. A connection already flagged is a lost
+// cause for further delivery anyway, so any event queued to it past
+// that point is simply dropped -- the flag guarantees disconnect_conn()
+// runs on the very next main-loop pass regardless.
+static void queue_event(int conn_index, const wm_msg_t* m) {
     if (conn_index < 0 || !g_conns[conn_index].in_use) return;
-    // Best-effort: a broken/full pipe (client gone or stuck) just drops
-    // the message rather than risking the whole compositor blocking on
-    // one bad client. Disconnect cleanup happens via EOF detection on
-    // the client's REQUEST pipe in the main loop, independently of
-    // whether any given event delivery succeeded.
-    sys_handle_write(g_conns[conn_index].evt_w, (const char*)m, sizeof(*m));
+    conn_t* c = &g_conns[conn_index];
+    if (c->pending_disconnect) return; // already a lost cause -- about to be torn down
+
+    if (m->type == WM_MSG_POINTER_MOTION) {
+        for (int i = 0; i < c->evt_count; i++) {
+            if (c->evt_queue[i].type == WM_MSG_POINTER_MOTION && c->evt_queue[i].window_id == m->window_id) {
+                c->evt_queue[i] = *m;
+                return;
+            }
+        }
+    } else if (m->type == WM_MSG_POINTER_WHEEL) {
+        for (int i = 0; i < c->evt_count; i++) {
+            if (c->evt_queue[i].type == WM_MSG_POINTER_WHEEL && c->evt_queue[i].window_id == m->window_id) {
+                c->evt_queue[i].x += m->x; // wheel delta accumulator, see wmproto64.h
+                return;
+            }
+        }
+    }
+
+    if (c->evt_count < CONN_EVT_QUEUE_MAX) {
+        c->evt_queue[c->evt_count++] = *m;
+        return;
+    }
+
+    // Queue genuinely full and coalescing didn't apply (either a fresh
+    // coalescible type with no existing entry, or -- the real backpressure
+    // case -- a critical, never-coalesced event).
+    if (m->type == WM_MSG_POINTER_MOTION || m->type == WM_MSG_POINTER_WHEEL) {
+        return; // safe to drop -- see header comment
+    }
+    c->pending_disconnect = 1;
+}
+
+// Milestone 32.1: drains as much of `ci`'s outgoing queue as the real
+// pipe currently has room for, via non-blocking writes only -- never
+// blocks regardless of how backed up the client is. Called once per
+// main-loop iteration for every connected client.
+static void flush_conn_queue(int ci) {
+    conn_t* c = &g_conns[ci];
+    while (c->evt_count > 0) {
+        int64_t n = sys_handle_try_write(c->evt_w, (const char*)&c->evt_queue[0], sizeof(c->evt_queue[0]));
+        if (n == (int64_t)sizeof(c->evt_queue[0])) {
+            for (int i = 1; i < c->evt_count; i++) c->evt_queue[i - 1] = c->evt_queue[i];
+            c->evt_count--;
+            continue; // keep draining -- more may fit
+        }
+        if (n < 0 && n != SYS64_ERR_WOULDBLOCK) {
+            // Broken pipe -- the client's read end is already gone (it
+            // closed its own handle, or faulted, without the compositor
+            // having seen EOF on the request pipe yet). Nothing more can
+            // ever be delivered here; let the deferred-disconnect sweep
+            // tear it down on the next pass.
+            c->pending_disconnect = 1;
+        }
+        break; // would-block (pipe currently full) -- try again next iteration
+    }
 }
 
 static void send_ack(int conn_index, uint32_t window_id) {
     wm_msg_t m; for (uint64_t i = 0; i < sizeof(m); i++) ((char*)&m)[i] = 0;
     m.type = WM_MSG_ACK; m.version = WM_PROTO_VERSION; m.window_id = window_id;
-    send_to_conn(conn_index, &m);
+    queue_event(conn_index, &m);
 }
 static void send_error(int conn_index, uint32_t window_id, int32_t code) {
     wm_msg_t m; for (uint64_t i = 0; i < sizeof(m); i++) ((char*)&m)[i] = 0;
     m.type = WM_MSG_ERROR; m.version = WM_PROTO_VERSION; m.window_id = window_id; m.x = code;
-    send_to_conn(conn_index, &m);
+    queue_event(conn_index, &m);
 }
 
 // Milestone 30: `notify_new` controls whether the NEWLY-focused
@@ -299,14 +416,14 @@ static void focus_window_ex(int idx, int notify_new) {
         wm_msg_t m; for (uint64_t i = 0; i < sizeof(m); i++) ((char*)&m)[i] = 0;
         m.type = WM_MSG_FOCUS; m.version = WM_PROTO_VERSION;
         m.window_id = g_windows[g_focused].window_id; m.pressed = 0;
-        send_to_conn(g_windows[g_focused].conn_index, &m);
+        queue_event(g_windows[g_focused].conn_index, &m);
     }
     g_focused = idx;
     if (idx >= 0 && notify_new) {
         wm_msg_t m; for (uint64_t i = 0; i < sizeof(m); i++) ((char*)&m)[i] = 0;
         m.type = WM_MSG_FOCUS; m.version = WM_PROTO_VERSION;
         m.window_id = g_windows[idx].window_id; m.pressed = 1;
-        send_to_conn(g_windows[idx].conn_index, &m);
+        queue_event(g_windows[idx].conn_index, &m);
     }
 }
 static void focus_window(int idx) { focus_window_ex(idx, 1); }
@@ -334,6 +451,8 @@ static void disconnect_conn(int conn_index) {
     sys_handle_close(g_conns[conn_index].req_r);
     sys_handle_close(g_conns[conn_index].evt_w);
     g_conns[conn_index].in_use = 0;
+    g_conns[conn_index].evt_count = 0;         // Milestone 32.1: nothing to free (fixed array), just reset
+    g_conns[conn_index].pending_disconnect = 0;
 }
 
 // ── Hit testing ──────────────────────────────────────────────────────
@@ -430,7 +549,7 @@ static void handle_client_message(int conn_index, const wm_msg_t* msg, int* dirt
         c->client_id = g_next_client_id++;
         wm_msg_t reply; for (uint64_t i = 0; i < sizeof(reply); i++) ((char*)&reply)[i] = 0;
         reply.type = WM_MSG_WELCOME; reply.version = WM_PROTO_VERSION; reply.client_id = c->client_id;
-        send_to_conn(conn_index, &reply);
+        queue_event(conn_index, &reply);
         return;
     }
 
@@ -456,7 +575,7 @@ static void handle_client_message(int conn_index, const wm_msg_t* msg, int* dirt
 
         wm_msg_t reply; for (uint64_t i = 0; i < sizeof(reply); i++) ((char*)&reply)[i] = 0;
         reply.type = WM_MSG_WINDOW_CREATED; reply.version = WM_PROTO_VERSION; reply.window_id = w->window_id;
-        send_to_conn(conn_index, &reply);
+        queue_event(conn_index, &reply);
         *dirty = 1;
         break;
     }
@@ -519,6 +638,16 @@ static void handle_client_message(int conn_index, const wm_msg_t* msg, int* dirt
         *dirty = 1;
         break;
     }
+#ifdef COMPOSITOR64_TEST_MODE
+    case WM_MSG_TEST_SHUTDOWN:
+        // Milestone 32.1: see wmproto64.h's header comment on
+        // WM_MSG_TEST_SHUTDOWN -- only a test build reacts to this.
+        // sys_exit releases display/input/every handle via the normal
+        // process-exit path (kernel/process64.c's close_all_handles),
+        // exactly as if this process had exited any other way.
+        sys_exit(0);
+        break; // unreachable
+#endif
     default:
         send_error(conn_index, msg->window_id, WM_ERR_BAD_MESSAGE);
         break;
@@ -533,7 +662,7 @@ static void handle_input_event(const input64_event_t* ev, int* dirty) {
         wm_msg_t m; for (uint64_t i = 0; i < sizeof(m); i++) ((char*)&m)[i] = 0;
         m.type = WM_MSG_KEY_EVENT; m.version = WM_PROTO_VERSION; m.window_id = w->window_id;
         m.key_code = (uint32_t)ev->a; m.pressed = ev->pressed; m.modifiers = ev->modifiers; m.ascii = ev->ascii;
-        send_to_conn(w->conn_index, &m);
+        queue_event(w->conn_index, &m);
         return;
     }
 
@@ -558,7 +687,7 @@ static void handle_input_event(const input64_event_t* ev, int* dirty) {
             m.type = WM_MSG_POINTER_MOTION; m.version = WM_PROTO_VERSION; m.window_id = w->window_id;
             m.x = g_cursor_x - (w->x + BORDER);
             m.y = g_cursor_y - (w->y + BORDER + TITLEBAR_H);
-            send_to_conn(w->conn_index, &m);
+            queue_event(w->conn_index, &m);
         }
         return;
     }
@@ -577,7 +706,7 @@ static void handle_input_event(const input64_event_t* ev, int* dirty) {
                         if (btn == INPUT64_BTN_MIDDLE) {
                             wm_msg_t m; for (uint64_t i = 0; i < sizeof(m); i++) ((char*)&m)[i] = 0;
                             m.type = WM_MSG_CLOSE_REQUEST; m.version = WM_PROTO_VERSION; m.window_id = w->window_id;
-                            send_to_conn(w->conn_index, &m);
+                            queue_event(w->conn_index, &m);
                         } else if (btn == INPUT64_BTN_LEFT) {
                             g_dragging = idx;
                             g_drag_off_x = g_cursor_x - w->x;
@@ -589,7 +718,7 @@ static void handle_input_event(const input64_event_t* ev, int* dirty) {
                         m.button = btn; m.pressed = 1;
                         m.x = g_cursor_x - (w->x + BORDER);
                         m.y = g_cursor_y - (w->y + BORDER + TITLEBAR_H);
-                        send_to_conn(w->conn_index, &m);
+                        queue_event(w->conn_index, &m);
                     }
                 }
             }
@@ -605,7 +734,7 @@ static void handle_input_event(const input64_event_t* ev, int* dirty) {
                     m.button = btn; m.pressed = 0;
                     m.x = g_cursor_x - (w->x + BORDER);
                     m.y = g_cursor_y - (w->y + BORDER + TITLEBAR_H);
-                    send_to_conn(w->conn_index, &m);
+                    queue_event(w->conn_index, &m);
                 }
             }
         }
@@ -619,7 +748,7 @@ static void handle_input_event(const input64_event_t* ev, int* dirty) {
             wm_msg_t m; for (uint64_t i = 0; i < sizeof(m); i++) ((char*)&m)[i] = 0;
             m.type = WM_MSG_POINTER_WHEEL; m.version = WM_PROTO_VERSION; m.window_id = w->window_id;
             m.x = ev->a;
-            send_to_conn(w->conn_index, &m);
+            queue_event(w->conn_index, &m);
         }
         return;
     }
@@ -657,7 +786,24 @@ static int accept_one_client(int listen_h) {
     c->evt_w = ep.send; // writes events/replies to the client
     c->client_id = 0;
     c->said_hello = 0;
+    c->evt_count = 0;
+    c->pending_disconnect = 0;
     return conn_idx;
+}
+
+// Milestone 32.1: disconnects every connection flagged during this
+// iteration's input/request processing (queue_event()'s overflow
+// policy, or flush_conn_queue()'s broken-pipe detection). Deferred to
+// this single, safe point in the main loop -- see conn_t::
+// pending_disconnect's header comment for why nothing tears a
+// connection down reentrantly from inside event-generation code.
+static void disconnect_stalled_conns(int* dirty) {
+    for (int ci = 0; ci < MAX_CLIENTS; ci++) {
+        if (g_conns[ci].in_use && g_conns[ci].pending_disconnect) {
+            disconnect_conn(ci);
+            *dirty = 1;
+        }
+    }
 }
 
 void _start(void) {
@@ -720,6 +866,22 @@ void _start(void) {
                 }
                 break; // would-block, error, or just handled EOF -- move to next connection
             }
+        }
+
+        // Milestone 32.1: tear down anything queue_event()/
+        // flush_conn_queue() flagged above BEFORE flushing queues below
+        // -- a connection already marked pending_disconnect has nothing
+        // further written to or read from its (about to be closed)
+        // handles.
+        disconnect_stalled_conns(&dirty);
+
+        // Milestone 32.1: deliver whatever is queued, via non-blocking
+        // writes only -- this is what guarantees the loop above (input
+        // draining, accepting, request processing) can NEVER be blocked
+        // by one client's full or stalled event pipe. See queue_event()
+        // for the full delivery/coalescing/backpressure design.
+        for (int ci = 0; ci < MAX_CLIENTS; ci++) {
+            if (g_conns[ci].in_use) flush_conn_queue(ci);
         }
 
         if (dirty) compose_and_present();

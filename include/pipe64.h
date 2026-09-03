@@ -94,6 +94,23 @@ int64_t pipe64_try_read(pipe64_t* p, uint8_t* kbuf, uint64_t len);
 // immediately (even with no readers).
 int64_t pipe64_write(pipe64_t* p, const uint8_t* kbuf, uint64_t len);
 
+// Milestone 32.1: non-blocking counterpart to pipe64_write, mirroring
+// pipe64_try_read's contract exactly (see above) -- needed because a
+// process that both reads AND writes several pipes in one non-blocking
+// poll loop (kernel/../user64/compositor64.c's main loop is the
+// motivating case: it must never block delivering an event to one
+// client just because that client isn't draining its end) has no way
+// to know in advance whether a write would fit. Deliberately
+// ALL-OR-NOTHING like pipe64_try_read -- a partial write would desync
+// the receiver's fixed-size message framing exactly like a short read
+// would. Never blocks. Returns `len` if the whole write fit and was
+// copied in immediately, -2 if there isn't enough free space right now
+// but at least one reader remains (caller should retry later, e.g. via
+// a small per-connection outgoing queue -- see compositor64.c), or -1
+// if there are no readers at all (broken pipe, matches pipe64_write's
+// -1 for the same condition). len == 0 returns 0 immediately.
+int64_t pipe64_try_write(pipe64_t* p, const uint8_t* kbuf, uint64_t len);
+
 // Diagnostics: logs every live pipe's address, capacity/count,
 // reader/writer counts, and any pids currently blocked reading or
 // writing it, via klog(). Development use only, same precedent as

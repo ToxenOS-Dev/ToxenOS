@@ -537,6 +537,27 @@ static uint64_t sys64_handle_write(int h, uint64_t buf_ptr, uint64_t len) {
     return (uint64_t)-1;
 }
 
+// Milestone 32.1: see include/syscall64.h's header comment on
+// SYS64_HANDLE_TRY_WRITE. Mirrors sys64_handle_try_read's structure.
+static uint64_t sys64_handle_try_write(int h, uint64_t buf_ptr, uint64_t len) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES) return (uint64_t)-1;
+
+    if (cur->handles[h].kind == HANDLE64_PIPE_WRITE) {
+        if (len > SYS64_PIPE_MAX) len = SYS64_PIPE_MAX;
+        uint8_t kbuf[SYS64_PIPE_MAX];
+        if (len > 0 && copy_from_user64(kbuf, buf_ptr, len) < 0) return (uint64_t)-1;
+        int64_t n = pipe64_try_write((pipe64_t*)cur->handles[h].obj, kbuf, len);
+        if (n == -2) return SYS64_ERR_WOULDBLOCK;
+        return (n < 0) ? (uint64_t)-1 : (uint64_t)n;
+    }
+    if (cur->handles[h].kind == HANDLE64_FILE) {
+        return sys64_handle_write(h, buf_ptr, len);
+    }
+    return (uint64_t)-1;
+}
+
 static uint64_t sys64_handle_close(int h) {
     process64_t* cur = process64_current();
     if (!cur) return (uint64_t)-1;
@@ -955,6 +976,9 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_SPAWN_EX:
         tf->rax = sys64_spawn_ex(tf->rdi, tf->rsi);
+        break;
+    case SYS64_HANDLE_TRY_WRITE:
+        tf->rax = sys64_handle_try_write((int)tf->rdi, tf->rsi, tf->rdx);
         break;
     default:
         tf->rax = (uint64_t)-1;

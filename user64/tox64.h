@@ -48,6 +48,7 @@
 #define SYS64_SERVICE_ACCEPT 39
 #define SYS64_SERVICE_CONNECT 40
 #define SYS64_SPAWN_EX 41
+#define SYS64_HANDLE_TRY_WRITE 42
 #define SYS64_ERR_WOULDBLOCK ((int64_t)-2)
 // Return value -2 means the path is protected (kernel refused the op).
 #define SYS64_ERR_PROTECTED ((int64_t)-2)
@@ -221,6 +222,18 @@ static inline int64_t sys_handle_read(int h, char* buf, uint64_t len) {
 }
 static inline int64_t sys_handle_write(int h, const char* buf, uint64_t len) {
     return (int64_t)SYSCALL3(SYS64_HANDLE_WRITE, h, buf, len);
+}
+
+// Milestone 32.1: non-blocking counterpart to sys_handle_write, for a
+// pipe write handle (a file handle just behaves like sys_handle_write).
+// Deliberately all-or-nothing -- either the whole write is buffered
+// immediately and `len` is returned, or NOTHING is written and
+// SYS64_ERR_WOULDBLOCK is returned. Returns -1 for a genuinely broken
+// pipe (no reader left). Needed by any process that must never risk
+// blocking on a write to one handle while it still has other handles
+// to service (see user64/compositor64.c's per-client event delivery).
+static inline int64_t sys_handle_try_write(int h, const char* buf, uint64_t len) {
+    return (int64_t)SYSCALL3(SYS64_HANDLE_TRY_WRITE, h, buf, len);
 }
 
 // Closes any handle kind (a pipe end or a shared-memory object) --

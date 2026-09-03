@@ -189,6 +189,27 @@ int64_t pipe64_write(pipe64_t* p, const uint8_t* kbuf, uint64_t len) {
     return (written == 0) ? -1 : (int64_t)written;
 }
 
+// Milestone 32.1: see include/pipe64.h's header comment. Mirrors
+// pipe64_try_read's structure exactly, just for the write side.
+int64_t pipe64_try_write(pipe64_t* p, const uint8_t* kbuf, uint64_t len) {
+    if (len == 0) return 0;
+
+    uint64_t flags = pipe64_lock();
+    if (p->readers == 0) { pipe64_unlock(flags); return -1; }
+
+    uint32_t space = p->capacity - p->count;
+    if ((uint64_t)space < len) { pipe64_unlock(flags); return -2; }
+
+    for (uint64_t i = 0; i < len; i++) {
+        p->buffer[p->head] = kbuf[i];
+        p->head = (p->head + 1) % p->capacity;
+    }
+    p->count += (uint32_t)len;
+    process64_wake_all(&p->read_chan);
+    pipe64_unlock(flags);
+    return (int64_t)len;
+}
+
 void pipe64_dump(void) {
     uint64_t flags = pipe64_lock();
     klog("pipe64: dump ---\n");
@@ -313,6 +334,96 @@ static int test_broken_pipe_on_last_reader_close(void) {
     return ok;
 }
 
+// ── Milestone 32.1: pipe64_try_write ────────────────────────────────
+static int test_try_write_basic(void) {
+    pipe64_t* p;
+    if (pipe64_create(&p) < 0) return 0;
+    int ok = 1;
+
+    // Exact-fit non-blocking write, then fill the rest of the buffer.
+    uint8_t chunk[64];
+    for (int i = 0; i < 64; i++) chunk[i] = (uint8_t)i;
+    if (pipe64_try_write(p, chunk, 64) != 64) ok = 0;
+    if (ok && p->count != 64) ok = 0;
+
+    // Fill to exactly capacity.
+    for (int round = 0; ok && round < 3; round++) {
+        if (pipe64_try_write(p, chunk, 64) != 64) ok = 0;
+    }
+    if (ok && p->count != PIPE64_BUF_SIZE) ok = 0;
+
+    // Now genuinely full -- a further non-blocking write of even 1
+    // byte must report would-block, and (critically) must not have
+    // written anything partial.
+    uint8_t one = 0xFF;
+    if (ok && pipe64_try_write(p, &one, 1) != -2) ok = 0;
+    if (ok && p->count != PIPE64_BUF_SIZE) ok = 0; // unchanged -- no partial write
+
+    // Drain everything and verify byte-for-byte correctness (proves
+    // try_write's ring-buffer bookkeeping matches the blocking path).
+    uint8_t rbuf[PIPE64_BUF_SIZE];
+    if (ok && pipe64_read(p, rbuf, PIPE64_BUF_SIZE) != PIPE64_BUF_SIZE) ok = 0;
+    for (int i = 0; ok && i < PIPE64_BUF_SIZE; i++) if (rbuf[i] != chunk[i % 64]) ok = 0;
+
+    pipe64_close_read(p);
+    pipe64_close_write(p);
+    return ok;
+}
+
+static int test_try_write_broken_pipe(void) {
+    pipe64_t* p;
+    if (pipe64_create(&p) < 0) return 0;
+    int ok = 1;
+
+    pipe64_close_read(p); // last reader gone before any write
+    uint8_t x = 'x';
+    if (pipe64_try_write(p, &x, 1) != -1) ok = 0;
+
+    pipe64_close_write(p); // frees the pipe (readers already 0)
+    return ok;
+}
+
+// Directly reproduces the Milestone 32 compositor deadlock pattern at
+// the pipe64 level: TWO pipes, each one's "full" end simultaneously
+// needing to be written while the other side never drains -- proves
+// pipe64_try_write lets BOTH sides discover "would block" instead of
+// either one ever calling the blocking pipe64_write and hanging. This
+// is exactly what user64/compositor64.c's queue_event/flush_conn_queue
+// now rely on: a full event pipe to a stalled client must never stop
+// forward progress on anything else.
+static int test_try_write_prevents_mutual_deadlock(void) {
+    pipe64_t *a2b, *b2a;
+    if (pipe64_create(&a2b) < 0) return 0;
+    if (pipe64_create(&b2a) < 0) { pipe64_close_read(a2b); pipe64_close_write(a2b); return 0; }
+    int ok = 1;
+
+    uint8_t chunk[32];
+    for (int i = 0; i < 32; i++) chunk[i] = (uint8_t)i;
+
+    // Fill BOTH pipes to capacity via non-blocking writes only -- if
+    // this ever actually blocked, the self-test itself would hang
+    // forever (there is nothing else running to drain either pipe).
+    while (pipe64_try_write(a2b, chunk, 32) == 32) { }
+    while (pipe64_try_write(b2a, chunk, 32) == 32) { }
+    if (a2b->count != PIPE64_BUF_SIZE || b2a->count != PIPE64_BUF_SIZE) ok = 0;
+
+    // Both directions must now report would-block, not partially
+    // succeed and not block -- this IS "neither side can ever freeze
+    // trying to deliver to the other."
+    if (ok && pipe64_try_write(a2b, chunk, 32) != -2) ok = 0;
+    if (ok && pipe64_try_write(b2a, chunk, 32) != -2) ok = 0;
+
+    // Draining one side frees room for exactly one more write there,
+    // proving the pipes recover normally once a reader resumes.
+    uint8_t rbuf[32];
+    if (ok && pipe64_read(a2b, rbuf, 32) != 32) ok = 0;
+    if (ok && pipe64_try_write(a2b, chunk, 32) != 32) ok = 0;
+
+    pipe64_close_read(a2b); pipe64_close_write(a2b);
+    pipe64_close_read(b2a); pipe64_close_write(b2a);
+    return ok;
+}
+
 static int test_repeated_cycles_no_leak(void) {
     physmem64_stats_t before, after;
     physmem64_stats(&before);
@@ -373,6 +484,9 @@ int pipe64_selftest(void) {
     PIPE64_TEST("EOF after last writer closes", test_eof_on_last_writer_close());
     PIPE64_TEST("broken pipe after last reader closes", test_broken_pipe_on_last_reader_close());
     PIPE64_TEST("repeated create/use/destroy, no leak", test_repeated_cycles_no_leak());
+    PIPE64_TEST("try_write: fill to capacity, would-block, no partial write", test_try_write_basic());
+    PIPE64_TEST("try_write: broken pipe (no readers)", test_try_write_broken_pipe());
+    PIPE64_TEST("try_write: both pipes full simultaneously never blocks (M32 deadlock pattern)", test_try_write_prevents_mutual_deadlock());
     PIPE64_TEST("ring3 driver: real syscalls, inheritance, blocking both ways", test_ring3_driver());
 
     pipe64_dump();

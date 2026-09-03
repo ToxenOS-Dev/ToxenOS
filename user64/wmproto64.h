@@ -64,6 +64,17 @@ typedef enum {
     WM_MSG_CLOSE_REQUEST   = 14, // compositor -> client: window_id (e.g. middle-click on title bar)
     WM_MSG_ACK             = 15, // compositor -> client: window_id = the id being acknowledged
     WM_MSG_ERROR           = 16, // compositor -> client: x = error code (negative, see WM_ERR_*)
+    // Milestone 32.1: client -> compositor, recognized ONLY by a
+    // compositor64 binary built with COMPOSITOR64_TEST_MODE defined
+    // (see user64/compositor64.c and user64/compositor_stall_test64.c)
+    // -- lets that self-test's driver cleanly end a disposable test
+    // compositor instance (releasing its exclusive display/input
+    // ownership via ordinary process exit) instead of leaking it as a
+    // permanently-running orphan process. The real compositor64.nex64
+    // built for normal graphical boot does NOT define
+    // COMPOSITOR64_TEST_MODE, so it just replies WM_ERR_BAD_MESSAGE to
+    // this like any other unrecognized type -- completely inert there.
+    WM_MSG_TEST_SHUTDOWN   = 17,
 } wm_msg_type_t;
 
 #define WM_ERR_BAD_VERSION   -1

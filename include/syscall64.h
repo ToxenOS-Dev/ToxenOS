@@ -306,6 +306,21 @@
 // silently skipped (not an error) -- see process64_spawn_ex.
 #define SYS64_SPAWN_EX 41 // (const char* path, const spawn_ex_req64_t* req) -> child pid, or -1
 
+// Milestone 32.1: non-blocking counterpart to SYS64_HANDLE_WRITE, for a
+// HANDLE64_PIPE_WRITE handle only (HANDLE64_FILE writes never block
+// anyway, so it behaves identically to SYS64_HANDLE_WRITE there).
+// Mirrors SYS64_HANDLE_TRY_READ's contract exactly, just for the write
+// side -- added specifically so a process that both reads and writes
+// several handles in one non-blocking poll loop (a compositor
+// delivering an event to a client, most notably) never has to guess
+// whether a write would fit before risking a blocking one. Deliberately
+// ALL-OR-NOTHING: either the whole write is buffered immediately and
+// `len` is returned, or NOTHING is written and SYS64_ERR_WOULDBLOCK is
+// returned -- a partial write would desync fixed-size message framing
+// the same way a short read would. Returns -1 for a genuinely broken
+// pipe (no reader left at all), matching SYS64_HANDLE_WRITE.
+#define SYS64_HANDLE_TRY_WRITE 42 // (int handle, const char* buf, uint64_t len) -> bytes, -1=error/broken pipe, or SYS64_ERR_WOULDBLOCK
+
 void syscall64_dispatch(trapframe64_t* tf);
 
 #endif // SYSCALL64_H

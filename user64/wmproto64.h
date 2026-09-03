@@ -15,16 +15,17 @@
 // the actual pixels are read directly by the compositor from its own
 // mapping of that object.
 //
-// Bootstrap: see wm_encode_handles/wm_decode_handles below -- the
-// compositor creates both pipes BEFORE spawning a client, encodes the
-// client's own two handle numbers (which, thanks to Milestone 26 spawn
-// inheritance, exist in the child's table at the SAME slot they had in
-// the compositor's) into the spawn argument string, and the client
-// library decodes them back out via sys_get_args. This is the smallest
-// mechanism that works with ToxenOS's existing spawn/handle model --
-// deliberately isolated behind the client library (wmclient64.h) so a
-// future named-service/socket mechanism can replace it without
-// touching application code.
+// Bootstrap (Milestone 32): the compositor publishes the well-known
+// service name WM_SERVICE_NAME (include/service64.h's generic named-
+// service registry) and a client connects to it via sys_service_connect
+// -- see user64/wmclient64.h's wm_connect(). Neither side needs to know
+// the other's pid or pipe handle numbers, and a client no longer needs
+// to be the compositor's own child (or a child at all) to connect --
+// this replaced Milestone 30's original bootstrap, which encoded the
+// client's two spawn-inherited handle numbers into its own args string.
+// That mechanism is gone entirely now; see the Milestone 32 summary for
+// the full rationale. Everything below this point (the message
+// protocol itself) is UNCHANGED from Milestone 30.
 #ifndef WMPROTO64_H
 #define WMPROTO64_H
 #include <stdint.h>
@@ -32,6 +33,13 @@
 
 #define WM_PROTO_VERSION 1
 #define WM_TITLE_MAX 16
+
+// Milestone 32: the well-known service name the compositor publishes
+// (user64/compositor64.c's sys_service_listen) and every client
+// connects to (user64/wmclient64.h's wm_connect). A plain string
+// constant, not a kernel primitive -- the kernel has no idea this name
+// means "window manager," it is just bytes to include/service64.h.
+#define WM_SERVICE_NAME "tox.wm"
 
 // Logical client-surface pixel format -- 32-bit packed 0x00RRGGBB,
 // independent of the physical framebuffer's actual layout (Milestone
@@ -88,47 +96,5 @@ typedef struct {
     uint32_t button;      // WM_MSG_POINTER_BUTTON: which button (INPUT64_BTN_* bit value)
     char     title[WM_TITLE_MAX]; // WM_MSG_CREATE_WINDOW / WM_MSG_SET_TITLE -- NUL-padded, not guaranteed NUL-terminated if exactly WM_TITLE_MAX long
 } wm_msg_t;
-
-// ── Bootstrap handle encoding ────────────────────────────────────────
-// The compositor encodes the CHILD's own two handle numbers (its
-// request-pipe WRITE end and its event-pipe READ end -- both already
-// present in the child's table at spawn time via Milestone 26
-// inheritance) as "H:H" in the sys_spawn args string. A client
-// library never needs to know or guess a handle number -- it just
-// calls sys_get_args and decodes.
-static inline int wm_encode_handles(char* out, int max_len, int h1, int h2) {
-    int pos = 0;
-    int neg1 = h1 < 0, neg2 = h2 < 0;
-    uint32_t a = (uint32_t)(neg1 ? -h1 : h1);
-    uint32_t b = (uint32_t)(neg2 ? -h2 : h2);
-    char tmp[16]; int n;
-
-    if (neg1 && pos < max_len) out[pos++] = '-';
-    n = 0; if (a == 0) tmp[n++] = '0'; while (a > 0) { tmp[n++] = (char)('0' + (a % 10)); a /= 10; }
-    while (n > 0 && pos < max_len) out[pos++] = tmp[--n];
-    if (pos < max_len) out[pos++] = ':';
-    if (neg2 && pos < max_len) out[pos++] = '-';
-    n = 0; if (b == 0) tmp[n++] = '0'; while (b > 0) { tmp[n++] = (char)('0' + (b % 10)); b /= 10; }
-    while (n > 0 && pos < max_len) out[pos++] = tmp[--n];
-    if (pos < max_len) out[pos] = 0;
-    return pos;
-}
-
-static inline int wm_decode_handles(const char* in, int* h1, int* h2) {
-    int i = 0;
-    int sign1 = 1, sign2 = 1;
-    long v1 = 0, v2 = 0;
-    if (in[i] == '-') { sign1 = -1; i++; }
-    if (in[i] < '0' || in[i] > '9') return -1;
-    while (in[i] >= '0' && in[i] <= '9') { v1 = v1 * 10 + (in[i] - '0'); i++; }
-    if (in[i] != ':') return -1;
-    i++;
-    if (in[i] == '-') { sign2 = -1; i++; }
-    if (in[i] < '0' || in[i] > '9') return -1;
-    while (in[i] >= '0' && in[i] <= '9') { v2 = v2 * 10 + (in[i] - '0'); i++; }
-    *h1 = (int)(sign1 * v1);
-    *h2 = (int)(sign2 * v2);
-    return 0;
-}
 
 #endif // WMPROTO64_H

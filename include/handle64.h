@@ -33,6 +33,16 @@ typedef enum {
     // for but does not itself implement.
     HANDLE64_INPUT,   // the global structured-input-event stream
     HANDLE64_DISPLAY, // the physical display's present operation
+    // Milestone 32: obj = service64_t* -- this process is the published
+    // owner of a named local service (include/service64.h). Like
+    // HANDLE64_INPUT/HANDLE64_DISPLAY above, deliberately NEVER copied
+    // by ANY spawn path (whole-table process64_spawn or the explicit-
+    // list process64_spawn_ex) -- a service's listener is a single-
+    // owner resource; closing the last (only ever one) reference
+    // unpublishes the name automatically (kernel/service64.c's
+    // service64_unpublish), which is what lets a replacement process
+    // register the same name again after this one exits or crashes.
+    HANDLE64_SERVICE_LISTEN,
 } handle64_kind_t;
 
 typedef struct {

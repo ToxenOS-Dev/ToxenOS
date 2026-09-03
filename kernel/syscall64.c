@@ -30,6 +30,7 @@
 #include "../include/display64.h"
 #include "../include/paging64.h"
 #include "../include/heap64.h"
+#include "../include/service64.h"
 #include "../include/klog.h"
 
 #define SYS64_WRITE_MAX 256
@@ -549,6 +550,7 @@ static uint64_t sys64_handle_close(int h) {
     case HANDLE64_DIR:        vfs64_file_release((vfs64_file_t*)cur->handles[h].obj); break;
     case HANDLE64_INPUT:      input64_release(); break;
     case HANDLE64_DISPLAY:    display64_release(); break;
+    case HANDLE64_SERVICE_LISTEN: service64_unpublish((service64_t*)cur->handles[h].obj); break;
     default: return (uint64_t)-1;
     }
     cur->handles[h].kind = HANDLE64_UNUSED;
@@ -612,6 +614,136 @@ static uint64_t sys64_shm_open_token(uint64_t token) {
     cur->handles[slot].kind = HANDLE64_SHM;
     cur->handles[slot].obj = s;
     return (uint64_t)slot;
+}
+
+// ── Milestone 32: named local-service registry ──────────────────────
+// See include/syscall64.h's header comments on SYS64_SERVICE_LISTEN/
+// ACCEPT/CONNECT and include/service64.h for the full design.
+
+static inline uint64_t service64_syscall_lock(void) {
+    uint64_t flags;
+    __asm__ volatile ("pushfq\n\tpop %0\n\tcli" : "=r"(flags) :: "memory");
+    return flags;
+}
+static inline void service64_syscall_unlock(uint64_t flags) {
+    if (flags & (1ULL << 9)) __asm__ volatile ("sti" ::: "memory");
+}
+
+static uint64_t sys64_service_listen(uint64_t name_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+
+    char name[SERVICE64_NAME_MAX];
+    uint64_t len = 0;
+    if (copy_user_cstr64(name, name_ptr, sizeof(name), &len) < 0) return (uint64_t)-1;
+    if (len == 0 || !service64_name_valid(name)) return (uint64_t)-1;
+
+    int slot = find_free_handle(cur);
+    if (slot < 0) return (uint64_t)-1;
+
+    service64_t* svc;
+    if (service64_listen(name, cur->pid, &svc) < 0) return (uint64_t)-1;
+
+    cur->handles[slot].kind = HANDLE64_SERVICE_LISTEN;
+    cur->handles[slot].obj = svc;
+    return (uint64_t)slot;
+}
+
+static uint64_t sys64_service_accept(int h, uint64_t out_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES || cur->handles[h].kind != HANDLE64_SERVICE_LISTEN) return (uint64_t)-1;
+
+    service64_endpoints_t ep;
+    int r = service64_accept((service64_t*)cur->handles[h].obj, cur, &ep);
+    if (r == -2) return SYS64_ERR_WOULDBLOCK;
+    if (r < 0) return (uint64_t)-1;
+
+    if (copy_to_user64(out_ptr, &ep, sizeof(ep)) < 0) {
+        // Bad user pointer -- undo the two handles we just installed
+        // (mirrors sys64_pipe_create's own rollback-on-bad-pointer
+        // pattern) rather than leaking a live connection the caller can
+        // never reach.
+        pipe64_close_read((pipe64_t*)cur->handles[ep.recv].obj);
+        pipe64_close_write((pipe64_t*)cur->handles[ep.send].obj);
+        cur->handles[ep.recv].kind = HANDLE64_UNUSED;
+        cur->handles[ep.send].kind = HANDLE64_UNUSED;
+        return (uint64_t)-1;
+    }
+    return 0;
+}
+
+static uint64_t sys64_service_connect(uint64_t name_ptr, uint64_t blocking, uint64_t out_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+
+    char name[SERVICE64_NAME_MAX];
+    uint64_t len = 0;
+    if (copy_user_cstr64(name, name_ptr, sizeof(name), &len) < 0) return (uint64_t)-1;
+    if (len == 0 || !service64_name_valid(name)) return (uint64_t)-1;
+
+    // Milestone 26's block_on contract: interrupts held disabled by the
+    // CALLER across the entire check-then-maybe-block-then-recheck
+    // sequence, never released until the condition truly holds (or we
+    // give up) -- see kernel/pipe64.c's pipe64_read for the identical
+    // discipline. Held continuously through the service64_connect()
+    // call too, so `svc` cannot be unpublished by a preempted process
+    // between "found it" and "actually connected to it".
+    uint64_t flags = service64_syscall_lock();
+    service64_t* svc;
+    for (;;) {
+        svc = service64_find_by_name(name);
+        if (svc) break;
+        if (!blocking) { service64_syscall_unlock(flags); return (uint64_t)-1; }
+        service64_wait_for_registration();
+    }
+
+    service64_endpoints_t ep;
+    int rc = service64_connect(svc, cur, &ep);
+    service64_syscall_unlock(flags);
+    if (rc < 0) return (uint64_t)-1;
+
+    if (copy_to_user64(out_ptr, &ep, sizeof(ep)) < 0) {
+        pipe64_close_write((pipe64_t*)cur->handles[ep.send].obj);
+        pipe64_close_read((pipe64_t*)cur->handles[ep.recv].obj);
+        cur->handles[ep.send].kind = HANDLE64_UNUSED;
+        cur->handles[ep.recv].kind = HANDLE64_UNUSED;
+        return (uint64_t)-1;
+    }
+    return 0;
+}
+
+// ── Milestone 32: explicit-inheritance spawn ────────────────────────
+typedef struct {
+    uint64_t args_ptr;
+    uint64_t inherit_ptr;
+    uint32_t inherit_count;
+} spawn_ex_req64_t;
+
+static uint64_t sys64_spawn_ex(uint64_t path_ptr, uint64_t req_ptr) {
+    process64_t* parent = process64_current();
+    if (!parent) return (uint64_t)-1;
+
+    char path[SYS64_PATH_MAX];
+    if (copy_user_cstr64(path, path_ptr, sizeof(path), 0) < 0) return (uint64_t)-1;
+
+    spawn_ex_req64_t req;
+    if (copy_from_user64(&req, req_ptr, sizeof(req)) < 0) return (uint64_t)-1;
+
+    char args[SYS64_ARGS_MAX];
+    args[0] = 0;
+    if (req.args_ptr && copy_user_cstr64(args, req.args_ptr, sizeof(args), 0) < 0) return (uint64_t)-1;
+
+    if (req.inherit_count > PROCESS64_MAX_HANDLES) return (uint64_t)-1;
+    int32_t inherit[PROCESS64_MAX_HANDLES];
+    if (req.inherit_count > 0) {
+        if (!req.inherit_ptr) return (uint64_t)-1;
+        if (copy_from_user64(inherit, req.inherit_ptr, (uint64_t)req.inherit_count * sizeof(int32_t)) < 0) return (uint64_t)-1;
+    }
+
+    uint32_t child_pid = 0;
+    if (process64_spawn_ex(path, args, parent->pid, inherit, (int)req.inherit_count, &child_pid) < 0) return (uint64_t)-1;
+    return (uint64_t)child_pid;
 }
 
 // ── Milestone 29: structured input + userspace display present ──────
@@ -811,6 +943,18 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_SHM_SIZE:
         tf->rax = sys64_shm_size((int)tf->rdi);
+        break;
+    case SYS64_SERVICE_LISTEN:
+        tf->rax = sys64_service_listen(tf->rdi);
+        break;
+    case SYS64_SERVICE_ACCEPT:
+        tf->rax = sys64_service_accept((int)tf->rdi, tf->rsi);
+        break;
+    case SYS64_SERVICE_CONNECT:
+        tf->rax = sys64_service_connect(tf->rdi, tf->rsi, tf->rdx);
+        break;
+    case SYS64_SPAWN_EX:
+        tf->rax = sys64_spawn_ex(tf->rdi, tf->rsi);
         break;
     default:
         tf->rax = (uint64_t)-1;

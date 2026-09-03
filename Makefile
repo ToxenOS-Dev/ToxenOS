@@ -320,6 +320,7 @@ kernel64: $(RUST_LIB)
 	gcc $(KFLAGS64) -c kernel/uservm64.c     -o build/uservm64.o
 	gcc $(KFLAGS64) -c kernel/pipe64.c       -o build/pipe64.o
 	gcc $(KFLAGS64) -c kernel/shm64.c        -o build/shm64.o
+	gcc $(KFLAGS64) -c kernel/service64.c    -o build/service64.o
 	gcc $(KFLAGS64) -c kernel/vfs64.c        -o build/vfs64.o
 	gcc $(KFLAGS64) -c kernel/kmutex64.c     -o build/kmutex64.o
 	gcc $(KFLAGS64) -c kernel/blockdev64.c   -o build/blockdev64.o
@@ -340,7 +341,7 @@ kernel64: $(RUST_LIB)
 		build/ata64.o build/txfs64.o build/syscall64.o build/exec64.o \
 		build/physmem64.o build/paging64.o build/usercopy64.o \
 		build/heap64.o build/lapic64.o build/uservm64.o \
-		build/pipe64.o build/shm64.o build/vfs64.o \
+		build/pipe64.o build/shm64.o build/service64.o build/vfs64.o \
 		build/kmutex64.o build/blockdev64.o build/pci64.o \
 		build/ahci64.o build/nvme64.o build/virtio_blk64.o \
 		build/pixfmt64.o build/display64.o build/ps2_64.o \
@@ -488,6 +489,8 @@ user64: tools/elf2nex64
 	tools/elf2nex64 build/user64/shm_test64.elf64 build/user64/shm_test64.nex64
 	gcc $(UFLAGS64) user64/vfs_test64.c -o build/user64/vfs_test64.elf64
 	tools/elf2nex64 build/user64/vfs_test64.elf64 build/user64/vfs_test64.nex64
+	gcc $(UFLAGS64) user64/service_test64.c -o build/user64/service_test64.elf64
+	tools/elf2nex64 build/user64/service_test64.elf64 build/user64/service_test64.nex64
 	gcc $(UFLAGS64) user64/input_test64.c -o build/user64/input_test64.elf64
 	tools/elf2nex64 build/user64/input_test64.elf64 build/user64/input_test64.nex64
 	gcc $(UFLAGS64) user64/display_test64.c -o build/user64/display_test64.elf64
@@ -498,6 +501,8 @@ user64: tools/elf2nex64
 	tools/elf2nex64 build/user64/gfx_demo64.elf64 build/user64/gfx_demo64.nex64
 	gcc $(UFLAGS64) user64/gfx_interactive64.c -o build/user64/gfx_interactive64.elf64
 	tools/elf2nex64 build/user64/gfx_interactive64.elf64 build/user64/gfx_interactive64.nex64
+	gcc $(UFLAGS64) user64/gfx_crash_test64.c -o build/user64/gfx_crash_test64.elf64
+	tools/elf2nex64 build/user64/gfx_crash_test64.elf64 build/user64/gfx_crash_test64.nex64
 	gcc $(UFLAGS64) user64/init64.c -o build/user64/init64.elf64
 	tools/elf2nex64 build/user64/init64.elf64 build/user64/init64.nex64
 	gcc $(UFLAGS64) user64/shell64.c -o build/user64/shell64.elf64
@@ -628,6 +633,8 @@ populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 		tools/txfs_write build/fs.img build/user64/pipe_test64.nex64 /pipe_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/shm_test64.nex64 /shm_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/vfs_test64.nex64 /vfs_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/service_test64.nex64 /service_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/gfx_crash_test64.nex64 /gfx_crash_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/input_test64.nex64 /input_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/display_test64.nex64 /display_test64.nex64; \
 	fi

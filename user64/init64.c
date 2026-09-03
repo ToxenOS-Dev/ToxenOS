@@ -128,22 +128,38 @@ void _start(void) {
     }
     put("init64: done\n");
 #elif defined(INIT64_GRAPHICAL_MODE)
-    // Milestone 30: launch the compositor instead of the text shell.
-    // If it exits for any reason (clean exit, unhandled fault -- either
-    // way process64_wait returns), fall back to the shell rather than
-    // leaving the user with no usable console at all.
-    int64_t comp_pid = sys_spawn("/compositor64.nex64", 0);
-    if (comp_pid < 0) {
-        put("init64: sys_spawn(/compositor64.nex64) failed, falling back to shell\n");
-    } else {
+    // Milestone 32: compositor64, a small graphical demo roster, and
+    // shell64 are now SIBLINGS -- all spawned directly by init64 via
+    // sys_spawn_isolated (SYS64_SPAWN_EX with an empty inherit list, so
+    // none of them can see any handle init64 itself might have open),
+    // none of them the compositor's own child. Every graphical client's
+    // wm_connect() (user64/wmclient64.h) performs a genuinely blocking
+    // sys_service_connect internally, so it doesn't matter what order
+    // these sys_spawn_isolated calls actually get scheduled in -- each
+    // client connects the moment compositor64 publishes WM_SERVICE_NAME,
+    // with zero delay loops and zero wasted CPU cycles either way. This
+    // replaces Milestone 30's "compositor spawns its own demo clients,
+    // init64 blocks on the compositor before even starting the shell"
+    // arrangement.
+    int64_t comp_pid = sys_spawn_isolated("/compositor64.nex64", 0);
+    if (comp_pid < 0) put("init64: sys_spawn(/compositor64.nex64) failed\n");
+    sys_spawn_isolated("/gfx_demo64.nex64", 0);
+    sys_spawn_isolated("/gfx_interactive64.nex64", 0);
+    int64_t shell_pid = sys_spawn_isolated("/shell64.nex64", 0);
+    if (shell_pid < 0) put("init64: sys_spawn(/shell64.nex64) failed\n");
+
+    // init64 stays alive exactly as long as its main children do (same
+    // discipline the plain default boot path below always used) --
+    // waits on the compositor first (which normally runs for the whole
+    // session), then the shell, so a compositor exit is still handled
+    // gracefully (the shell -- already running the whole time now, not
+    // "falling back" -- simply keeps going) without init64 exiting out
+    // from under either of them.
+    if (comp_pid >= 0) {
         int64_t code = sys_wait((uint32_t)comp_pid);
         put_line_int("init64: compositor64 exited, code=", code);
-        put("init64: falling back to text shell\n");
     }
-    int64_t shell_pid = sys_spawn("/shell64.nex64", 0);
-    if (shell_pid < 0) {
-        put("init64: sys_spawn(/shell64.nex64) failed\n");
-    } else {
+    if (shell_pid >= 0) {
         sys_wait((uint32_t)shell_pid);
     }
 #else

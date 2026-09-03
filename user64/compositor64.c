@@ -7,15 +7,23 @@
 // token handoff) into its own userspace backbuffer in z-order, and
 // presents the result through the Milestone 29 display interface.
 //
+// Milestone 32: this process no longer spawns its clients (or knows
+// what programs might ever connect to it) -- it publishes the generic
+// named service WM_SERVICE_NAME (include/service64.h) and accepts
+// whichever independently-launched processes show up, exactly like any
+// other userspace system service. See this file's own
+// accept_one_client() and user64/wmclient64.h's wm_connect().
+//
 // Multiplexing: ToxenOS has no select()/poll()/epoll() and no threads,
-// so the main loop polls its input handle and every connected client's
-// request pipe via SYS64_HANDLE_TRY_READ (non-blocking) each iteration,
-// composing+presenting a frame only when something actually changed
-// (a window committed damage, a window was created/destroyed, the
-// cursor moved, a button state changed). This is a deliberate,
-// documented scope choice -- a real select()-equivalent primitive is
-// future work; the busy-poll costs CPU but never starves other
-// processes (Milestone 24's timer preemption is unconditional).
+// so the main loop polls its input handle, the service listener, and
+// every connected client's request pipe via SYS64_HANDLE_TRY_READ/
+// SYS64_SERVICE_ACCEPT (both non-blocking) each iteration, composing+
+// presenting a frame only when something actually changed (a window
+// committed damage, a window was created/destroyed, the cursor moved,
+// a button state changed). This is a deliberate, documented scope
+// choice -- a real select()-equivalent primitive is future work; the
+// busy-poll costs CPU but never starves other processes (Milestone 24's
+// timer preemption is unconditional).
 #include <stdint.h>
 #include "tox64.h"
 #include "wmproto64.h"
@@ -617,44 +625,36 @@ static void handle_input_event(const input64_event_t* ev, int* dirty) {
     }
 }
 
-// ── Client bootstrap (spawn side) ────────────────────────────────────
+// ── Client bootstrap (service-accept side) ──────────────────────────
+// Milestone 32: compositor64 no longer spawns its own clients (or
+// knows anything about which programs might connect to it) -- it just
+// publishes WM_SERVICE_NAME and accepts whoever shows up, exactly like
+// any other named service would. See user64/wmclient64.h's wm_connect()
+// for the client side.
 static int find_free_conn_slot(void) {
     for (int i = 0; i < MAX_CLIENTS; i++) if (!g_conns[i].in_use) return i;
     return -1;
 }
 
-static int spawn_client(const char* path) {
+// Non-blocking: called once per main-loop iteration, same multiplexing
+// style as every other handle this loop already polls via
+// sys_handle_try_read (see this file's own header comment on why --
+// ToxenOS has no select()/poll() equivalent). Accepts at most one new
+// connection per call; the loop calls this repeatedly so a burst of
+// simultaneous connects still drains within a few iterations rather
+// than only ever accepting one per frame.
+static int accept_one_client(int listen_h) {
     int conn_idx = find_free_conn_slot();
-    if (conn_idx < 0) return -1;
+    if (conn_idx < 0) return -1; // no room -- leave it queued, try again once a slot frees up
 
-    int req_r, req_w, evt_r, evt_w;
-    if (sys_pipe_create(&req_r, &req_w) < 0) return -1;
-    if (sys_pipe_create(&evt_r, &evt_w) < 0) {
-        sys_handle_close(req_r); sys_handle_close(req_w);
-        return -1;
-    }
-
-    char args[64];
-    wm_encode_handles(args, sizeof(args), req_w, evt_r);
-
-    int64_t pid = sys_spawn(path, args);
-    if (pid < 0) {
-        sys_handle_close(req_r); sys_handle_close(req_w);
-        sys_handle_close(evt_r); sys_handle_close(evt_w);
-        return -1;
-    }
-
-    // Keep only OUR OWN ends -- the client's copies of req_w/evt_r must
-    // not linger in the compositor's own table (they'd otherwise be
-    // inherited into every LATER client too -- see wmclient64.h's
-    // wm_connect() header comment for the full rationale).
-    sys_handle_close(req_w);
-    sys_handle_close(evt_r);
+    service64_endpoints_t ep;
+    int64_t r = sys_service_accept(listen_h, &ep);
+    if (r < 0) return -1; // WOULDBLOCK or error -- nothing to do this iteration
 
     conn_t* c = &g_conns[conn_idx];
     c->in_use = 1;
-    c->req_r = req_r;
-    c->evt_w = evt_w;
+    c->req_r = ep.recv; // reads the client's requests
+    c->evt_w = ep.send; // writes events/replies to the client
     c->client_id = 0;
     c->said_hello = 0;
     return conn_idx;
@@ -682,13 +682,15 @@ void _start(void) {
     g_cursor_x = (int32_t)(g_disp_w / 2);
     g_cursor_y = (int32_t)(g_disp_h / 2);
 
-    // Milestone 30 demo roster: two instances of the graphics demo and
-    // two of the interactive demo -- real, independently scheduled
-    // processes, not fake windows drawn by the compositor itself.
-    spawn_client("/gfx_demo64.nex64");
-    spawn_client("/gfx_demo64.nex64");
-    spawn_client("/gfx_interactive64.nex64");
-    spawn_client("/gfx_interactive64.nex64");
+    // Milestone 32: publish the well-known service name instead of
+    // spawning any clients ourselves -- an arbitrary independently
+    // launched process (init64, shell64, or anything else) discovers
+    // and connects to this compositor entirely on its own from here on.
+    int64_t listen_h = sys_service_listen(WM_SERVICE_NAME);
+    if (listen_h < 0) {
+        put("compositor64: sys_service_listen FAILED -- is another compositor already running?\n");
+        sys_exit(1);
+    }
 
     put("compositor64: entering main loop\n");
     compose_and_present();
@@ -700,6 +702,8 @@ void _start(void) {
         while (sys_handle_try_read(g_input_h, (char*)&ev, sizeof(ev)) == (int64_t)sizeof(ev)) {
             handle_input_event(&ev, &dirty);
         }
+
+        while (accept_one_client((int)listen_h) >= 0) { /* drain any/all pending connects this iteration */ }
 
         for (int ci = 0; ci < MAX_CLIENTS; ci++) {
             if (!g_conns[ci].in_use) continue;

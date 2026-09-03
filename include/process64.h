@@ -92,6 +92,31 @@ void process64_init(void);
 // that is sufficient for now.
 int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uint32_t* pid_out);
 
+// Milestone 32: the explicit-inheritance counterpart. Identical to
+// process64_spawn in every respect EXCEPT which of the parent's
+// handles the child receives: instead of the whole table, only the
+// slots explicitly named in `inherit` (an array of `inherit_count`
+// indices into the PARENT's own handle table) are copied -- each one
+// into the SAME slot number in the child (preserving process64_spawn's
+// "child sees the exact same handle number" property for whichever
+// handles ARE listed), with the same per-kind refcount bump either way
+// applies (kernel/process64.c's shared inherit_handle_slot helper).
+// `inherit` may be NULL iff `inherit_count` is 0 (inherit nothing --
+// the new default-safe case: a child starts with an empty handle
+// table unless the parent explicitly hands it something). An
+// out-of-range or already-UNUSED index in `inherit` is silently
+// skipped, not an error -- mirrors HANDLE64_INPUT/DISPLAY/
+// SERVICE_LISTEN never being inheritable by ANY spawn path regardless
+// of whether their slot number happens to appear in the list.
+// process64_spawn itself (whole-table inheritance) is UNCHANGED and
+// kept working forever -- existing test/demo binaries that rely on it
+// (pipe_test64, shm_test64, vfs_test64, brk_mmap_test64, the process64
+// self-test workers) are not migrated; only NEW graphical/system
+// userspace (init64, shell64) uses this explicit-list form. See the
+// Milestone 32 summary for the full rationale.
+int process64_spawn_ex(const char* path, const char* args, uint32_t parent_pid,
+                        const int32_t* inherit, int inherit_count, uint32_t* pid_out);
+
 // The current process, or NULL if the CPU is running the idle/boot
 // context (no tracked process -- e.g. kernel_main64's own idle loop).
 process64_t* process64_current(void);

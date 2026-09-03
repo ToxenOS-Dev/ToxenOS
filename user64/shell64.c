@@ -227,6 +227,17 @@ static void cmd_cd(const char* args) {
 // and safely, regardless of which path got it there. Returns the
 // child's pid, or -1 if nothing could be spawned (already reported to
 // the user).
+//
+// Milestone 32: uses sys_spawn_isolated (SYS64_SPAWN_EX, empty inherit
+// list) instead of sys_spawn -- shell64 never has any files/pipes/
+// shared-memory/service handles open of its own at this point (nothing
+// in this file ever calls sys_open/sys_pipe_create/sys_shm_create/
+// sys_service_listen), so this is a behavior-preserving migration, not
+// a functional change; it just means a shell-launched program (a
+// graphical client included -- see the Milestone 32 summary) starts
+// with a guaranteed-empty handle table on the new default-safe
+// primitive, the same explicit model init64 now uses, rather than
+// relying on "shell64 happens to have nothing to leak."
 static int64_t resolve_and_spawn(const char* cmd, const char* args) {
     char path[PATH_MAX];
     int64_t pid;
@@ -237,7 +248,7 @@ static int64_t resolve_and_spawn(const char* cmd, const char* args) {
             put_err("shell64: bad path: ", cmd);
             return -1;
         }
-        pid = sys_spawn(internal, args);
+        pid = sys_spawn_isolated(internal, args);
         if (pid >= 0) return pid;
         put_err("shell64: cannot run ", cmd);
         return -1;
@@ -246,25 +257,25 @@ static int64_t resolve_and_spawn(const char* cmd, const char* args) {
     str_copy(path, CMDTOOLS_PATH, sizeof(path));
     str_cat(path, cmd, sizeof(path));
     str_cat(path, ".nex64", sizeof(path));
-    pid = sys_spawn(path, args);
+    pid = sys_spawn_isolated(path, args);
     if (pid >= 0) return pid;
 
     str_copy(path, CMDTOOLS_PATH, sizeof(path));
     str_cat(path, cmd, sizeof(path));
     str_cat(path, ".elf64", sizeof(path));
-    pid = sys_spawn(path, args);
+    pid = sys_spawn_isolated(path, args);
     if (pid >= 0) return pid;
 
     str_copy(path, "/", sizeof(path));
     str_cat(path, cmd, sizeof(path));
     str_cat(path, ".nex64", sizeof(path));
-    pid = sys_spawn(path, args);
+    pid = sys_spawn_isolated(path, args);
     if (pid >= 0) return pid;
 
     str_copy(path, "/", sizeof(path));
     str_cat(path, cmd, sizeof(path));
     str_cat(path, ".elf64", sizeof(path));
-    pid = sys_spawn(path, args);
+    pid = sys_spawn_isolated(path, args);
     if (pid >= 0) return pid;
 
     put_err("shell64: command not found: ", cmd);

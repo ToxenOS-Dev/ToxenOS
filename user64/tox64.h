@@ -44,6 +44,10 @@
 #define SYS64_SHM_TOKEN 35
 #define SYS64_SHM_OPEN_TOKEN 36
 #define SYS64_SHM_SIZE 37
+#define SYS64_SERVICE_LISTEN 38
+#define SYS64_SERVICE_ACCEPT 39
+#define SYS64_SERVICE_CONNECT 40
+#define SYS64_SPAWN_EX 41
 #define SYS64_ERR_WOULDBLOCK ((int64_t)-2)
 // Return value -2 means the path is protected (kernel refused the op).
 #define SYS64_ERR_PROTECTED ((int64_t)-2)
@@ -364,6 +368,83 @@ static inline int64_t sys_shm_open_token(uint64_t token) {
 // compositor touches a client's surface. Returns -1 on failure.
 static inline int64_t sys_shm_size(int h) {
     return (int64_t)SYSCALL1(SYS64_SHM_SIZE, h);
+}
+
+// Milestone 32: generic named local-service registry -- see
+// include/syscall64.h's header comments on SYS64_SERVICE_LISTEN/
+// ACCEPT/CONNECT for the full design. `send`/`recv` are always from the
+// CALLER's own point of view (write end / read end respectively), so
+// the same struct serves both sys_service_connect's result (a new
+// client's own ends) and sys_service_accept's (a server's own ends for
+// one client).
+typedef struct {
+    int send;
+    int recv;
+} service64_endpoints_t;
+
+// Publishes `name` (1..31 printable, non-space ASCII bytes) as a new
+// service owned by this process. Fails (-1) if that name is already
+// published or on allocation failure. The returned handle is a
+// single-owner resource -- closing it (explicitly, or automatically on
+// process exit/fault) unpublishes the name immediately, so a
+// replacement process can register the exact same name right after.
+static inline int64_t sys_service_listen(const char* name) {
+    return (int64_t)SYSCALL1(SYS64_SERVICE_LISTEN, name);
+}
+
+// Dequeues the oldest not-yet-accepted connection on a service this
+// process owns. Never blocks: returns 0 with `out` filled,
+// SYS64_ERR_WOULDBLOCK if nothing is pending, or -1 (bad handle, or a
+// connection IS pending but this process has fewer than two free
+// handle slots -- left queued for a later retry).
+static inline int64_t sys_service_accept(int listen_h, service64_endpoints_t* out) {
+    return (int64_t)SYSCALL2(SYS64_SERVICE_ACCEPT, listen_h, out);
+}
+
+// Connects to `name`. `blocking` == 0: fails immediately (-1) if no
+// such service is currently published -- a clean, instant "service not
+// available" result. `blocking` != 0: genuinely blocks (a real
+// scheduler block, never polling) until SOME service is published,
+// rechecking whether it's the wanted name, for as long as necessary --
+// see include/syscall64.h's header comment on SYS64_SERVICE_CONNECT
+// for why this is the preferred way for an application to find an
+// already-or-not-yet-running server with zero retry logic of its own.
+static inline int64_t sys_service_connect(const char* name, int blocking, service64_endpoints_t* out) {
+    return (int64_t)SYSCALL3(SYS64_SERVICE_CONNECT, name, blocking, out);
+}
+
+// Milestone 32: explicit-inheritance spawn -- the new default-safe
+// alternative to sys_spawn (which copies the caller's ENTIRE handle
+// table into the child, kept unchanged for existing callers that rely
+// on it). `inherit_ptr`/`inherit_count` name exactly which of THIS
+// process's own handle numbers the child should receive, each landing
+// at the SAME slot number in the child; an out-of-range or already-
+// unused number is silently skipped, not an error. Pass
+// inherit_count == 0 (inherit_ptr may then be NULL) for a child that
+// starts with a completely empty handle table -- the normal case for
+// launching an unrelated sibling program (a compositor, a shell, a
+// graphical client) that should never see the launcher's own open
+// files/pipes/shared-memory/service connections.
+typedef struct {
+    uint64_t args_ptr;
+    uint64_t inherit_ptr;
+    uint32_t inherit_count;
+} spawn_ex_req_t;
+
+static inline int64_t sys_spawn_ex(const char* path, const spawn_ex_req_t* req) {
+    return (int64_t)SYSCALL2(SYS64_SPAWN_EX, path, req);
+}
+
+// Composed userland helper (not a 1:1 syscall wrapper): sys_spawn_ex
+// with an empty inherit list -- the common case for launching a fully
+// independent sibling process. `args` may be NULL, same meaning as
+// sys_spawn's.
+static inline int64_t sys_spawn_isolated(const char* path, const char* args) {
+    spawn_ex_req_t req;
+    req.args_ptr = (uint64_t)(uintptr_t)args;
+    req.inherit_ptr = 0;
+    req.inherit_count = 0;
+    return sys_spawn_ex(path, &req);
 }
 
 // Composed userland helper, not a 1:1 syscall wrapper -- hence "tox_"

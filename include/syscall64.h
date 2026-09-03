@@ -217,6 +217,95 @@
 // unmapped address space).
 #define SYS64_SHM_SIZE 37 // (int handle) -> uint64_t byte size (whole pages), or (uint64_t)-1
 
+// Milestone 32: generic named local-service registry (include/service64.h)
+// -- replaces the Milestone 30 compositor-specific bootstrap (spawn-arg-
+// encoded inherited pipe handles). The kernel has no idea what a
+// "compositor" or "window" is; a service is just a short textual name
+// one process publishes and others discover and connect to, with the
+// kernel creating a fresh bidirectional pipe pair per connection.
+//
+// All three take/return a service64_endpoints_t { int send; int recv; }
+// (see include/service64.h) packed through a single user pointer, same
+// struct-packing precedent as SYS64_DISPLAY_PRESENT's request struct --
+// "send"/"recv" are always from the CALLER's own point of view, so the
+// exact same struct shape serves both SYS64_SERVICE_CONNECT's result
+// (the new client's ends) and SYS64_SERVICE_ACCEPT's (the server's ends
+// for that one client).
+//
+// Name validation (kernel/service64.c's service64_name_valid): 1 to
+// SERVICE64_NAME_MAX-1 (31) bytes, every byte printable non-space ASCII
+// (0x21-0x7E). The name is copied into kernel-owned storage immediately
+// (copy_user_cstr64, which independently rejects an unterminated
+// string, a bad/unmapped pointer, or anything past the buffer) -- no
+// user pointer is ever retained past the syscall returning.
+//
+// SYS64_SERVICE_LISTEN publishes `name` as a new service owned by the
+// calling process. Fails (-1) if that name is already published (the
+// SECOND registration fails, not the first) or on allocation failure.
+// The returned handle (HANDLE64_SERVICE_LISTEN) is a single-owner
+// resource, like HANDLE64_INPUT/DISPLAY -- never inherited by ANY
+// spawn path. Closing it (explicitly, or automatically on process
+// exit/fault) unpublishes the name immediately, so a replacement
+// process can register the exact same name right afterward -- a stale
+// registration can never permanently block a restart.
+#define SYS64_SERVICE_LISTEN 38 // (const char* name) -> handle, or -1
+
+// SYS64_SERVICE_ACCEPT dequeues the oldest not-yet-accepted connection
+// on a service this process owns (`handle` must be a
+// HANDLE64_SERVICE_LISTEN this process holds). Never blocks: returns 0
+// with `out` filled, SYS64_ERR_WOULDBLOCK if nothing is pending right
+// now, or -1 (bad handle, or a connection IS pending but this process
+// has fewer than two free handle slots -- the pending connection is
+// left queued for a later retry, not dropped). Deliberately
+// non-blocking rather than a blocking accept: a real server process
+// (a compositor) already has other things to multiplex every loop
+// iteration (its input handle, every existing client's pipe) via the
+// EXISTING SYS64_HANDLE_TRY_READ non-blocking-poll pattern -- this
+// fits that exact same style with zero new synchronization model.
+#define SYS64_SERVICE_ACCEPT 39 // (int handle, service64_endpoints_t* out) -> 0, -1, or SYS64_ERR_WOULDBLOCK
+
+// SYS64_SERVICE_CONNECT attempts to connect to `name`. `blocking` == 0:
+// fails immediately (-1) if no such service is currently published --
+// a clean, instant "service not available" result, safe to call as a
+// one-shot probe. `blocking` != 0: if no such service exists yet, the
+// caller genuinely BLOCKS (a real scheduler block via
+// kernel/process64.c's process64_block_on -- never polling) until SOME
+// service is published, rechecking whether it's the wanted name each
+// time, exactly like every other blocking primitive in this kernel
+// (kernel/pipe64.c's pipe64_read is the precedent). This is what lets
+// an application call a single "connect to the compositor" library
+// call that works correctly no matter what order it and the compositor
+// happen to be scheduled/spawned in, with no retry loop and no wasted
+// CPU cycles -- see the Milestone 32 summary's discussion of why this
+// was chosen over a giant delay loop. A blocking connect to a service
+// that will genuinely never exist (e.g. calling it in text-only mode
+// with no compositor ever started) blocks forever, same tradeoff as
+// any other indefinite kernel block in this codebase -- callers that
+// need a bounded probe should pass `blocking` == 0 instead.
+#define SYS64_SERVICE_CONNECT 40 // (const char* name, uint64_t blocking, service64_endpoints_t* out) -> 0 or -1
+
+// Milestone 32: explicit-inheritance spawn -- see include/process64.h's
+// header comment on process64_spawn_ex for the full rationale. Unlike
+// SYS64_SPAWN (which copies the ENTIRE parent handle table into the
+// child, unchanged, kept forever for backward compatibility with
+// existing test/demo binaries that rely on it), SYS64_SPAWN_EX's child
+// starts with an EMPTY handle table except for whatever slots the
+// caller explicitly lists -- the new default-safe primitive graphical/
+// system userspace (init64, shell64) uses so that launching one program
+// can never unintentionally leak references to the launcher's own open
+// files, pipes, shared memory, or service connections.
+//
+// The request struct (packed through one pointer, same precedent as
+// SYS64_DISPLAY_PRESENT) is:
+//   typedef struct {
+//       uint64_t args_ptr;      // nullable, same meaning as SYS64_SPAWN's args
+//       uint64_t inherit_ptr;   // nullable iff inherit_count == 0: array of int32_t parent handle numbers
+//       uint32_t inherit_count; // 0..PROCESS64_MAX_HANDLES
+//   } spawn_ex_req64_t;
+// An out-of-range or already-unused parent handle number in the list is
+// silently skipped (not an error) -- see process64_spawn_ex.
+#define SYS64_SPAWN_EX 41 // (const char* path, const spawn_ex_req64_t* req) -> child pid, or -1
+
 void syscall64_dispatch(trapframe64_t* tf);
 
 #endif // SYSCALL64_H

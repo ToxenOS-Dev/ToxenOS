@@ -90,6 +90,7 @@
 #include "../include/vfs64.h"
 #include "../include/input64.h"
 #include "../include/display64.h"
+#include "../include/service64.h"
 #include "../include/klog.h"
 
 extern void context_switch64(uint64_t* old_rsp_ptr, uint64_t* new_rsp_ptr);
@@ -307,10 +308,49 @@ static void close_all_handles(process64_t* p) {
         case HANDLE64_DIR:        vfs64_file_release((vfs64_file_t*)p->handles[i].obj); break;
         case HANDLE64_INPUT:      input64_release(); break;
         case HANDLE64_DISPLAY:    display64_release(); break;
+        // Milestone 32: unpublishes the service name immediately and
+        // releases any still-pending (not yet accepted) connections --
+        // see include/service64.h's header comment. Runs on both a
+        // clean sys_exit and a fault (process64_fault_current shares
+        // this same cleanup path), which is exactly what guarantees "a
+        // crashed compositor's service name disappears automatically."
+        case HANDLE64_SERVICE_LISTEN: service64_unpublish((service64_t*)p->handles[i].obj); break;
         default: break;
         }
         p->handles[i].kind = HANDLE64_UNUSED;
         p->handles[i].obj  = 0;
+    }
+}
+
+// Milestone 32: the per-slot inheritance rule, shared by BOTH
+// process64_spawn's whole-table loop and process64_spawn_ex's
+// explicit-list loop -- extracted so the two spawn paths can never
+// drift apart on which kinds bump which refcount. HANDLE64_INPUT/
+// DISPLAY/SERVICE_LISTEN have no case here (falls to default: no-op)
+// -- deliberately never inherited by ANY spawn path, matching how
+// Milestone 29 already excluded INPUT/DISPLAY from the old whole-table
+// loop; SERVICE_LISTEN joins them for the same single-owner reason.
+static void inherit_handle_slot(process64_t* child, process64_t* parent, int slot) {
+    switch (parent->handles[slot].kind) {
+    case HANDLE64_PIPE_READ:
+        pipe64_add_ref_read((pipe64_t*)parent->handles[slot].obj);
+        child->handles[slot] = parent->handles[slot];
+        break;
+    case HANDLE64_PIPE_WRITE:
+        pipe64_add_ref_write((pipe64_t*)parent->handles[slot].obj);
+        child->handles[slot] = parent->handles[slot];
+        break;
+    case HANDLE64_SHM:
+        shm64_add_ref((shm64_t*)parent->handles[slot].obj);
+        child->handles[slot] = parent->handles[slot];
+        break;
+    case HANDLE64_FILE:
+    case HANDLE64_DIR:
+        vfs64_file_add_ref((vfs64_file_t*)parent->handles[slot].obj);
+        child->handles[slot] = parent->handles[slot];
+        break;
+    default:
+        break;
     }
 }
 
@@ -358,27 +398,7 @@ int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uin
         process64_t* parent = find_by_pid(parent_pid);
         if (parent) {
             for (int i = 0; i < PROCESS64_MAX_HANDLES; i++) {
-                switch (parent->handles[i].kind) {
-                case HANDLE64_PIPE_READ:
-                    pipe64_add_ref_read((pipe64_t*)parent->handles[i].obj);
-                    p->handles[i] = parent->handles[i];
-                    break;
-                case HANDLE64_PIPE_WRITE:
-                    pipe64_add_ref_write((pipe64_t*)parent->handles[i].obj);
-                    p->handles[i] = parent->handles[i];
-                    break;
-                case HANDLE64_SHM:
-                    shm64_add_ref((shm64_t*)parent->handles[i].obj);
-                    p->handles[i] = parent->handles[i];
-                    break;
-                case HANDLE64_FILE:
-                case HANDLE64_DIR:
-                    vfs64_file_add_ref((vfs64_file_t*)parent->handles[i].obj);
-                    p->handles[i] = parent->handles[i];
-                    break;
-                default:
-                    break;
-                }
+                inherit_handle_slot(p, parent, i);
             }
         }
     }
@@ -400,6 +420,86 @@ int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uin
 
     if (pid_out) *pid_out = p->pid;
     p->state = PROCESS64_READY; // scheduler picks it up later; never run here
+    return 0;
+}
+
+// Milestone 32: explicit-list inheritance -- see include/process64.h's
+// header comment. Structurally identical to process64_spawn above
+// except for the inheritance step itself (a deliberate, small amount
+// of duplication over a shared "spawn core" abstraction -- this
+// codebase's own stated preference is explicit code over premature
+// abstraction, and process64_spawn is sensitive, already-self-tested
+// code not worth restructuring just to save ~15 lines).
+int process64_spawn_ex(const char* path, const char* args, uint32_t parent_pid,
+                        const int32_t* inherit, int inherit_count, uint32_t* pid_out) {
+    int idx = -1;
+    for (int i = 0; i < PROCESS64_MAX; i++) {
+        if (procs[i].state == PROCESS64_UNUSED) { idx = i; break; }
+    }
+    if (idx < 0) {
+        klog("process64: spawn_ex: no free process slots\n");
+        return -1;
+    }
+
+    process64_t* p = &procs[idx];
+
+    if (paging64_create_as(&p->as) < 0) {
+        klog("process64: spawn_ex: failed to create address space\n");
+        return -1;
+    }
+
+    uint64_t entry, stack_top;
+    if (exec64_load(&p->as, path, &entry, &stack_top) < 0) {
+        paging64_destroy_as(&p->as);
+        return -1;
+    }
+
+    p->pid             = next_pid++;
+    p->parent_pid      = parent_pid;
+    p->exit_code       = 0;
+    p->wait_chan       = 0;
+    uservm64_init(&p->vm);
+    for (int i = 0; i < PROCESS64_MAX_HANDLES; i++) {
+        p->handles[i].kind = HANDLE64_UNUSED;
+        p->handles[i].obj  = 0;
+    }
+
+    // The whole point of this entry point: only the EXPLICITLY listed
+    // parent handle numbers cross over, each into the SAME slot number
+    // in the child (matching process64_spawn's "same slot" property for
+    // whichever handles are actually inherited) -- an out-of-range or
+    // already-UNUSED index is silently skipped, not an error, since a
+    // caller building this list from its own handle table can never
+    // know in advance whether the parent PID it named is even real.
+    if (parent_pid != 0 && inherit && inherit_count > 0) {
+        process64_t* parent = find_by_pid(parent_pid);
+        if (parent) {
+            for (int k = 0; k < inherit_count; k++) {
+                int32_t slot = inherit[k];
+                if (slot < 0 || slot >= PROCESS64_MAX_HANDLES) continue;
+                if (parent->handles[slot].kind == HANDLE64_UNUSED) continue;
+                inherit_handle_slot(p, parent, slot);
+            }
+        }
+    }
+
+    copy_str(p->args, args, PROCESS64_ARGS_MAX);
+    copy_str(p->path, path, PROCESS64_PATH_MAX);
+
+    p->kernel_stack      = kernel_stacks[idx];
+    p->kernel_stack_size = PROCESS64_KSTACK_SIZE;
+    bootstrap_process_stack(p, entry, stack_top);
+
+    char pidbuf[24];
+    dec_to_str(p->pid, pidbuf);
+    klog("process64: spawned pid=");
+    klog(pidbuf);
+    klog(" path=");
+    klog(path);
+    klog(" (explicit inherit)\n");
+
+    if (pid_out) *pid_out = p->pid;
+    p->state = PROCESS64_READY;
     return 0;
 }
 

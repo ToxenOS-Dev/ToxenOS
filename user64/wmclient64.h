@@ -82,38 +82,33 @@ static inline int wm_wait_event(wm_client_t* c, wm_msg_t* out) {
     return wmc_recv_raw(c, out);
 }
 
-// Must match include/handle64.h's PROCESS64_MAX_HANDLES.
-#define WMC_MAX_HANDLES 16
-
-// Connects to the compositor that spawned this process -- decodes the
-// two inherited pipe handles from this process's own spawn args
-// (see wmproto64.h's header comment), sends HELLO, and blocks for
-// WELCOME. Returns 0 with *out filled, or -1 (not spawned by a
-// compositor, or the handshake failed/timed out via disconnect).
+// Connects to whichever compositor currently owns WM_SERVICE_NAME --
+// see wmproto64.h's header comment. Milestone 32: sys_service_connect
+// (blocking) replaces the old Milestone 30 bootstrap entirely; this
+// works correctly regardless of whether the compositor has already
+// registered the service by the time this call runs (blocks, a real
+// scheduler block, until it does) and regardless of whether this
+// process is the compositor's child, a sibling, or launched much later
+// from an unrelated process (a shell command, say) -- there is no
+// spawn relationship requirement at all anymore. No handle scrubbing
+// is needed either: this process's OWN two connection handles are the
+// only thing sys_service_connect ever installs in its table, so there
+// is nothing stale to clean up (contrast with the old Milestone 30
+// scheme, where whole-table spawn inheritance from the compositor
+// dragged in every earlier client's pipes too).
 //
-// Also closes every OTHER inherited handle first. Milestone 26's spawn
-// inheritance copies a process's WHOLE handle table, not just the two
-// pipe ends meant for this client -- the compositor keeps its OWN ends
-// of every past client's connection open indefinitely (correctly: it
-// needs them for as long as that connection lives), so each new client
-// spawned afterward inherits stale extra references to every EARLIER
-// client's pipes too. Left alone, those spurious references would
-// inflate those pipes' reader/writer refcounts forever (a real leak --
-// the pipe object could never be freed even after both real endpoints
-// release it), so a well-behaved client scrubs everything except its
-// own two handles immediately on connect.
+// Sends HELLO and blocks for WELCOME once connected. Returns 0 with
+// *out filled, or -1 (no compositor ever appears -- see
+// include/syscall64.h's SYS64_SERVICE_CONNECT docs on why a blocking
+// connect to a service that will truly never exist blocks forever, a
+// tradeoff acceptable here since this call is only ever made by a
+// genuinely graphical client -- or the handshake failed/disconnected).
 static inline int wm_connect(wm_client_t* out) {
-    char args[64];
-    if (sys_get_args(args, sizeof(args)) < 0) return -1;
-    int req_w, evt_r;
-    if (wm_decode_handles(args, &req_w, &evt_r) < 0) return -1;
+    service64_endpoints_t ep;
+    if (sys_service_connect(WM_SERVICE_NAME, 1 /* blocking */, &ep) < 0) return -1;
 
-    for (int i = 0; i < WMC_MAX_HANDLES; i++) {
-        if (i != req_w && i != evt_r) sys_handle_close(i);
-    }
-
-    out->req_w = req_w;
-    out->evt_r = evt_r;
+    out->req_w = ep.send;
+    out->evt_r = ep.recv;
     out->client_id = 0;
     out->pending_count = 0;
 

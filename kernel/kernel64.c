@@ -36,6 +36,7 @@
 #include "../include/ps2_64.h"
 #include "../include/input64.h"
 #include "../include/mouse64.h"
+#include "../include/service64.h"
 #include "../include/rustffi64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
@@ -110,6 +111,12 @@
 // -- same timing requirements as PROCESS64_RUN_TESTS -- requires
 // `make populate PACKAGE_DEBUG64=1` for vfs_test64.nex64.
 // #define VFS64_RUN_TESTS 1
+
+// Define to run the Milestone 32 named-service registry self-test
+// suite -- same timing requirements as PROCESS64_RUN_TESTS (real
+// spawns, real preemption, real blocking) -- requires
+// `make populate PACKAGE_DEBUG64=1` for service_test64.nex64.
+// #define SERVICE64_RUN_TESTS 1
 
 // Define to spawn /display_test64.nex64 during boot (needs
 // `make populate PACKAGE_DEBUG64=1`) -- see user64/display_test64.c.
@@ -481,6 +488,7 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     // maps to the scheduler's quantum.
     timer64_init(100);
     process64_init();
+    service64_init(); // Milestone 32: must precede the first process64_spawn() below
 
     __asm__ volatile ("sti");
     out_line("Interrupts enabled (sti) -- timer at 100Hz, scheduler ready");
@@ -567,6 +575,10 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
 
 #ifdef VFS64_RUN_TESTS
     klog_hex("vfs64_selftest: all passed = ", (uint32_t)vfs64_selftest());
+#endif
+
+#ifdef SERVICE64_RUN_TESTS
+    klog_hex("service64_selftest: all passed = ", (uint32_t)service64_selftest());
 #endif
 
 // Milestone 29: spawns /display_test64.nex64 (self-contained, no

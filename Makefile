@@ -78,6 +78,33 @@ UFLAGS64 := -ffreestanding -fno-stack-protector -fno-pic -m64 \
             -Wall -Wextra -Wno-unused-parameter \
             -I user64
 
+# Milestone 33: identical to UFLAGS64 except SSE/SSE2 are ENABLED --
+# needed by userlib/toxui's floating-point code (TrueType glyph
+# rasterization in particular genuinely needs real floating point; see
+# the Milestone 33 summary's "why floating point needed a kernel
+# change" section: kernel/process64.c now does eager FXSAVE/FXRSTOR
+# across every context switch and enables CR4.OSFXSR specifically so
+# this is safe). Used ONLY for userlib/toxui's own .c files and any
+# program that calls into it directly -- every other existing userspace
+# file stays on plain UFLAGS64 (no float code, no reason to touch it).
+# Safe to mix object files built with different flags in the same
+# final link as long as no function crosses a translation-unit boundary
+# with a float/double parameter or return value anywhere -- ToxUI's own
+# public headers are deliberately integer/pointer-only for exactly this
+# reason (see userlib/toxui/tox_image.h etc.).
+#
+# -msse4.1 adds the ROUNDSD instruction (userlib/toxui/tox_math.c's
+# tox_floor/tox_ceil) -- a pure CPUID feature bit, no further CR4/OS
+# support needed beyond what -msse2 already required (same FXSAVE area
+# covers it). -O2 is scoped to ToxUI alone (the rest of this project
+# builds at the Makefile-wide default -O0) because real optimization
+# matters for image-scaling/glyph-rasterization inner loops in a way it
+# never has for this OS's existing integer/string code -- tox_math.c's
+# own floor/ceil/sqrt/fabs are direct inline asm regardless of -O level
+# (not GCC builtins), specifically so their correctness never depends
+# on which optimization level compiles them.
+UFLAGS64_TOXUI := $(filter-out -mno-sse -mno-sse2,$(UFLAGS64)) -msse -msse2 -msse4.1 -O2 -I userlib/toxui
+
 # ── Milestone 31: Rust kernel/driver support ─────────────────────────────────
 # rustc's BUILTIN `x86_64-unknown-none` target (stable-compatible: `core`
 # and `alloc` ship prebuilt for it via `rustup target add x86_64-unknown-none`,
@@ -138,7 +165,7 @@ KOBJS := \
 	build/user/shell_blob.o build/user/init_blob.o
 
 # Include generated dependency files (silently skip if not yet built)
--include $(wildcard build/*.d) $(wildcard build/mbedtls/*.d)
+-include $(wildcard build/*.d) $(wildcard build/mbedtls/*.d) $(wildcard build/toxui/*.d)
 
 all: user
 	@mkdir -p build build/mbedtls iso/boot
@@ -361,12 +388,23 @@ kernel64: $(RUST_LIB)
 		echo "      Install grub2 then run: grub2-mkrescue -o build/ToxenOS64.iso iso64"; \
 	fi
 
+# Milestone 33: TOXENOS64_QEMU_CPU picks the emulated CPU model for
+# every run64* target below. QEMU's own TCG default ("qemu64") is a
+# deliberately conservative baseline that lacks SSSE3 -- ToxUI's
+# UFLAGS64_TOXUI (-msse4.1) needs it (confirmed via a real #UD/Invalid
+# Opcode crash: GCC recognizes tox_libc_shim.c's memset and inlines a
+# vectorized version using PSHUFB, an SSSE3 instruction). Real x86-64
+# hardware has had SSSE3 since ~2006, so this only matters for the
+# emulated default; +ssse3,+sse4.1 makes plain TCG (no KVM/nested
+# virtualization required) match that baseline.
+TOXENOS64_QEMU_CPU := qemu64,+ssse3,+sse4.1
+
 # build/disk.img (GPT + TxFS, containing /hello.ts) comes from the
 # existing `populate` pipeline (same image the 32-bit run targets use,
 # just attached here as legacy IDE instead of NVMe) -- depends on `user`
 # since `populate` writes build/user/*.nex into the image.
 run64: kernel64 user populate
-	qemu-system-x86_64 -m 256 -boot order=d -cdrom build/ToxenOS64.iso \
+	qemu-system-x86_64 -m 256 -cpu $(TOXENOS64_QEMU_CPU) -boot order=d -cdrom build/ToxenOS64.iso \
 		-drive file=build/disk.img,format=raw,if=ide \
 		-serial stdio
 
@@ -379,19 +417,19 @@ run64: kernel64 user populate
 # idiom (a SATA controller PCI function, with an ide-hd "disk" attached
 # to its first port).
 run64-ahci: kernel64 user populate
-	qemu-system-x86_64 -m 256 -boot order=d -cdrom build/ToxenOS64.iso \
+	qemu-system-x86_64 -m 256 -cpu $(TOXENOS64_QEMU_CPU) -boot order=d -cdrom build/ToxenOS64.iso \
 		-device ich9-ahci,id=ahci0 \
 		-drive file=build/disk.img,format=raw,if=none,id=ahcidisk0 \
 		-device ide-hd,drive=ahcidisk0,bus=ahci0.0 \
 		-serial stdio
 
 run64-virtio: kernel64 user populate
-	qemu-system-x86_64 -m 256 -boot order=d -cdrom build/ToxenOS64.iso \
+	qemu-system-x86_64 -m 256 -cpu $(TOXENOS64_QEMU_CPU) -boot order=d -cdrom build/ToxenOS64.iso \
 		-drive file=build/disk.img,format=raw,if=virtio \
 		-serial stdio
 
 run64-nvme: kernel64 user populate
-	qemu-system-x86_64 -m 256 -boot order=d -cdrom build/ToxenOS64.iso \
+	qemu-system-x86_64 -m 256 -cpu $(TOXENOS64_QEMU_CPU) -boot order=d -cdrom build/ToxenOS64.iso \
 		-drive file=build/disk.img,format=raw,if=none,id=nvmedisk0 \
 		-device nvme,drive=nvmedisk0,serial=toxnvme0 \
 		-serial stdio
@@ -469,7 +507,26 @@ tools/elf2nex: tools/elf2nex.c
 tools/elf2nex64: tools/elf2nex64.c
 	gcc -O2 -o tools/elf2nex64 tools/elf2nex64.c
 
-user64: tools/elf2nex64
+# ── Milestone 33: userlib/toxui, the userspace graphics/font/UI library ──────
+# A plain static archive (build/toxui/libtoxui.a) any user64 program
+# links against directly -- ToxenOS has no shared-library/dynamic-
+# loading support, so (like every other user64 program) each ToxUI-
+# using NEX64 binary statically includes its own copy. See
+# userlib/toxui/third_party/README.md for the vendored stb_image.h/
+# stb_truetype.h provenance and license.
+TOXUI_SRCS := $(wildcard userlib/toxui/*.c)
+TOXUI_OBJS := $(patsubst userlib/toxui/%.c,build/toxui/%.o,$(TOXUI_SRCS))
+
+build/toxui/%.o: userlib/toxui/%.c
+	@mkdir -p build/toxui
+	gcc $(UFLAGS64_TOXUI) -MMD -MP -c $< -o $@
+
+build/toxui/libtoxui.a: $(TOXUI_OBJS)
+	ar rcs build/toxui/libtoxui.a $(TOXUI_OBJS)
+
+toxui: build/toxui/libtoxui.a
+
+user64: tools/elf2nex64 toxui
 	@mkdir -p build/user64
 	gcc $(UFLAGS64) user64/exec_test.c -o build/user64/exec_test.elf64
 	tools/elf2nex64 build/user64/exec_test.elf64 build/user64/exec_test.nex64
@@ -491,6 +548,15 @@ user64: tools/elf2nex64
 	tools/elf2nex64 build/user64/vfs_test64.elf64 build/user64/vfs_test64.nex64
 	gcc $(UFLAGS64) user64/service_test64.c -o build/user64/service_test64.elf64
 	tools/elf2nex64 build/user64/service_test64.elf64 build/user64/service_test64.nex64
+	gcc $(UFLAGS64_TOXUI) user64/fpu_smoke_test64.c -o build/user64/fpu_smoke_test64.elf64
+	tools/elf2nex64 build/user64/fpu_smoke_test64.elf64 build/user64/fpu_smoke_test64.nex64
+	# Milestone 33: user64 programs linking against build/toxui/libtoxui.a.
+	gcc $(UFLAGS64_TOXUI) user64/toxui_test64.c build/toxui/libtoxui.a -o build/user64/toxui_test64.elf64
+	tools/elf2nex64 build/user64/toxui_test64.elf64 build/user64/toxui_test64.nex64
+	gcc $(UFLAGS64_TOXUI) user64/toxui_demo64.c build/toxui/libtoxui.a -o build/user64/toxui_demo64.elf64
+	tools/elf2nex64 build/user64/toxui_demo64.elf64 build/user64/toxui_demo64.nex64
+	gcc $(UFLAGS64_TOXUI) user64/wallpaper_demo64.c build/toxui/libtoxui.a -o build/user64/wallpaper_demo64.elf64
+	tools/elf2nex64 build/user64/wallpaper_demo64.elf64 build/user64/wallpaper_demo64.nex64
 	gcc $(UFLAGS64) user64/input_test64.c -o build/user64/input_test64.elf64
 	tools/elf2nex64 build/user64/input_test64.elf64 build/user64/input_test64.nex64
 	gcc $(UFLAGS64) user64/display_test64.c -o build/user64/display_test64.elf64
@@ -590,6 +656,22 @@ populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 	tools/txfs_write build/fs.img /dev/null /system_manager/programs/program_data/.keep
 	tools/txfs_write build/fs.img /dev/null /system_manager/system_data/display_interface/.keep
 	tools/txfs_write build/fs.img /dev/null /system_manager/system_data/system_backend/.keep
+	# Milestone 33: system visual assets (wallpapers/icons/fonts) --
+	# system_data/display_interface already existed as ToxenOS's own
+	# "visual interface data" location (see the .keep line right above
+	# this block, predating this milestone), so these live under it
+	# rather than inventing a new unrelated top-level tree. Real files,
+	# genuinely read via the VFS at runtime by userlib/toxui -- never
+	# baked into any C source. See assets/README.md for provenance/
+	# licenses (DejaVu Sans -- Bitstream Vera License, redistributable;
+	# the wallpaper/icon are placeholders until the real ToxenOS design
+	# assets are supplied, see the Milestone 33 summary).
+	tools/txfs_write build/fs.img /dev/null /system_manager/system_data/display_interface/backgrounds/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/system_data/display_interface/icons/.keep
+	tools/txfs_write build/fs.img /dev/null /system_manager/system_data/display_interface/fonts/.keep
+	tools/txfs_write build/fs.img assets/backgrounds/toxenos-default.png /system_manager/system_data/display_interface/backgrounds/toxenos-default.png
+	tools/txfs_write build/fs.img assets/icons/placeholder-logo.png /system_manager/system_data/display_interface/icons/toxenos-logo.png
+	tools/txfs_write build/fs.img assets/fonts/DejaVuSans.ttf /system_manager/system_data/display_interface/fonts/DejaVuSans.ttf
 	# Milestone 11/15/16: real standalone ToxenOS64 command programs --
 	# visible path C:\System Manager\System Tools\Command Tools\<name>.nex
 	# (see user64/toxpath64.h for the internal<->visible translation).
@@ -646,11 +728,23 @@ populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 		tools/txfs_write build/fs.img build/user64/shm_test64.nex64 /shm_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/vfs_test64.nex64 /vfs_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/service_test64.nex64 /service_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/fpu_smoke_test64.nex64 /fpu_smoke_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/gfx_crash_test64.nex64 /gfx_crash_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/compositor64_test.nex64 /compositor64_test.nex64; \
 		tools/txfs_write build/fs.img build/user64/compositor_stall_test64.nex64 /compositor_stall_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/input_test64.nex64 /input_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/display_test64.nex64 /display_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/toxui_test64.nex64 /toxui_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/toxui_demo64.nex64 /toxui_demo64.nex64; \
+		tools/txfs_write build/fs.img build/user64/wallpaper_demo64.nex64 /wallpaper_demo64.nex64; \
+		tools/txfs_write build/fs.img /dev/null /toxui_test_assets/.keep; \
+		tools/txfs_write build/fs.img assets/testdata/test_rgb.png /toxui_test_assets/test_rgb.png; \
+		tools/txfs_write build/fs.img assets/testdata/test_rgba_alpha.png /toxui_test_assets/test_rgba_alpha.png; \
+		tools/txfs_write build/fs.img assets/testdata/bad_signature.png /toxui_test_assets/bad_signature.png; \
+		tools/txfs_write build/fs.img assets/testdata/truncated.png /toxui_test_assets/truncated.png; \
+		tools/txfs_write build/fs.img assets/testdata/bad_chunklen.png /toxui_test_assets/bad_chunklen.png; \
+		tools/txfs_write build/fs.img assets/testdata/empty.png /toxui_test_assets/empty.png; \
+		tools/txfs_write build/fs.img assets/testdata/oversized_dims.png /toxui_test_assets/oversized_dims.png; \
 	fi
 	# 32-bit root boot files (not in BSM -- the 32-bit kernel loads
 	# /init.nex and /shell.nex directly from the TxFS root).

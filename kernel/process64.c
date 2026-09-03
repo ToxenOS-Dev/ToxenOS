@@ -177,6 +177,48 @@ static void bootstrap_process_stack(process64_t* p, uint64_t entry, uint64_t use
     p->kernel_rsp = (uint64_t)sp;
 }
 
+// Milestone 33: idle context's own saved FPU/SSE state (perform_switch
+// treats idx < 0 as "the idle context", which needs somewhere to save
+// TO / restore FROM exactly like a real process64_t slot does) and the
+// canonical clean-reset image every new process's own fpu_state is
+// initialized from -- see fpu64_init() below.
+static uint8_t idle_fpu_state[512] __attribute__((aligned(16)));
+static uint8_t default_fpu_state[512] __attribute__((aligned(16)));
+
+// Milestone 33: enables SSE/SSE2 for userspace -- required before
+// ToxUI's floating-point-using graphics/font code can run at all (the
+// x86-64 SysV ABI passes float/double in XMM registers regardless of
+// visibility, so there is no way to use a C compiler's float support
+// on this architecture without it). Sets CR4.OSFXSR (bit 9 -- "the OS
+// knows how to FXSAVE/FXRSTOR", required or the CPU raises #UD on any
+// SSE instruction at all) and CR4.OSXMMEXCPT (bit 10 -- lets an
+// unmasked SIMD FP exception raise #XM instead of #UD; not separately
+// handled by kernel/interrupt64.c's IDT, but this is what an SSE-aware
+// OS is expected to set regardless, and ToxUI's own floating-point
+// code is expected to stay well within normal ranges). CR0.EM/CR0.TS
+// were already 0 at this kernel's long-mode entry (see boot64.asm) and
+// stay that way -- this kernel does EAGER save/restore on every switch
+// (see perform_switch below), never CR0.TS-based lazy FPU switching.
+static void fpu64_init(void) {
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1ULL << 9) | (1ULL << 10);
+    __asm__ volatile("mov %0, %%cr4" :: "r"(cr4) : "memory");
+
+    // Captures a fully clean x87 (FNINIT: all registers marked empty,
+    // default control word) + SSE (explicit standard-default MXCSR --
+    // never assume whatever GRUB/firmware happened to leave behind)
+    // state ONCE, copied into every process's fpu_state at spawn time
+    // and into the idle context's own area right here -- every context
+    // in this kernel starts from the exact same known-clean baseline,
+    // never inheriting another context's leftover control/status bits.
+    uint32_t mxcsr_default = 0x1F80;
+    __asm__ volatile("ldmxcsr (%0)" :: "r"(&mxcsr_default) : "memory");
+    __asm__ volatile("fninit");
+    __asm__ volatile("fxsave (%0)" :: "r"(default_fpu_state) : "memory");
+    for (int i = 0; i < 512; i++) idle_fpu_state[i] = default_fpu_state[i];
+}
+
 // ── The switch primitive ─────────────────────────────────────────────
 // `to_cleanup` (if non-NULL) is the process whose address space/fds
 // should be released as part of this switch -- always the process that
@@ -216,6 +258,21 @@ static void perform_switch(int old_idx, int new_idx, process64_t* to_cleanup) {
 
     current_idx = new_idx;
     g_switch_count++;
+
+    // Milestone 33: eager FPU/SSE state switch -- see fpu64_init()'s
+    // header comment. Must happen right here, immediately around the
+    // actual switch: FXSAVE captures whatever the OUTGOING context's
+    // floating-point code left in the real registers, FXRSTOR loads
+    // the INCOMING context's own saved state before it ever gets a
+    // chance to run again. Genuinely global CPU register state, not
+    // carried by context_switch64's stack-based GPR save/restore.
+    {
+        uint8_t* old_fpu = (old_idx >= 0) ? procs[old_idx].fpu_state : idle_fpu_state;
+        uint8_t* new_fpu = (new_idx >= 0) ? procs[new_idx].fpu_state : idle_fpu_state;
+        __asm__ volatile("fxsave (%0)" :: "r"(old_fpu) : "memory");
+        __asm__ volatile("fxrstor (%0)" :: "r"(new_fpu) : "memory");
+    }
+
     context_switch64(old_rsp_ptr, new_rsp_ptr);
     // Resumes here once something later switches back to old_idx --
     // EXCEPT when new_idx was a brand-new process, which jumps straight
@@ -285,6 +342,7 @@ void process64_init(void) {
     idle_kernel_rsp = 0;
     next_pid = 1;
     g_switch_count = 0;
+    fpu64_init();
 }
 
 // Milestone 26/27: releases every open handle in `p`'s table -- closing
@@ -382,6 +440,7 @@ int process64_spawn(const char* path, const char* args, uint32_t parent_pid, uin
     p->exit_code       = 0;
     p->wait_chan       = 0;
     uservm64_init(&p->vm);
+    for (int i = 0; i < 512; i++) p->fpu_state[i] = default_fpu_state[i]; // Milestone 33: clean FPU/SSE state, see fpu64_init()
     for (int i = 0; i < PROCESS64_MAX_HANDLES; i++) {
         p->handles[i].kind = HANDLE64_UNUSED;
         p->handles[i].obj  = 0;
@@ -459,6 +518,7 @@ int process64_spawn_ex(const char* path, const char* args, uint32_t parent_pid,
     p->exit_code       = 0;
     p->wait_chan       = 0;
     uservm64_init(&p->vm);
+    for (int i = 0; i < 512; i++) p->fpu_state[i] = default_fpu_state[i]; // Milestone 33: clean FPU/SSE state, see fpu64_init()
     for (int i = 0; i < PROCESS64_MAX_HANDLES; i++) {
         p->handles[i].kind = HANDLE64_UNUSED;
         p->handles[i].obj  = 0;
@@ -831,6 +891,21 @@ static int test_repeated_cycles_no_leak(void) {
     return after.used_pages == before.used_pages && after.free_pages == before.free_pages;
 }
 
+// Milestone 33: real cross-process regression test for the eager
+// FXSAVE/FXRSTOR context switch (see fpu64_init() and perform_switch's
+// header comments) -- see user64/fpu_smoke_test64.c for the full
+// scenario (four concurrently-scheduled processes, each doing
+// distinct floating-point work, self-checking every result). Requires
+// `make populate PACKAGE_DEBUG64=1` for fpu_smoke_test64.nex64.
+#define FPU_SMOKE_TEST_PATH "/fpu_smoke_test64.nex64"
+
+static int test_fpu_state_isolation(void) {
+    uint32_t pid = 0;
+    if (process64_spawn(FPU_SMOKE_TEST_PATH, "", 0, &pid) < 0) return 0;
+    if (pid == 0) return 0;
+    return process64_wait(pid) == 42;
+}
+
 #define PROCESS64_TEST(name, expr) do {          \
     int _r = (expr);                             \
     klog("process64_selftest: " name " ");       \
@@ -848,6 +923,7 @@ int process64_selftest(void) {
     PROCESS64_TEST("exit status propagation (fault path)", test_exit_status_propagation());
     PROCESS64_TEST("pid monotonic, slot reused", test_pid_and_slot_reuse());
     PROCESS64_TEST("repeated spawn/wait cycles, no page leak", test_repeated_cycles_no_leak());
+    PROCESS64_TEST("FPU/SSE state isolation across concurrent processes", test_fpu_state_isolation());
 
     char passbuf[24], failbuf[24];
     dec_to_str((uint64_t)pass, passbuf);

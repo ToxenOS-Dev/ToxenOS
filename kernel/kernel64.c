@@ -139,6 +139,17 @@
 // for compositor64_test.nex64/compositor_stall_test64.nex64.
 // #define COMPOSITOR_STALL_TEST64_RUN 1
 
+// Define to run the Milestone 33 ToxUI (userlib/toxui) self-test suite
+// -- PNG decoding, drawing primitives, TrueType font/text rendering --
+// right after storage/VFS are up (needs the VFS for both the test
+// binary and its /toxui_test_assets/ PNG fixtures + the real
+// DejaVuSans.ttf under /system_manager/system_data/display_interface/
+// fonts/). No display/input/compositor needed -- entirely single-
+// process computation. See user64/toxui_test64.c and
+// userlib/toxui/tox_selftest.c for the full scenario. Requires
+// `make populate PACKAGE_DEBUG64=1`.
+// #define TOXUI_TEST64_RUN 1
+
 // Define to run the Milestone 31 Rust/C integration self-test suite
 // (rust/toxenos_rs/src/selftest.rs) right after heap64_init() -- it
 // needs kmalloc/kfree and physmem64_alloc_page/free_page already
@@ -650,6 +661,40 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
                         pafter.used_pages == pbefore.used_pages && pafter.free_pages == pbefore.free_pages;
         klog(cycles_ok ? "compositor_stall_test64: repeated cycles PASS\n" : "compositor_stall_test64: repeated cycles FAIL\n");
         klog(no_drift ? "compositor_stall_test64: no heap/physical-page drift PASS\n" : "compositor_stall_test64: no heap/physical-page drift FAIL\n");
+    }
+#endif
+
+// Milestone 33: see this file's own header comment on TOXUI_TEST64_RUN.
+// Same pattern as COMPOSITOR_STALL_TEST64_RUN above -- primary pass/
+// fail once, then 5 further full cycles (each a fresh process running
+// the ENTIRE tox_selftest suite, including its own internal repeated
+// PNG/font load-free loops) purely for the outer heap/physical-page
+// drift comparison.
+#ifdef TOXUI_TEST64_RUN
+    {
+        #define TOXUI_TEST_PATH "/toxui_test64.nex64"
+        uint32_t pid = 0;
+        int code = -1;
+        if (process64_spawn(TOXUI_TEST_PATH, "", 0, &pid) == 0) code = process64_wait(pid);
+        klog(code == 42 ? "toxui_test64: PASS\n" : "toxui_test64: FAIL\n");
+        out_kv("toxui_test64: exit code = ", (uint64_t)(int64_t)code);
+
+        heap64_stats_t hbefore, hafter;
+        physmem64_stats_t pbefore, pafter;
+        heap64_stats(&hbefore);
+        physmem64_stats(&pbefore);
+        int cycles_ok = 1;
+        for (int i = 0; i < 5; i++) {
+            uint32_t cpid = 0;
+            if (process64_spawn(TOXUI_TEST_PATH, "", 0, &cpid) < 0) { cycles_ok = 0; break; }
+            if (process64_wait(cpid) != 42) { cycles_ok = 0; break; }
+        }
+        heap64_stats(&hafter);
+        physmem64_stats(&pafter);
+        int no_drift = hafter.used_bytes == hbefore.used_bytes && hafter.span_count == hbefore.span_count &&
+                        pafter.used_pages == pbefore.used_pages && pafter.free_pages == pbefore.free_pages;
+        klog(cycles_ok ? "toxui_test64: repeated cycles PASS\n" : "toxui_test64: repeated cycles FAIL\n");
+        klog(no_drift ? "toxui_test64: no heap/physical-page drift PASS\n" : "toxui_test64: no heap/physical-page drift FAIL\n");
     }
 #endif
 

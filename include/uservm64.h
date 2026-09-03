@@ -25,9 +25,10 @@
 //     MMAP       [+256MB,      +512MB)   -- anonymous mmap, budget 256MB
 //     (432MB gap)
 //     STACK      [+944MB,      +960MB)   -- grows down from the top;
-//                                           only the top 4KB page is
-//                                           ever actually mapped this
-//                                           milestone (no demand paging)
+//                                           only the top USER_STACK_EAGER_PAGES
+//                                           worth of pages are ever
+//                                           actually mapped (no demand
+//                                           paging yet)
 //
 // The gaps are deliberate slack: none of these budgets are remotely
 // exhausted by anything this OS runs today, and growing one region's
@@ -50,9 +51,20 @@
 #define USER_MMAP_MAX_SIZE    0x10000000ULL   // 256 MB
 #define USER_MMAP_MAX_END     (USER_MMAP_BASE + USER_MMAP_MAX_SIZE)
 
-#define USER_STACK_MAX_SIZE   0x01000000ULL   // 16 MB budget (1 page actually mapped)
+#define USER_STACK_MAX_SIZE   0x01000000ULL   // 16 MB budget (only the top USER_STACK_EAGER_PAGES pages actually mapped)
 #define USER_STACK_TOP        (USER_REGION_END)
 #define USER_STACK_BASE       (USER_STACK_TOP - USER_STACK_MAX_SIZE)
+
+// Milestone 33: bumped from a single 4KB page after ToxUI's vendored
+// stb_image.h was found (via a real page-fault crash) to blow a
+// single page on its own -- stbi__parse_zlib's local `stbi__zbuf a;`
+// embeds two `stbi__zhuffman` tables (~2KB each, ~4KB total) for
+// zlib/DEFLATE decoding, before even counting the rest of the PNG
+// decode call chain's own frames. There is still no demand paging --
+// this just eagerly maps more pages upfront (64KB), which comfortably
+// covers stb_image/stb_truetype's worst-case usage with real headroom
+// and costs nothing for processes that never come close to using it.
+#define USER_STACK_EAGER_PAGES 16
 
 // ── Per-process mmap bookkeeping ─────────────────────────────────────
 // A sorted (by base, non-overlapping), kmalloc'd singly-linked list --

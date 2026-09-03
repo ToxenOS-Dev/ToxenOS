@@ -40,7 +40,17 @@
 #include "../include/heap64.h"
 #include "../include/klog.h"
 
-#define EXEC64_FILE_MAX  (64u * 1024u)
+// Milestone 33: bumped from 64KB -- a NEX64 statically linking
+// userlib/toxui (stb_image.h + stb_truetype.h + ToxUI's own drawing/
+// font/text code, see the Milestone 33 summary) is genuinely larger
+// than any earlier program in this codebase (~90-100KB as of this
+// milestone). 1MB gives comfortable headroom for ToxUI to grow further
+// (more assets, more drawing primitives) without needing another bump
+// for a good while; still a small, deliberate, explicit ceiling (not
+// "unbounded"), and this is the ONLY place that size feeds a single
+// kmalloc call plus a bounds check -- no other code sizes anything off
+// this constant.
+#define EXEC64_FILE_MAX  (1024u * 1024u)
 
 // Generic segment fields, normalized from either nex64_seg_t or
 // elf64_phdr_t before the shared mapping/copy logic below runs.
@@ -122,14 +132,36 @@ static int load_segment(paging64_as_t* as, const seg_t* seg, const uint8_t* file
 }
 
 static int finish_mapping(paging64_as_t* as, uint64_t entry, uint64_t* entry_out, uint64_t* stack_top_out) {
-    uint64_t stack_page_va = USER_STACK_TOP - 0x1000ULL;
-    if (paging64_map_new(as, stack_page_va, PAGING64_WRITE) < 0) {
-        klog("exec64: failed to map the user stack page\n");
-        return -1;
+    // See include/uservm64.h's USER_STACK_EAGER_PAGES comment: several
+    // pages (not just the top one) are eagerly mapped so third-party
+    // userspace libraries with real stack usage (e.g. stb_image's zlib
+    // inflate) don't page-fault. Still no demand paging -- this is
+    // just a bigger fixed eager allocation.
+    for (uint32_t i = 0; i < USER_STACK_EAGER_PAGES; i++) {
+        uint64_t stack_page_va = USER_STACK_TOP - (uint64_t)(i + 1) * 0x1000ULL;
+        if (paging64_map_new(as, stack_page_va, PAGING64_WRITE) < 0) {
+            klog("exec64: failed to map the user stack page\n");
+            return -1;
+        }
     }
 
     *entry_out     = entry;
-    *stack_top_out = USER_STACK_TOP;
+    // Milestone 33: the x86-64 SysV ABI guarantees %rsp is 16-byte
+    // aligned at REAL process entry (i.e. what a hand-written asm
+    // _start: would see), but every _start() in this codebase
+    // (including this one) is an ordinary C function compiled with a
+    // normal prologue -- which assumes it was reached via a `call`
+    // instruction (return address just pushed), i.e. %rsp % 16 == 8 at
+    // entry, not 0. Since the kernel transfers control directly (iret)
+    // rather than executing a real `call`, it must emulate that state
+    // itself by handing out an already-"call"-adjusted stack top.
+    // Previously invisible (USER_STACK_TOP is 16-aligned, so every
+    // _start ran 8 bytes off from what GCC assumed) because no code in
+    // this project ever executed an alignment-sensitive SSE
+    // instruction (movaps/movdqa) before ToxUI's -O2 SSE build --
+    // confirmed as the cause of a #GP(0) at the very first
+    // stack-sensitive SSE access inside toxui_test64.
+    *stack_top_out = USER_STACK_TOP - 8ULL;
     return 0;
 }
 

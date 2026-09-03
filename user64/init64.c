@@ -145,6 +145,11 @@ void _start(void) {
     if (comp_pid < 0) put("init64: sys_spawn(/compositor64.nex64) failed\n");
     sys_spawn_isolated("/gfx_demo64.nex64", 0);
     sys_spawn_isolated("/gfx_interactive64.nex64", 0);
+    // Milestone 33: ToxUI's own graphical acceptance demos, same
+    // sibling/isolated arrangement as the M30 demos above -- each
+    // connects to compositor64 independently via wm_connect().
+    sys_spawn_isolated("/toxui_demo64.nex64", 0);
+    sys_spawn_isolated("/wallpaper_demo64.nex64", 0);
     int64_t shell_pid = sys_spawn_isolated("/shell64.nex64", 0);
     if (shell_pid < 0) put("init64: sys_spawn(/shell64.nex64) failed\n");
 

@@ -17,6 +17,7 @@
 // blocks the caller (kernel/process64.c's process64_wait) until the
 // target child exits, rather than retrieving an already-known result.
 #include <stdint.h>
+#include "../include/klog.h"
 #include "../include/syscall64.h"
 #include "../include/process64.h"
 #include "../include/uservm64.h"

@@ -18,7 +18,25 @@
 // concurrency. See kernel/process64.c for the full design writeup.
 
 #define PROCESS64_MAX         8
-#define PROCESS64_KSTACK_SIZE (16u * 1024u)
+// Milestone 33: bumped from 16KB after a real, reproducible kernel-mode
+// stack overflow was found (via a hardware write watchpoint) while
+// reading a large file (DejaVuSans.ttf, 757KB) through TxFS64: a single,
+// uninterrupted syscall call chain -- sys64_handle_read -> vfs64_read ->
+// txfs64_read_at (its own 4KB `data_buf[TXFS64_BLOCK_SIZE]`) ->
+// txfs64_get_block (its own 4KB `ptrs[TXFS64_PTRS_PER_BLOCK]` for the
+// single-indirect case, 8-12KB for double/triple-indirect) ->
+// txfs64_read_block -- combined with this kernel's universal -O0 build
+// (every local/parameter gets its own stack slot, no reuse) drove the
+// stack roughly 10KB past its old 16KB budget, overflowing into the
+// next-lower .bss data (kernel/process64.c's own `procs[]` array) and
+// corrupting a live process64_t's own fields. Never triggered before
+// this milestone because no prior test ever read a file anywhere near
+// this large (every previous file was well under one block). 64KB
+// gives ample headroom for this call chain (including the deeper
+// double/triple-indirect paths, never yet exercised by a real file)
+// plus future growth, at a total cost of 8*64KB=512KB static (still
+// negligible against real RAM).
+#define PROCESS64_KSTACK_SIZE (64u * 1024u)
 #define PROCESS64_ARGS_MAX    128
 #define PROCESS64_PATH_MAX    256
 
@@ -64,6 +82,18 @@ typedef struct {
     handle64_t          handles[PROCESS64_MAX_HANDLES];
     char                args[PROCESS64_ARGS_MAX];     // copied BY VALUE at spawn time
     char                path[PROCESS64_PATH_MAX];     // copied BY VALUE -- debug/diagnostics only
+    // Milestone 33: this process's own saved x87/SSE/MXCSR register
+    // state, eagerly saved/restored across every context switch (see
+    // kernel/process64.c's perform_switch) -- required once userspace
+    // floating point exists at all (ToxUI's font rasterizer), since
+    // this is genuine CPU-global register state that would otherwise
+    // silently corrupt across preemption between two processes that
+    // both touch it. Must be 16-byte aligned for FXSAVE/FXRSTOR; a
+    // fixed in-struct array (no separate allocation) keeps this
+    // reachable from close_all_handles-style cleanup for free (there is
+    // nothing to free -- it's just reinitialized at the next spawn into
+    // this slot).
+    uint8_t             fpu_state[512] __attribute__((aligned(16)));
 } process64_t;
 
 void process64_init(void);

@@ -59,17 +59,38 @@
 
 // ABI: rax = syscall number, rdi/rsi/rdx = up to 3 args (see
 // kernel/syscall64.c). Return value comes back in rax.
+//
+// Milestone 33 bug fix: every one of these is missing a "memory"
+// clobber. Several syscalls write through a POINTER argument (e.g.
+// SYS64_STAT's size_out) -- from the compiler's point of view, an
+// inline asm block with no "memory" clobber is free to assume it does
+// not touch memory at all beyond its declared outputs, meaning a value
+// the CALLER already had in a register or cached from an earlier load
+// (like a local variable initialized right before the call) can be
+// reused AFTER the call instead of being reloaded from the memory the
+// syscall actually wrote into. This was always wrong, but never
+// visibly broke anything until userlib/toxui (the first userspace code
+// in this project built above the Makefile-wide default -O0, see
+// UFLAGS64_TOXUI) actually got bitten by it: at -O0 GCC reloads
+// variables from memory conservatively often enough that the missing
+// clobber's absence went unnoticed; at -O2 it does not. Found via
+// tox_image.c's read_whole_file() reading back a stale `size = 0`
+// after a successful sys_stat that had genuinely written 135 into that
+// same stack slot moments earlier. Adding "memory" makes every syscall
+// a full compiler-level memory barrier -- correct and conservative,
+// exactly what a real syscall (which can read/write arbitrary user
+// memory through its pointer arguments) should always be treated as.
 #define SYSCALL0(n) ({ \
-    uint64_t _r; __asm__ volatile("int $0x80" : "=a"(_r) : "a"((uint64_t)(n))); _r; })
+    uint64_t _r; __asm__ volatile("int $0x80" : "=a"(_r) : "a"((uint64_t)(n)) : "memory"); _r; })
 
 #define SYSCALL1(n, a) ({ \
-    uint64_t _r; __asm__ volatile("int $0x80" : "=a"(_r) : "a"((uint64_t)(n)), "D"((uint64_t)(a))); _r; })
+    uint64_t _r; __asm__ volatile("int $0x80" : "=a"(_r) : "a"((uint64_t)(n)), "D"((uint64_t)(a)) : "memory"); _r; })
 
 #define SYSCALL2(n, a, b) ({ \
-    uint64_t _r; __asm__ volatile("int $0x80" : "=a"(_r) : "a"((uint64_t)(n)), "D"((uint64_t)(a)), "S"((uint64_t)(b))); _r; })
+    uint64_t _r; __asm__ volatile("int $0x80" : "=a"(_r) : "a"((uint64_t)(n)), "D"((uint64_t)(a)), "S"((uint64_t)(b)) : "memory"); _r; })
 
 #define SYSCALL3(n, a, b, c) ({ \
-    uint64_t _r; __asm__ volatile("int $0x80" : "=a"(_r) : "a"((uint64_t)(n)), "D"((uint64_t)(a)), "S"((uint64_t)(b)), "d"((uint64_t)(c))); _r; })
+    uint64_t _r; __asm__ volatile("int $0x80" : "=a"(_r) : "a"((uint64_t)(n)), "D"((uint64_t)(a)), "S"((uint64_t)(b)), "d"((uint64_t)(c)) : "memory"); _r; })
 
 static inline uint64_t sys_write(const char* buf, uint64_t len) {
     return SYSCALL2(SYS64_WRITE, buf, len);

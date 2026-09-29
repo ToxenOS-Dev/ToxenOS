@@ -34,6 +34,12 @@ extern void irq64_12(void), irq64_13(void), irq64_14(void), irq64_15(void);
 
 extern void isr64_default(void);
 
+// M+11A: LAPIC spurious-vector (0xFF) stub -- counter only, NO EOI.
+extern void isr64_spurious(void);
+// M+11A: generic dynamic-vector stubs; entry [v - 0x30] for vectors
+// 0x30..0xEE (0 for 0x80, the syscall gate).
+extern const uint64_t irq64_vec_stub_table[0xEF - 0x30];
+
 // Milestone 24: reusable "resume a suspended or brand-new process"
 // target -- see kernel/isr64.asm and kernel/process64.c. Never called
 // directly from C; only ever reached via context_switch64's `ret`

@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "../include/kmutex64.h"
 #include "../include/process64.h"
+#include "../include/klog.h"
 
 static inline uint64_t kmutex64_irqsave(void) {
     uint64_t flags;
@@ -32,6 +33,12 @@ void kmutex64_lock(kmutex64_t* m) {
             // process64_block_on's contract: it requires a real
             // process) -- poll via hlt instead, exactly like
             // process64_wait()'s own no-current-process fallback.
+            if (!(flags & (1ULL << 9))) {
+                // Contended while the idle/boot context has interrupts OFF: nothing can
+                // ever release it and hlt with IF=0 would halt the CPU silently forever.
+                klog("kmutex64: contended in a non-interruptible idle context -- deadlock\n");
+                kernel64_halt_forever();
+            }
             kmutex64_irqrestore(flags);
             __asm__ volatile ("hlt");
             continue;

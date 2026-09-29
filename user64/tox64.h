@@ -49,7 +49,29 @@
 #define SYS64_SERVICE_CONNECT 40
 #define SYS64_SPAWN_EX 41
 #define SYS64_HANDLE_TRY_WRITE 42
+#define SYS64_GET_TICKS 43
+#define SYS64_GPU_BUFFER_CREATE     44
+#define SYS64_GPU_BUFFER_TOKEN      45
+#define SYS64_GPU_BUFFER_OPEN_TOKEN 46
+#define SYS64_GPU_BUFFER_SIZE       47
+#define SYS64_SLEEP_TICKS 48
+#define SYS64_CURSOR_AVAILABLE   49
+#define SYS64_CURSOR_SET_IMAGE   50
+#define SYS64_CURSOR_MOVE        51
+#define SYS64_CURSOR_SET_VISIBLE 52
+#define SYS64_INPUT_GET_ABS_RANGE 53
+#define SYS64_DISPLAY_DIRECT_QUERY   54
+#define SYS64_DISPLAY_DIRECT_BIND    55
+#define SYS64_DISPLAY_DIRECT_PRESENT 56
+#define SYS64_DISPLAY_DIRECT_LEAVE   57
+#define SYS64_DISPLAY_DIRECT_UNBIND  58
+#define SYS64_DISPLAY_DEBUG_STATE    59
+#define SYS64_HANDLE_WAIT_ANY 60
 #define SYS64_ERR_WOULDBLOCK ((int64_t)-2)
+// Return value -3 from SYS64_HANDLE_WAIT_ANY means the deadline passed
+// with nothing ready -- see sys_handle_wait_any's own comment below.
+#define SYS64_ERR_TIMEOUT ((int64_t)-3)
+#define SYS64_WAIT_FOREVER ((uint64_t)-1)
 // Return value -2 means the path is protected (kernel refused the op).
 #define SYS64_ERR_PROTECTED ((int64_t)-2)
 // Return value -3 from SYS64_DELETE means the folder is not empty.
@@ -103,6 +125,23 @@ static inline void sys_exit(int code) {
 
 static inline uint64_t sys_getpid(void) {
     return SYSCALL0(SYS64_GETPID);
+}
+
+// M-next: see include/syscall64.h's SYS64_GET_TICKS comment -- a
+// read-only 100Hz tick count for software frame pacing, never a real
+// sleep/blocking primitive.
+static inline uint64_t sys_get_ticks(void) {
+    return SYSCALL0(SYS64_GET_TICKS);
+}
+
+// M+4 investigation: see include/syscall64.h's own header comment on
+// SYS64_SLEEP_TICKS -- a REAL blocking sleep (kernel/process64.c's
+// process64_sleep_ticks), unlike sys_get_ticks() above which is
+// read-only. Replaces busy-wait "pacing" loops (see
+// user64/gfx_demo64.c's own before/after) with a call that costs this
+// process zero CPU while waiting.
+static inline void sys_sleep_ticks(uint64_t ticks) {
+    SYSCALL1(SYS64_SLEEP_TICKS, ticks);
 }
 
 // Milestone 9: first userland file/process API. All return -1 on
@@ -314,9 +353,10 @@ static inline int64_t sys_rename(const char* src, const char* dest) {
 // every other struct duplicated in this file). See that header for the
 // full field/type-code documentation.
 #define INPUT64_EVENT_KEY            1
-#define INPUT64_EVENT_POINTER_MOVE   2
+#define INPUT64_EVENT_POINTER_REL    2 // was INPUT64_EVENT_POINTER_MOVE
 #define INPUT64_EVENT_POINTER_BUTTON 3
 #define INPUT64_EVENT_POINTER_WHEEL  4
+#define INPUT64_EVENT_POINTER_ABS    5 // M+7A: see include/input64.h
 
 #define INPUT64_MOD_SHIFT    0x01u
 #define INPUT64_MOD_CTRL     0x02u
@@ -354,6 +394,17 @@ static inline int64_t sys_input_open(void) {
     return (int64_t)SYSCALL0(SYS64_INPUT_OPEN);
 }
 
+// M+7A: see include/syscall64.h's own header comment on
+// SYS64_INPUT_GET_ABS_RANGE. Returns 0 with *out filled, or -1 (no
+// absolute pointer device currently active).
+typedef struct {
+    int32_t min_x, max_x, min_y, max_y;
+} input64_abs_range_t;
+
+static inline int64_t sys_input_get_abs_range(int handle, input64_abs_range_t* out) {
+    return (int64_t)SYSCALL2(SYS64_INPUT_GET_ABS_RANGE, handle, out);
+}
+
 // Milestone 29: userspace display-present interface. The compositor
 // (Milestone 30) is the intended sole caller -- see
 // include/syscall64.h's header comment on SYS64_DISPLAY_OPEN/PRESENT.
@@ -377,6 +428,136 @@ static inline int64_t sys_display_present(int handle, const display64_present_re
     return (int64_t)SYSCALL2(SYS64_DISPLAY_PRESENT, handle, req);
 }
 
+// ── M+7: generic hardware cursor control ─────────────────────────────
+// See include/syscall64.h's own header comment on SYS64_CURSOR_AVAILABLE/
+// SET_IMAGE/MOVE/SET_VISIBLE. `handle` must be a display handle this
+// process owns (see sys_display_open) for all four calls. No VirtIO-
+// specific concept is ever visible here -- a caller only ever asks for
+// "is hardware cursor available," "here is the cursor image," "move to
+// (x,y)," or "show/hide."
+typedef struct {
+    uint64_t pixels_ptr; // tightly packed 0xAARRGGBB pixels, width*height*4 bytes, row-major
+    uint32_t width, height;
+    uint32_t hot_x, hot_y;
+} cursor64_set_image_req_t;
+
+// Returns 1 if a hardware cursor backend is registered and usable, 0
+// otherwise (no such device, no cursor virtqueue, or driver setup
+// failed) -- a caller should fall back to its own software cursor
+// drawing when this returns 0, never treat it as fatal.
+static inline int64_t sys_cursor_available(int handle) {
+    return (int64_t)SYSCALL1(SYS64_CURSOR_AVAILABLE, handle);
+}
+
+// Uploads a new cursor image (`width`/`height` must match the hardware's
+// one persistent cursor resource size exactly, or this fails) and its
+// hotspot. Call once at startup and again only if the image/hotspot
+// changes -- never per ordinary pointer movement. Returns 0 or -1.
+static inline int64_t sys_cursor_set_image(int handle, uint32_t width, uint32_t height,
+                                            const uint32_t* argb_pixels, uint32_t hot_x, uint32_t hot_y)
+{
+    cursor64_set_image_req_t req;
+    req.pixels_ptr = (uint64_t)(uintptr_t)argb_pixels;
+    req.width = width; req.height = height;
+    req.hot_x = hot_x; req.hot_y = hot_y;
+    return (int64_t)SYSCALL2(SYS64_CURSOR_SET_IMAGE, handle, &req);
+}
+
+// The cheap, common-case operation -- repositions the already-uploaded
+// cursor image, no resource re-upload. Returns 0 or -1.
+static inline int64_t sys_cursor_move(int handle, int32_t x, int32_t y) {
+    return (int64_t)SYSCALL3(SYS64_CURSOR_MOVE, handle, x, y);
+}
+
+// Shows/hides the hardware cursor without touching its uploaded image
+// or remembered position. Returns 0 or -1.
+static inline int64_t sys_cursor_set_visible(int handle, uint32_t visible) {
+    return (int64_t)SYSCALL2(SYS64_CURSOR_SET_VISIBLE, handle, visible);
+}
+
+// ── M+9B: direct-scanout / composition-bypass ────────────────────────
+// See include/syscall64.h's own header comment on SYS64_DISPLAY_DIRECT_*
+// for the full state machine. `handle` must be a display handle this
+// process owns, same as every call above. compositor64 is the intended
+// sole caller -- no other client-facing library function wraps these.
+typedef struct {
+    uint64_t shm_token;
+    uint32_t width, height;
+} display64_direct_bind_req_t;
+
+typedef struct {
+    uint64_t shm_token;
+    uint32_t x, y, w, h;
+    uint32_t switch_active;
+} display64_direct_present_req_t;
+
+// Is a direct-scanout backend registered at all (capability, not
+// current state)? 1 or 0 -- a framebuffer-only boot always reports 0.
+static inline int64_t sys_display_direct_query(int handle) {
+    return (int64_t)SYSCALL1(SYS64_DISPLAY_DIRECT_QUERY, handle);
+}
+
+// Binds/caches a client's own already-attached committed buffer
+// (identified by the SAME shm_token WM_MSG_ATTACH_BUFFER already
+// validated) as a direct-scanout resource sized width x height. A
+// second bind of a token already cached (matching size) is a cheap
+// no-op success reusing the existing resource -- the small system-wide
+// cache holds DISPLAY64_DIRECT_MAX_SLOTS entries, sized for one
+// double-buffered fullscreen client's own pair. Does NOT make it the
+// active scanout yet. Returns 0, or -1 (unsupported, the token is new
+// AND the cache is already full, bad token, or the backend's own
+// resource-create/attach-backing failed).
+static inline int64_t sys_display_direct_bind(int handle, uint64_t shm_token, uint32_t width, uint32_t height) {
+    display64_direct_bind_req_t req = { shm_token, width, height };
+    return (int64_t)SYSCALL2(SYS64_DISPLAY_DIRECT_BIND, handle, &req);
+}
+
+// Pushes updated pixel content for the resource cached under
+// `shm_token` (which must already be bound), and (only if
+// switch_active != 0) makes THAT resource the active primary scanout.
+// Returns 0 only if (x,y,w,h) is now genuinely part of the visible
+// output -- -1 on ANY failure (nothing changes on failure: whatever was
+// previously active remains authoritative).
+static inline int64_t sys_display_direct_present(int handle, uint64_t shm_token, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t switch_active) {
+    display64_direct_present_req_t req = { shm_token, x, y, w, h, switch_active };
+    return (int64_t)SYSCALL2(SYS64_DISPLAY_DIRECT_PRESENT, handle, &req);
+}
+
+// Switches the primary scanout back to the normal compositor resource
+// and flushes it. Caller must already have recomposited and run a
+// normal sys_display_present() first (see include/display64.h's own
+// §11-ordering comment) so the compositor's own resource content is
+// fresh by the time scanout switches back to it. The slot that was
+// ACTIVE stays cached/bound afterward -- see sys_display_direct_unbind()
+// for the separate, explicit teardown. Returns 0, or -1 (the old direct
+// slot stays alive/active on failure, never torn down).
+static inline int64_t sys_display_direct_leave(int handle) {
+    return (int64_t)SYSCALL1(SYS64_DISPLAY_DIRECT_LEAVE, handle);
+}
+
+// Releases the slot cached under `shm_token`. Refused (-1, safe no-op)
+// while that slot is still the active scanout source -- call
+// sys_display_direct_leave() first. Safe to call for a token that
+// isn't cached at all.
+static inline int64_t sys_display_direct_unbind(int handle, uint64_t shm_token) {
+    return (int64_t)SYSCALL2(SYS64_DISPLAY_DIRECT_UNBIND, handle, shm_token);
+}
+
+// M+10A: read-only debug snapshot of display64's M+10 atomic state, for
+// the compositor's own liveness dump (see include/syscall64.h's own
+// SYS64_DISPLAY_DEBUG_STATE comment). Independently duplicated from
+// kernel/syscall64.c's own display64_debug_state_req_t, same convention
+// as every other request struct in this header.
+typedef struct {
+    uint32_t validity;         // 0 = VALID, 1 = RECOVERY_REQUIRED
+    uint32_t primary_kind;     // 0 = COMPOSITED, 1 = DIRECT
+    uint64_t primary_identity; // DIRECT only -- 0 for COMPOSITED
+} display64_debug_state_req_t;
+
+static inline int64_t sys_display_debug_state(int handle, display64_debug_state_req_t* out) {
+    return (int64_t)SYSCALL2(SYS64_DISPLAY_DEBUG_STATE, handle, out);
+}
+
 // Milestone 30: non-blocking counterpart to sys_handle_read, for a pipe
 // or input handle (a file handle just behaves like sys_handle_read).
 // Returns bytes read (>=0, 0=EOF), -1 on error, or SYS64_ERR_WOULDBLOCK
@@ -386,6 +567,40 @@ static inline int64_t sys_display_present(int handle, const display64_present_re
 // each non-blockingly in turn.
 static inline int64_t sys_handle_try_read(int h, char* buf, uint64_t len) {
     return (int64_t)SYSCALL3(SYS64_HANDLE_TRY_READ, h, buf, len);
+}
+
+// M+12B: bounded multi-handle wait -- see include/syscall64.h's own
+// header comment on SYS64_HANDLE_WAIT_ANY for the full contract.
+// Supported handle kinds: a pipe read or write end, the input handle,
+// or a service-listener handle -- anything else in `handles` fails the
+// WHOLE call with -1. `count` must be 1..PROCESS64_MAX_HANDLES.
+// `timeout_ticks`: 0 = poll once, never block; SYS64_WAIT_FOREVER =
+// block with no deadline; anything else = a real tick deadline.
+// Returns 0 if something MAY now be ready -- the caller must re-poll
+// every handle it cares about with the ordinary non-blocking calls
+// (sys_handle_try_read/sys_handle_try_write/sys_service_accept) to find
+// out what, exactly; this call reports no more than "something changed,
+// go look." Returns SYS64_ERR_TIMEOUT if the deadline passed with
+// nothing ready, or -1 for any invalid argument.
+typedef struct {
+    const int* handles;
+    uint32_t   count;
+    uint64_t   timeout_ticks;
+} wait_any_req64_t;
+
+// Must match include/process64.h's PROCESS64_WAIT_ANY_MAX (kept in sync
+// by convention, same as every other constant duplicated in this file)
+// -- a process can never usefully name more handles than its own table
+// (PROCESS64_MAX_HANDLES) holds, and the kernel rejects a larger count
+// with -1.
+#define SYS64_WAIT_ANY_MAX 16
+
+static inline int64_t sys_handle_wait_any(const int* handles, uint32_t count, uint64_t timeout_ticks) {
+    wait_any_req64_t req;
+    req.handles = handles;
+    req.count = count;
+    req.timeout_ticks = timeout_ticks;
+    return (int64_t)SYSCALL1(SYS64_HANDLE_WAIT_ANY, &req);
 }
 
 // Milestone 30: cross-process shared-memory handoff by opaque token --
@@ -402,6 +617,22 @@ static inline int64_t sys_shm_open_token(uint64_t token) {
 // compositor touches a client's surface. Returns -1 on failure.
 static inline int64_t sys_shm_size(int h) {
     return (int64_t)SYSCALL1(SYS64_SHM_SIZE, h);
+}
+
+// M+1B: generic GPU buffer syscalls -- literal ports of the sys_shm_*
+// four above. No sys_gpu_buffer_map exists yet -- see include/gpu64.h's
+// own header comment for why this milestone doesn't need one.
+static inline int64_t sys_gpu_buffer_create(uint32_t device_idx, uint64_t size, uint32_t usage) {
+    return (int64_t)SYSCALL3(SYS64_GPU_BUFFER_CREATE, device_idx, size, usage);
+}
+static inline int64_t sys_gpu_buffer_token(int h) {
+    return (int64_t)SYSCALL1(SYS64_GPU_BUFFER_TOKEN, h);
+}
+static inline int64_t sys_gpu_buffer_open_token(uint64_t token) {
+    return (int64_t)SYSCALL1(SYS64_GPU_BUFFER_OPEN_TOKEN, token);
+}
+static inline int64_t sys_gpu_buffer_size(int h) {
+    return (int64_t)SYSCALL1(SYS64_GPU_BUFFER_SIZE, h);
 }
 
 // Milestone 32: generic named local-service registry -- see
@@ -485,8 +716,20 @@ static inline int64_t sys_spawn_isolated(const char* path, const char* args) {
 // instead of "sys_", to keep that distinction visible at call sites.
 // Blocks by polling sys_getch (safe: ring3 always resumes with IF=1
 // after int 0x80's iretq, so IRQ1 keeps filling the kernel-side buffer
-// between polls even though this spins). Echoes each accepted character
-// back via sys_write, and handles Enter/Backspace itself:
+// between polls even though this spins) -- M+4 lag investigation: this
+// used to spin with NO sleep between failed polls at all (predating
+// SYS64_SLEEP_TICKS, added later), meaning shell64 -- present in every
+// boot, not just a graphical demo -- consumed a full scheduler slot
+// continuously any time it sat idle at the prompt, exactly the same
+// class of bug user64/gfx_demo64.c's own busy-loop had (see that file's
+// own fix). Confirmed via kernel/process64.c's per-process scheduler
+// tick accounting: shell64 and compositor64 were found splitting 100%
+// of the CPU roughly 50/50 once other one-time startup work finished,
+// even with nobody typing. One tick (10ms) of sleep between failed
+// polls is imperceptible to a human typist (worst case adds ~10ms of
+// input latency) but lets every other process actually run in between.
+// Echoes each accepted character back via sys_write, and handles
+// Enter/Backspace itself:
 //   - Enter ('\n'/'\r') ends the line.
 //   - Backspace (8 or 127/DEL) erases the previous character; a no-op
 //     on an empty line instead of underflowing.
@@ -501,7 +744,7 @@ static inline int tox_readline(char* buf, int max) {
     int n = 0;
     for (;;) {
         int64_t ci;
-        do { ci = sys_getch(); } while (ci < 0);
+        while ((ci = sys_getch()) < 0) sys_sleep_ticks(1);
         char c = (char)ci;
 
         if (c == '\n' || c == '\r') {

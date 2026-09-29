@@ -111,6 +111,20 @@ int64_t pipe64_write(pipe64_t* p, const uint8_t* kbuf, uint64_t len);
 // -1 for the same condition). len == 0 returns 0 immediately.
 int64_t pipe64_try_write(pipe64_t* p, const uint8_t* kbuf, uint64_t len);
 
+// M+12B: side-effect-free readiness predicates for SYS64_HANDLE_WAIT_ANY
+// (kernel/syscall64.c) -- never consume/produce anything, just report
+// whether a subsequent pipe64_try_read/pipe64_try_write of SOME positive
+// length would not immediately WOULDBLOCK right now. Deliberately a
+// coarse byte-count check, not aware of any particular caller's
+// fixed-message-size framing (pipe64_try_read/try_write's own
+// ALL-OR-NOTHING contract needs a specific `len` this predicate doesn't
+// have) -- that's safe, never a lost wakeup, because it can only ever
+// be a false positive (reports ready with fewer bytes buffered than one
+// full fixed-size message actually needs), which just costs the caller
+// one harmless extra WOULDBLOCK-and-rewait cycle, never a missed one.
+int pipe64_read_ready(pipe64_t* p);
+int pipe64_write_ready(pipe64_t* p);
+
 // Diagnostics: logs every live pipe's address, capacity/count,
 // reader/writer counts, and any pids currently blocked reading or
 // writing it, via klog(). Development use only, same precedent as

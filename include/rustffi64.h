@@ -2,6 +2,7 @@
 #define RUSTFFI64_H
 #include <stdint.h>
 #include "pci64.h"
+#include "virtio_pci64.h"
 
 // Milestone 31: purpose-built, explicit-layout structs for the C/Rust
 // FFI boundary. Deliberately NOT a raw `pci64_device_t*` handed to Rust
@@ -73,5 +74,15 @@ __attribute__((noreturn)) void toxenos_rust_alloc_fail_test(void);
 // via klog(). Read-only: never touches the device's actual registers,
 // never retains `info` past this call. Returns 0.
 int32_t toxenos_rust_pci_demo(const toxenos_pci_info_t* info);
+
+// M+2: defined in Rust (rust/toxenos_rs/src/virtio_pci.rs). `info` must
+// be a genuine virtio_pci64_probe() result (already-mapped MMIO
+// regions) -- this function runs the real modern status/feature
+// negotiation sequence and sets up virtqueue 0 against WHATEVER real
+// device `info` describes, structurally proving the descriptor
+// allocator, then sets DRIVER_OK. Never sends the device an actual
+// command (see that module's own header comment on why this milestone
+// stops there). Returns 0 on success, -1 on failure.
+int32_t toxenos_rust_virtio_pci_selftest(const virtio_pci64_transport_info_t* info);
 
 #endif // RUSTFFI64_H

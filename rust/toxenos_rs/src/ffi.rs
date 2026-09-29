@@ -42,4 +42,34 @@ extern "C" {
     // handler must funnel into the SAME fatal path a C-side unrecoverable
     // exception uses, not reimplement its own halt loop.
     pub fn kernel64_halt_forever() -> !;
+
+    // include/kwait64.h (M+11C) -- the explicit condition-wait primitive.
+    pub fn kwait64_wait(chan: *mut c_void, cond: extern "C" fn(*mut c_void) -> i32, arg: *mut c_void, timeout_ticks: u64) -> i32;
+    pub fn kwait64_signal(chan: *mut c_void);
+    pub fn kwait64_can_wait() -> i32;
+    pub fn timer64_get_ticks() -> u64;
+
+    // include/virtio_irq64.h (M+11C): C-side per-device interrupt bookkeeping and the
+    // PCI-side pieces of demotion. `dev`: 0 = input, 1 = GPU.
+    pub fn virtio_irq64_mask_all(dev: u32) -> i32;      // 1 iff EVERY queue entry read back masked
+    pub fn virtio_irq64_mask_one(dev: u32, queue: u32) -> i32;   // 0 on success (IRQ-context safe)
+    pub fn virtio_irq64_quiesce_set(dev: u32) -> i32;   // 1 iff the PCI IRQ set quiesced (verified)
+    pub fn virtio_irq64_note(dev: u32, event: u32);
+    pub fn virtio_irq64_test_fail_reset() -> i32;      // 1 only in a VIRTIO_IRQ_TEST_FAIL_RESET build
+    pub fn virtio_irq64_test_fail_unmap() -> i32;      // 1 only in a VIRTIO_IRQ_TEST_FAIL_UNMAP build
+
+    // kernel/virtio_gpu64.c: the one sleeping GPU command mutex.
+    pub fn toxenos_gpu_ctl_lock();
+    pub fn toxenos_gpu_ctl_unlock();
 }
+
+/// Events reported to C via `virtio_irq64_note`.
+pub const VIRQ_EV_DEMOTED_P1: u32 = 1;
+pub const VIRQ_EV_DEMOTED_P2: u32 = 2;
+pub const VIRQ_EV_DEMOTED_P3: u32 = 3;
+pub const VIRQ_EV_FAULTED: u32 = 4;
+pub const VIRQ_EV_STORM_WARN: u32 = 5;
+pub const VIRQ_EV_STORM_MASKED: u32 = 6;
+pub const VIRQ_EV_LOST_IRQ: u32 = 7;
+pub const VIRQ_DEV_INPUT: u32 = 0;
+pub const VIRQ_DEV_GPU: u32 = 1;

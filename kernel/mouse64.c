@@ -4,7 +4,6 @@
 #include "../include/ps2_64.h"
 #include "../include/input64.h"
 #include "../include/irq64.h"
-#include "../include/pic.h"
 #include "../include/klog.h"
 
 static int      g_detected = 0;
@@ -13,26 +12,12 @@ static int      g_packet_size = 3;
 static uint32_t g_packets_received = 0;
 static uint32_t g_resync_drops = 0;
 static uint32_t g_prev_buttons = 0;
-// Milestone 30: discards exactly one assembled packet right after
-// init. Observed under QEMU: the very first packet received after
-// enabling data reporting can be stale/spurious -- e.g. a byte the
-// controller already delivered to a polling read during the handshake
-// can leave an edge-triggered IRQ12 request latched at the PIC despite
-// being masked at the time, which then fires the instant it's unmasked
-// (well after `sti`) with nothing genuinely new in the data port to
-// back it up. This is a well-known PS/2 quirk real drivers commonly
-// handle the same way: unconditionally discard the first post-enable
-// packet rather than trying to out-race or explain the exact hardware
-// timing that produced it.
-static int g_discard_first_packet = 0;
-
 static uint8_t packet_buf[4];
 static int     packet_idx = 0;
 
 static void process_packet(const uint8_t* p)
 {
     g_packets_received++;
-    if (g_discard_first_packet) { g_discard_first_packet = 0; return; }
     uint8_t b0 = p[0];
 #ifdef MOUSE64_DEBUG
     klog_hex("mouse64: packet b0=", p[0]);
@@ -61,9 +46,17 @@ static void process_packet(const uint8_t* p)
     if (b0 & 0x02) buttons |= INPUT64_BTN_RIGHT;
     if (b0 & 0x04) buttons |= INPUT64_BTN_MIDDLE;
 
-    if (dx != 0 || dy != 0) {
+    // M+7A: PS/2 stays the always-available fallback (§13), but never
+    // double-drives the cursor alongside a working absolute pointer
+    // device -- see include/input64.h's own header comment on
+    // input64_abs_pointer_active(). Packet assembly/resync above this
+    // point is completely unaffected either way, so PS/2 is instantly
+    // usable again the moment this flag clears.
+    int suppressed = input64_abs_pointer_active();
+
+    if (!suppressed && (dx != 0 || dy != 0)) {
         input64_event_t ev = {0};
-        ev.type    = INPUT64_EVENT_POINTER_MOVE;
+        ev.type    = INPUT64_EVENT_POINTER_REL;
         ev.a       = dx;
         ev.b       = dy;
         ev.buttons = buttons;
@@ -71,21 +64,23 @@ static void process_packet(const uint8_t* p)
     }
 
     if (buttons != g_prev_buttons) {
-        static const uint32_t bits[3] = { INPUT64_BTN_LEFT, INPUT64_BTN_RIGHT, INPUT64_BTN_MIDDLE };
-        uint32_t changed = buttons ^ g_prev_buttons;
-        for (int i = 0; i < 3; i++) {
-            if (!(changed & bits[i])) continue;
-            input64_event_t ev = {0};
-            ev.type    = INPUT64_EVENT_POINTER_BUTTON;
-            ev.a       = (int32_t)bits[i];
-            ev.pressed = (buttons & bits[i]) ? 1u : 0u;
-            ev.buttons = buttons;
-            input64_push(&ev);
+        if (!suppressed) {
+            static const uint32_t bits[3] = { INPUT64_BTN_LEFT, INPUT64_BTN_RIGHT, INPUT64_BTN_MIDDLE };
+            uint32_t changed = buttons ^ g_prev_buttons;
+            for (int i = 0; i < 3; i++) {
+                if (!(changed & bits[i])) continue;
+                input64_event_t ev = {0};
+                ev.type    = INPUT64_EVENT_POINTER_BUTTON;
+                ev.a       = (int32_t)bits[i];
+                ev.pressed = (buttons & bits[i]) ? 1u : 0u;
+                ev.buttons = buttons;
+                input64_push(&ev);
+            }
         }
         g_prev_buttons = buttons;
     }
 
-    if (g_has_wheel && g_packet_size == 4) {
+    if (!suppressed && g_has_wheel && g_packet_size == 4) {
         int8_t wheel = (int8_t)p[3];
         if (wheel != 0) {
             input64_event_t ev = {0};
@@ -97,13 +92,15 @@ static void process_packet(const uint8_t* p)
     }
 }
 
-void mouse64_handler(void)
+// M+11A: byte-level entry, fed by the shared 8042 receive path for every
+// auxiliary-port byte (AUXDATA set), regardless of which IRQ line fired.
+// The receive path only ever delivers a byte that is really in the output
+// buffer, so the old g_discard_first_packet workaround -- which discarded
+// the first byte precisely because an IRQ12 could fire with nothing new in
+// 0x60 and the blind read returned stale data -- is no longer needed and is
+// gone; packet framing/resync below is unchanged.
+void mouse64_feed_byte(uint8_t data)
 {
-    // Read directly (no wait -- IRQ12 firing means the byte is already
-    // in the output buffer), mirroring keyboard64_handler's convention.
-    uint8_t data;
-    __asm__ volatile ("inb $0x60, %0" : "=a"(data));
-
 #ifdef MOUSE64_DEBUG
     klog_hex("mouse64: raw byte=", data);
 #endif
@@ -164,10 +161,20 @@ int mouse64_init(void)
     // active, on general principle (cheap, bounded, and harmless either
     // way) -- see ps2_64_output_full()'s header comment.
     for (int i = 0; i < 16 && ps2_64_output_full(); i++) ps2_64_read_data();
-    g_discard_first_packet = 1;
 
-    irq64_register(12, mouse64_handler);
-    pic_unmask(12);
+    irq64_request_legacy(12, mouse64_irq, 0, "mouse");
+
+    // M+7A: register with the generic input64 device model (diagnostic/
+    // enumeration only -- see include/input64.h's own header comment).
+    // Static storage, not a stack local: must remain valid for the
+    // kernel's lifetime, same requirement every other input64_device_t
+    // registrant follows.
+    static input64_device_t dev;
+    dev.name[0]='p'; dev.name[1]='s'; dev.name[2]='2'; dev.name[3]='m';
+    dev.name[4]='o'; dev.name[5]='u'; dev.name[6]='s'; dev.name[7]='e'; dev.name[8]=0;
+    dev.kind = INPUT64_DEVICE_PS2_MOUSE;
+    dev.capabilities = INPUT64_CAP_REL | INPUT64_CAP_KEY;
+    input64_register_device(&dev);
 
     klog(g_has_wheel ? "mouse64: PS/2 mouse detected (IntelliMouse, wheel supported)\n"
                       : "mouse64: PS/2 mouse detected (standard 3-byte packets)\n");
@@ -191,4 +198,11 @@ void mouse64_dump(void) {
     klog_hex("  packets:   ", s.packets_received);
     klog_hex("  resyncs:   ", s.resync_drops);
     klog("mouse64: dump end ---\n");
+}
+
+// M+11A: thin irq64 thunk for IRQ12.
+irq64_ret_t mouse64_irq(void* ctx)
+{
+    (void)ctx;
+    return ps2_64_service() ? IRQ64_RET_HANDLED : IRQ64_RET_NONE;
 }

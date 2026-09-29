@@ -34,7 +34,7 @@
 // so a compositor bug never destabilizes the rest of the test suite.
 // If the compositor process exits (normally or via a fault), init64
 // falls back to the text shell rather than leaving the user stranded.
-// #define INIT64_GRAPHICAL_MODE 1
+#define INIT64_GRAPHICAL_MODE 1
 
 static int my_strlen(const char* s) {
     int i = 0;
@@ -87,7 +87,27 @@ static void put_line_int(const char* prefix, int64_t v) {
     put(buf);
 }
 
+// M+10A protocol redesign: wmproto_test64 is a pure, self-contained
+// state-machine test (no compositor connection, no display/input
+// dependency at all -- see that file's own header comment) proving the
+// ordering-matrix invariants from the M+10A redesign report. Run
+// unconditionally, before anything graphical even starts, so a
+// regression here is caught on every boot regardless of which mode
+// follows -- never blocks boot either way (result is reported, not
+// enforced). Not gated behind PACKAGE_DEBUG64 the way the rest of the
+// debug fixture roster is: correctness of the WM protocol's own state
+// machine is exactly the kind of thing that should never go untested by
+// accident on a normal build.
+static void run_wmproto_selftest(void) {
+    int64_t pid = sys_spawn_isolated("/wmproto_test64.nex64", 0);
+    if (pid < 0) { put("init64: wmproto_test64 not present (PACKAGE_DEBUG64 build only) -- skipped\n"); return; }
+    int64_t code = sys_wait((uint32_t)pid);
+    if (code == 42) put("init64: wmproto_test64 PASSED\n");
+    else put_line_int("init64: wmproto_test64 FAILED, exit code=", code);
+}
+
 void _start(void) {
+    run_wmproto_selftest();
 #if defined(INIT64_TEST_MODE)
     put("init64: starting, pid=");
     char pidbuf[24];
@@ -143,6 +163,94 @@ void _start(void) {
     // arrangement.
     int64_t comp_pid = sys_spawn_isolated("/compositor64.nex64", 0);
     if (comp_pid < 0) put("init64: sys_spawn(/compositor64.nex64) failed\n");
+
+    // M+10A follow-up audit (point 1): compositor_gen_test64 proves
+    // compositor64.c's own COMMIT_BUFFER generation enforcement against
+    // a REAL running compositor (wmproto_test64's own pure state-machine
+    // tests, run earlier, cannot reach this -- they never touch a real
+    // wire). Spawned and waited on here, before the rest of the roster,
+    // so its PASS/FAIL result appears early and cleanly; it exits on
+    // its own (success or failure) and never blocks graphical boot.
+    if (comp_pid >= 0) {
+        int64_t gen_test_pid = sys_spawn_isolated("/compositor_gen_test64.nex64", 0);
+        if (gen_test_pid < 0) {
+            put("init64: compositor_gen_test64 not present (PACKAGE_DEBUG64 build only) -- skipped\n");
+        } else {
+            int64_t code = sys_wait((uint32_t)gen_test_pid);
+            if (code == 42) put("init64: compositor_gen_test64 PASSED\n");
+            else put_line_int("init64: compositor_gen_test64 FAILED, exit code=", code);
+        }
+    }
+
+    // M+12A: compositor_policy_test64's IN-GUEST half only -- see that
+    // file's own header comment. Unlike compositor_gen_test64 above, this
+    // is NOT waited on here: its whole purpose is to stay connected for a
+    // few seconds observing FOCUS/CLOSE_REQUEST while a HOST-SIDE QMP
+    // script (not part of this boot) drives real pointer input at it, so
+    // blocking the rest of the boot roster on it would only delay every
+    // other debug boot for no reason. Its own exit code carries no PASS/
+    // FAIL verdict (see its header comment) and is therefore not checked.
+    if (comp_pid >= 0) {
+        int64_t pt_pid = sys_spawn_isolated("/compositor_policy_test64.nex64", 0);
+        if (pt_pid < 0) put("init64: compositor_policy_test64 not present (PACKAGE_DEBUG64 build only) -- skipped\n");
+    }
+
+    // Post-M+12A audit: compositor_present_test64's own driver -- see that
+    // file's own header comment. Fully self-contained (no host-side half,
+    // unlike compositor_policy_test64 above), but still not waited on here:
+    // its own PASS/FAIL verdict is compositor64.c's own
+    // g_diag_present_failure_count, read from the serial log (a
+    // COMPOSITOR_PRESENT_FAIL_TRACE build only), not this program's exit
+    // code, which is unconditionally 42 whether or not the regression
+    // reappears.
+    if (comp_pid >= 0) {
+        int64_t prt_pid = sys_spawn_isolated("/compositor_present_test64.nex64", 0);
+        if (prt_pid < 0) put("init64: compositor_present_test64 not present (PACKAGE_DEBUG64 build only) -- skipped\n");
+    }
+
+    // M+12B: three compositor-dependent WAIT_ANY regression drivers --
+    // unlike compositor_present_test64 above, each of these DOES carry
+    // its own real PASS/FAIL verdict (exit code 42 iff its own bounded,
+    // client-observable self-check succeeded -- see each file's own
+    // header comment on exactly what it can and cannot verify for
+    // itself), so each is waited on and its result reported here,
+    // mirroring compositor_gen_test64's own precedent rather than
+    // compositor_present_test64's/compositor_policy_test64's
+    // fire-and-forget style. Run sequentially, each against the SAME
+    // real compositor64 instance already running -- every one is fully
+    // self-contained (own window, own connection) and tears itself down
+    // (wm_destroy_window, or -- wait_any_hardfail_test64's own scenario
+    // -- gets torn down BY the compositor) before exiting, so running
+    // them back to back never leaves stale state for the next one.
+    if (comp_pid >= 0) {
+        int64_t evtp_pid = sys_spawn_isolated("/wait_any_evtpipe_test64.nex64", 0);
+        if (evtp_pid < 0) {
+            put("init64: wait_any_evtpipe_test64 not present (PACKAGE_DEBUG64 build only) -- skipped\n");
+        } else {
+            int64_t code = sys_wait((uint32_t)evtp_pid);
+            if (code == 42) put("init64: wait_any_evtpipe_test64 PASSED\n");
+            else put_line_int("init64: wait_any_evtpipe_test64 FAILED, exit code=", code);
+        }
+
+        int64_t fcb_pid = sys_spawn_isolated("/wait_any_framecb_test64.nex64", 0);
+        if (fcb_pid < 0) {
+            put("init64: wait_any_framecb_test64 not present (PACKAGE_DEBUG64 build only) -- skipped\n");
+        } else {
+            int64_t code = sys_wait((uint32_t)fcb_pid);
+            if (code == 42) put("init64: wait_any_framecb_test64 PASSED\n");
+            else put_line_int("init64: wait_any_framecb_test64 FAILED, exit code=", code);
+        }
+
+        int64_t hf_pid = sys_spawn_isolated("/wait_any_hardfail_test64.nex64", 0);
+        if (hf_pid < 0) {
+            put("init64: wait_any_hardfail_test64 not present (PACKAGE_DEBUG64 build only) -- skipped\n");
+        } else {
+            int64_t code = sys_wait((uint32_t)hf_pid);
+            if (code == 42) put("init64: wait_any_hardfail_test64 PASSED\n");
+            else put_line_int("init64: wait_any_hardfail_test64 FAILED, exit code=", code);
+        }
+    }
+
     sys_spawn_isolated("/gfx_demo64.nex64", 0);
     sys_spawn_isolated("/gfx_interactive64.nex64", 0);
     // Milestone 33: ToxUI's own graphical acceptance demos, same

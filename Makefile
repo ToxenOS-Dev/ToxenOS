@@ -54,6 +54,18 @@ MBEDFLAGS := -ffreestanding -fno-stack-protector -fno-pic -m32 \
 # -mno-red-zone: mandatory for any x86_64 kernel code that can be interrupted.
 # -mno-sse/-mno-mmx: avoid the compiler using SSE/MMX regs before FPU/SSE
 #   state is set up (not yet relevant with interrupts off, but free to add now).
+# M+11A: optional interrupt-core build switches (compile-time only, no
+# runtime boot arg): IRQ64_DEFS=-DIRQ64_FORCE_PIC forces the legacy 8259
+# path even on APIC hardware, for regression-testing the PIC fallback.
+IRQ64_DEFS ?=
+# M+11B: MSI64_DEFS=-DMSI64_EDU_TEST builds the QEMU `edu` real-MSI test
+# (run with `-device edu`); it is test-only and never part of a normal boot.
+MSI64_DEFS ?=
+# M+11C: VirtIO interrupt-mode test switches (compile-time only; see include/virtio_irq64.h):
+#   VIRTIO_DEFS=-DVIRTIO_IRQ_FORCE_POLL | -DVIRTIO_IRQ_FAIL_AT=N | -DVIRTIO_IRQ_TEST_DROP_CTL_IRQ
+#               | -DVIRTIO_IRQ_TEST_FAULT_DEMOTE | -DVIRTIO_IRQ_DEBUG_WATCHDOG
+VIRTIO_DEFS ?=
+
 KFLAGS64 := -ffreestanding -fno-stack-protector -fno-pic -fno-pie -m64 \
             -mcmodel=kernel -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
             -fno-asynchronous-unwind-tables \
@@ -320,12 +332,12 @@ kernel64: $(RUST_LIB)
 	nasm -f bin kernel/ring3_syscall_stub64.asm -o build/ring3_syscall_stub64.bin
 	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
 		build/ring3_syscall_stub64.bin build/ring3_syscall_stub64_blob.o
-	gcc $(KFLAGS64) -c kernel/kernel64.c     -o build/kernel64.o
+	gcc $(KFLAGS64) $(VIRTIO_DEFS) -c kernel/kernel64.c     -o build/kernel64.o
 	gcc $(KFLAGS64) -c kernel/klog.c         -o build/klog64.o
 	gcc $(KFLAGS64) -c kernel/idt64.c        -o build/idt64.o
 	gcc $(KFLAGS64) -c kernel/interrupt64.c  -o build/interrupt64.o
-	gcc $(KFLAGS64) -c kernel/irq64.c        -o build/irq64.o
-	gcc $(KFLAGS64) -c kernel/timer64.c      -o build/timer64.o
+	gcc $(KFLAGS64) $(IRQ64_DEFS) -c kernel/irq64.c        -o build/irq64.o
+	gcc $(KFLAGS64) $(IRQ64_DEFS) -c kernel/timer64.c      -o build/timer64.o
 	gcc $(KFLAGS64) -c kernel/keyboard64.c   -o build/keyboard64.o
 	gcc $(KFLAGS64) -c kernel/keyboard_buffer64.c -o build/keyboard_buffer64.o
 	gcc $(KFLAGS64) -c kernel/pic.c          -o build/pic64.o
@@ -346,7 +358,9 @@ kernel64: $(RUST_LIB)
 	gcc $(KFLAGS64) -c kernel/lapic64.c      -o build/lapic64.o
 	gcc $(KFLAGS64) -c kernel/uservm64.c     -o build/uservm64.o
 	gcc $(KFLAGS64) -c kernel/pipe64.c       -o build/pipe64.o
+	gcc $(KFLAGS64) -c kernel/memobj64.c     -o build/memobj64.o
 	gcc $(KFLAGS64) -c kernel/shm64.c        -o build/shm64.o
+	gcc $(KFLAGS64) -c kernel/gpu64.c        -o build/gpu64.o
 	gcc $(KFLAGS64) -c kernel/service64.c    -o build/service64.o
 	gcc $(KFLAGS64) -c kernel/vfs64.c        -o build/vfs64.o
 	gcc $(KFLAGS64) -c kernel/kmutex64.c     -o build/kmutex64.o
@@ -355,11 +369,31 @@ kernel64: $(RUST_LIB)
 	gcc $(KFLAGS64) -c kernel/ahci64.c       -o build/ahci64.o
 	gcc $(KFLAGS64) -c kernel/nvme64.c       -o build/nvme64.o
 	gcc $(KFLAGS64) -c kernel/virtio_blk64.c -o build/virtio_blk64.o
+	gcc $(KFLAGS64) -c kernel/virtio_pci64.c -o build/virtio_pci64.o
+	gcc $(KFLAGS64) $(VIRTIO_DEFS) -c kernel/virtio_gpu64.c -o build/virtio_gpu64.o
+	gcc $(KFLAGS64) $(VIRTIO_DEFS) -c kernel/virtio_input64.c -o build/virtio_input64.o
 	gcc $(KFLAGS64) -c kernel/pixfmt64.c     -o build/pixfmt64.o
 	gcc $(KFLAGS64) -c kernel/display64.c    -o build/display64.o
 	gcc $(KFLAGS64) -c kernel/ps2_64.c       -o build/ps2_64.o
 	gcc $(KFLAGS64) -c kernel/input64.c      -o build/input64.o
 	gcc $(KFLAGS64) -c kernel/mouse64.c      -o build/mouse64.o
+	gcc $(KFLAGS64) -c kernel/tsc64.c        -o build/tsc64.o
+	gcc $(KFLAGS64) $(IRQ64_DEFS) -c kernel/vector64.c   -o build/vector64.o
+	gcc $(KFLAGS64) $(IRQ64_DEFS) -c kernel/acpi64.c     -o build/acpi64.o
+	gcc $(KFLAGS64) $(IRQ64_DEFS) -c kernel/madt64.c     -o build/madt64.o
+	gcc $(KFLAGS64) $(IRQ64_DEFS) -c kernel/ioapic64.c   -o build/ioapic64.o
+	gcc $(KFLAGS64) $(IRQ64_DEFS) -c kernel/irqmode64.c  -o build/irqmode64.o
+	gcc $(KFLAGS64) $(IRQ64_DEFS) -c kernel/pic_chip64.c -o build/pic_chip64.o
+	gcc $(KFLAGS64) $(IRQ64_DEFS) -c kernel/irq64_selftest.c -o build/irq64_selftest.o
+	gcc $(KFLAGS64) $(MSI64_DEFS) -c kernel/kwait64.c        -o build/kwait64.o
+	gcc $(KFLAGS64) $(VIRTIO_DEFS) -c kernel/virtio_irq64.c  -o build/virtio_irq64.o
+	gcc $(KFLAGS64) $(VIRTIO_DEFS) -c kernel/virtio_irq64_selftest.c -o build/virtio_irq64_selftest.o
+	gcc $(KFLAGS64) $(MSI64_DEFS) -c kernel/pci_cap64.c      -o build/pci_cap64.o
+	gcc $(KFLAGS64) $(MSI64_DEFS) -c kernel/msi_x86_64.c     -o build/msi_x86_64.o
+	gcc $(KFLAGS64) $(MSI64_DEFS) -c kernel/irq64_msg.c      -o build/irq64_msg.o
+	gcc $(KFLAGS64) $(MSI64_DEFS) -c kernel/pci_irq64.c      -o build/pci_irq64.o
+	gcc $(KFLAGS64) $(MSI64_DEFS) -c kernel/pci_irq64_selftest.c -o build/pci_irq64_selftest.o
+	gcc $(KFLAGS64) $(MSI64_DEFS) -c kernel/msi64_edu_test.c -o build/msi64_edu_test.o
 	ld -m elf_x86_64 -T linker64.ld -o build/kernel64.bin \
 		build/boot64.o build/isr64.o build/switch64.o build/kernel64.o \
 		build/klog64.o build/idt64.o build/interrupt64.o build/irq64.o \
@@ -368,12 +402,18 @@ kernel64: $(RUST_LIB)
 		build/ata64.o build/txfs64.o build/syscall64.o build/exec64.o \
 		build/physmem64.o build/paging64.o build/usercopy64.o \
 		build/heap64.o build/lapic64.o build/uservm64.o \
-		build/pipe64.o build/shm64.o build/service64.o build/vfs64.o \
+		build/pipe64.o build/memobj64.o build/shm64.o build/gpu64.o build/service64.o build/vfs64.o \
 		build/kmutex64.o build/blockdev64.o build/pci64.o \
-		build/ahci64.o build/nvme64.o build/virtio_blk64.o \
+		build/ahci64.o build/nvme64.o build/virtio_blk64.o build/virtio_pci64.o build/virtio_gpu64.o \
+		build/virtio_input64.o \
 		build/pixfmt64.o build/display64.o build/ps2_64.o \
 		build/input64.o build/mouse64.o \
 		build/vgaterm64.o build/fbterm64.o build/console64.o \
+		build/tsc64.o \
+		build/vector64.o build/acpi64.o build/madt64.o build/ioapic64.o build/irqmode64.o \
+		build/pic_chip64.o build/irq64_selftest.o \
+		build/kwait64.o build/virtio_irq64.o build/virtio_irq64_selftest.o build/pci_cap64.o build/msi_x86_64.o build/irq64_msg.o build/pci_irq64.o \
+		build/pci_irq64_selftest.o build/msi64_edu_test.o \
 		build/ring3_syscall_stub64_blob.o \
 		$(RUST_LIB)
 	cp build/kernel64.bin iso64/boot/kernel64.bin
@@ -569,6 +609,10 @@ user64: tools/elf2nex64 toxui
 	tools/elf2nex64 build/user64/gfx_interactive64.elf64 build/user64/gfx_interactive64.nex64
 	gcc $(UFLAGS64) user64/gfx_crash_test64.c -o build/user64/gfx_crash_test64.elf64
 	tools/elf2nex64 build/user64/gfx_crash_test64.elf64 build/user64/gfx_crash_test64.nex64
+	gcc $(UFLAGS64) user64/wmproto_test64.c -o build/user64/wmproto_test64.elf64
+	tools/elf2nex64 build/user64/wmproto_test64.elf64 build/user64/wmproto_test64.nex64
+	gcc $(UFLAGS64) user64/compositor_gen_test64.c -o build/user64/compositor_gen_test64.elf64
+	tools/elf2nex64 build/user64/compositor_gen_test64.elf64 build/user64/compositor_gen_test64.nex64
 	# Milestone 32.1: a SEPARATE binary, built from the exact same
 	# source with one extra -D flag, that reacts to WM_MSG_TEST_SHUTDOWN
 	# (see wmproto64.h) by exiting cleanly -- used only by
@@ -581,6 +625,45 @@ user64: tools/elf2nex64 toxui
 	tools/elf2nex64 build/user64/compositor64_test.elf64 build/user64/compositor64_test.nex64
 	gcc $(UFLAGS64) user64/compositor_stall_test64.c -o build/user64/compositor_stall_test64.elf64
 	tools/elf2nex64 build/user64/compositor_stall_test64.elf64 build/user64/compositor_stall_test64.nex64
+	# M+12A: the debug-only alternate-policy compositor build (see
+	# compositor64.c's own "compositor policy boundary" section) -- proves
+	# the policy interface is really swappable. Never part of a normal
+	# boot; only ever run manually for M+12A acceptance, same discipline
+	# as COMPOSITOR64_TEST_MODE right above.
+	gcc $(UFLAGS64) -DCOMPOSITOR_POLICY_TEST_ALT user64/compositor64.c -o build/user64/compositor64_policytest.elf64
+	tools/elf2nex64 build/user64/compositor64_policytest.elf64 build/user64/compositor64_policytest.nex64
+	gcc $(UFLAGS64) user64/compositor_policy_test64.c -o build/user64/compositor_policy_test64.elf64
+	tools/elf2nex64 build/user64/compositor_policy_test64.elf64 build/user64/compositor_policy_test64.nex64
+	# Post-M+12A audit: the has_surface/display-handle regression test's own
+	# debug-only compositor build (prints g_diag_present_failure_count's own
+	# DBG_PRESENT_FAIL trace on any presentation failure) plus its in-guest
+	# driver program. Never part of a normal boot, same discipline as
+	# COMPOSITOR64_TEST_MODE/COMPOSITOR_POLICY_TEST_ALT above.
+	gcc $(UFLAGS64) -DCOMPOSITOR_PRESENT_FAIL_TRACE user64/compositor64.c -o build/user64/compositor64_presenttest.elf64
+	tools/elf2nex64 build/user64/compositor64_presenttest.elf64 build/user64/compositor64_presenttest.nex64
+	gcc $(UFLAGS64) user64/compositor_present_test64.c -o build/user64/compositor_present_test64.elf64
+	tools/elf2nex64 build/user64/compositor_present_test64.elf64 build/user64/compositor_present_test64.nex64
+	# M+12B: bounded multi-handle WAIT_ANY. compositor64_legacypoll is
+	# the exact pre-M+12B busy-poll main loop, kept available for
+	# fallback/comparison until WAIT_ANY has been physically verified --
+	# see compositor64.c's own COMPOSITOR_LEGACY_POLL_MODE section.
+	# compositor64_waitanytrace is the normal (WAIT_ANY) loop with its
+	# interest-set/timeout/return-code klog trace enabled, for manual
+	# acceptance and for the internal-only aspects the ring3 test
+	# programs below cannot observe for themselves (see each test's own
+	# header comment on what it can and cannot self-verify).
+	gcc $(UFLAGS64) -DCOMPOSITOR_LEGACY_POLL_MODE user64/compositor64.c -o build/user64/compositor64_legacypoll.elf64
+	tools/elf2nex64 build/user64/compositor64_legacypoll.elf64 build/user64/compositor64_legacypoll.nex64
+	gcc $(UFLAGS64) -DCOMPOSITOR_WAIT_ANY_TRACE user64/compositor64.c -o build/user64/compositor64_waitanytrace.elf64
+	tools/elf2nex64 build/user64/compositor64_waitanytrace.elf64 build/user64/compositor64_waitanytrace.nex64
+	gcc $(UFLAGS64) user64/wait_any_test64.c -o build/user64/wait_any_test64.elf64
+	tools/elf2nex64 build/user64/wait_any_test64.elf64 build/user64/wait_any_test64.nex64
+	gcc $(UFLAGS64) user64/wait_any_evtpipe_test64.c -o build/user64/wait_any_evtpipe_test64.elf64
+	tools/elf2nex64 build/user64/wait_any_evtpipe_test64.elf64 build/user64/wait_any_evtpipe_test64.nex64
+	gcc $(UFLAGS64) user64/wait_any_framecb_test64.c -o build/user64/wait_any_framecb_test64.elf64
+	tools/elf2nex64 build/user64/wait_any_framecb_test64.elf64 build/user64/wait_any_framecb_test64.nex64
+	gcc $(UFLAGS64) user64/wait_any_hardfail_test64.c -o build/user64/wait_any_hardfail_test64.elf64
+	tools/elf2nex64 build/user64/wait_any_hardfail_test64.elf64 build/user64/wait_any_hardfail_test64.nex64
 	gcc $(UFLAGS64) user64/init64.c -o build/user64/init64.elf64
 	tools/elf2nex64 build/user64/init64.elf64 build/user64/init64.nex64
 	gcc $(UFLAGS64) user64/shell64.c -o build/user64/shell64.elf64
@@ -730,8 +813,20 @@ populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 		tools/txfs_write build/fs.img build/user64/service_test64.nex64 /service_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/fpu_smoke_test64.nex64 /fpu_smoke_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/gfx_crash_test64.nex64 /gfx_crash_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/wmproto_test64.nex64 /wmproto_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/compositor_gen_test64.nex64 /compositor_gen_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/compositor64_test.nex64 /compositor64_test.nex64; \
 		tools/txfs_write build/fs.img build/user64/compositor_stall_test64.nex64 /compositor_stall_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/compositor_policy_test64.nex64 /compositor_policy_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/compositor64_policytest.nex64 /compositor64_policytest.nex64; \
+		tools/txfs_write build/fs.img build/user64/compositor_present_test64.nex64 /compositor_present_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/compositor64_presenttest.nex64 /compositor64_presenttest.nex64; \
+		tools/txfs_write build/fs.img build/user64/compositor64_legacypoll.nex64 /compositor64_legacypoll.nex64; \
+		tools/txfs_write build/fs.img build/user64/compositor64_waitanytrace.nex64 /compositor64_waitanytrace.nex64; \
+		tools/txfs_write build/fs.img build/user64/wait_any_test64.nex64 /wait_any_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/wait_any_evtpipe_test64.nex64 /wait_any_evtpipe_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/wait_any_framecb_test64.nex64 /wait_any_framecb_test64.nex64; \
+		tools/txfs_write build/fs.img build/user64/wait_any_hardfail_test64.nex64 /wait_any_hardfail_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/input_test64.nex64 /input_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/display_test64.nex64 /display_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/toxui_test64.nex64 /toxui_test64.nex64; \

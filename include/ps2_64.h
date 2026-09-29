@@ -57,4 +57,42 @@ uint8_t ps2_64_read_data(void);
 // correct for a partial packet silently started this early.
 int ps2_64_output_full(void);
 
+
+// ── M+11A: shared 8042 receive path (IRQ1 + IRQ12) ───────────────────────
+// IRQ1 and IRQ12 both funnel through ps2_64_rx_poll(), so they cannot
+// consume the same byte with contradictory assumptions. Invariants:
+//   * 0x60 is read ONLY when the status register (0x64) has OBF set;
+//   * every real byte is consumed exactly once, by whichever IRQ got there
+//     first, and routed by the status AUXDATA bit (set -> mouse parser,
+//     clear -> keyboard parser) -- never by which IRQ line fired;
+//   * no byte is ever fabricated: OBF clear => nothing is read or fed.
+// One byte per service, exactly like the pre-M+11A handlers (and Linux's
+// i8042): the 8042 has a single output-buffer slot, so the NEXT byte only
+// loads -- raising a fresh edge -- after this one is read. That also makes
+// a stuck-OBF controller unable to livelock the handler.
+#define PS2_STATUS_OBF      0x01
+#define PS2_STATUS_AUXDATA  0x20
+
+typedef struct {
+    uint8_t (*read_status)(void);      // port 0x64
+    uint8_t (*read_data)(void);        // port 0x60 (only ever called with OBF set)
+    void    (*kbd_sink)(uint8_t);
+    void    (*aux_sink)(uint8_t);
+} ps2_64_rx_t;
+
+// Consumes at most ONE available byte; returns 1 if a byte was consumed,
+// 0 if the output buffer was empty (nothing is read or fed).
+int ps2_64_rx_poll(const ps2_64_rx_t* rx);
+
+// Sinks the real receive path feeds (kernel/keyboard64.c, kernel/mouse64.c).
+void keyboard64_feed_byte(uint8_t sc);
+void mouse64_feed_byte(uint8_t data);
+
+// Real-port irq64 handler body shared by keyboard64_irq / mouse64_irq.
+// Returns 1 if any byte was consumed (IRQ64_RET_HANDLED), else 0.
+int ps2_64_service(void);
+
+#include "irq64.h"
+irq64_ret_t keyboard64_irq(void* ctx);   // IRQ1 thunk
+
 #endif // PS2_64_H

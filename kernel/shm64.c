@@ -6,8 +6,16 @@
 // caller of shm64_add_ref()/shm64_release() from the MAPPING side
 // (uservm64_map_shm/uservm64_munmap); kernel/process64.c is the only
 // caller from the HANDLE side (spawn inheritance / process exit).
+//
+// M+1A: the physical backing itself is now owned by memobj64_t (see
+// include/memobj64.h) -- this file only manages the shm64_t VIEW
+// around one (creation, the token lookup table, and this view's own
+// refcount), delegating every physical-page concern to memobj64_create/
+// memobj64_release. No external behavior changes; see include/shm64.h's
+// updated header comment for the full rationale.
 #include <stdint.h>
 #include "../include/shm64.h"
+#include "../include/memobj64.h"
 #include "../include/physmem64.h"
 #include "../include/heap64.h"
 #include "../include/uservm64.h"
@@ -37,17 +45,13 @@ static inline void shm64_unlock(uint64_t flags) {
 }
 
 int shm64_create(uint64_t size, shm64_t** out) {
-    if (size == 0) return -1;
-    uint32_t npages = (uint32_t)((size + 0xFFFULL) / 0x1000ULL);
-
-    uint64_t base_phys = physmem64_alloc_pages(npages);
-    if (!base_phys) return -1;
+    memobj64_t* obj;
+    if (memobj64_create(size, &obj) < 0) return -1;
 
     shm64_t* s = (shm64_t*)kmalloc(sizeof(shm64_t));
-    if (!s) { physmem64_free_pages(base_phys, npages); return -1; }
+    if (!s) { memobj64_release(obj); return -1; }
 
-    s->base_phys = base_phys;
-    s->npages = npages;
+    s->obj = obj; // this view's one, permanent reference to its backing
     s->refcount = 1;
 
     uint64_t flags = shm64_lock();
@@ -77,7 +81,7 @@ static void unlink_and_free(shm64_t* s) {
     if (*pp == s) *pp = s->dbg_next;
     shm64_unlock(flags);
 
-    physmem64_free_pages(s->base_phys, s->npages);
+    memobj64_release(s->obj); // drop this view's one reference to the backing
     kfree(s);
 }
 
@@ -101,9 +105,9 @@ void shm64_dump(void) {
     for (shm64_t* s = g_shm_list; s; s = s->dbg_next) {
         char buf[24];
         klog("  shm: npages=");
-        dec_to_str_local(s->npages, buf); klog(buf);
+        dec_to_str_local(s->obj->npages, buf); klog(buf);
         klog(" bytes=");
-        dec_to_str_local((uint64_t)s->npages * 0x1000ULL, buf); klog(buf);
+        dec_to_str_local((uint64_t)s->obj->npages * 0x1000ULL, buf); klog(buf);
         klog(" refcount=");
         dec_to_str_local(s->refcount, buf); klog(buf);
         klog("\n");
@@ -149,7 +153,7 @@ static int test_create_and_refcount(void) {
 
     shm64_t* s;
     if (shm64_create(0x1000, &s) < 0) return 0;
-    int ok = (s->npages == 1 && s->refcount == 1);
+    int ok = (s->obj->npages == 1 && s->refcount == 1);
 
     shm64_add_ref(s);
     if (s->refcount != 2) ok = 0;
@@ -166,22 +170,22 @@ static int test_create_and_refcount(void) {
 static int test_zero_filled_and_multipage(void) {
     shm64_t* s;
     if (shm64_create(3 * 0x1000ULL, &s) < 0) return 0;
-    int ok = (s->npages == 3);
+    int ok = (s->obj->npages == 3);
 
     // physmem64_alloc_pages() zero-fills on allocation -- verify all 3
     // pages, then write a distinct pattern into each and read it back
     // through the SAME direct kernel mapping (proves multi-page objects
     // really do own that many independently addressable pages).
     for (uint32_t i = 0; ok && i < 3; i++) {
-        uint8_t* p = (uint8_t*)physmem64_to_virt(s->base_phys + (uint64_t)i * 0x1000ULL);
+        uint8_t* p = (uint8_t*)physmem64_to_virt(s->obj->base_phys + (uint64_t)i * 0x1000ULL);
         for (int b = 0; b < 4096; b++) if (p[b] != 0) { ok = 0; break; }
     }
     for (uint32_t i = 0; ok && i < 3; i++) {
-        uint8_t* p = (uint8_t*)physmem64_to_virt(s->base_phys + (uint64_t)i * 0x1000ULL);
+        uint8_t* p = (uint8_t*)physmem64_to_virt(s->obj->base_phys + (uint64_t)i * 0x1000ULL);
         for (int b = 0; b < 4096; b++) p[b] = (uint8_t)(i * 10 + 1);
     }
     for (uint32_t i = 0; ok && i < 3; i++) {
-        uint8_t* p = (uint8_t*)physmem64_to_virt(s->base_phys + (uint64_t)i * 0x1000ULL);
+        uint8_t* p = (uint8_t*)physmem64_to_virt(s->obj->base_phys + (uint64_t)i * 0x1000ULL);
         for (int b = 0; b < 4096; b++) if (p[b] != (uint8_t)(i * 10 + 1)) { ok = 0; break; }
     }
 
@@ -202,7 +206,7 @@ static int test_map_unmap_via_uservm64(void) {
     uint64_t addr;
     if (uservm64_map_shm(&vm, &as, s, 1, &addr) < 0) ok = 0;
     if (ok && s->refcount != 2) ok = 0; // handle's own ref (1) + this mapping's ref (1)
-    if (ok && paging64_translate(&as, addr) != s->base_phys) ok = 0;
+    if (ok && paging64_translate(&as, addr) != s->obj->base_phys) ok = 0;
     if (ok && !page_is_all(&as, addr, 0)) ok = 0; // freshly exposed -- must read zero
 
     if (ok && uservm64_munmap(&vm, &as, addr, 0x1000) < 0) ok = 0;
@@ -235,7 +239,7 @@ static int test_unmap_one_keeps_alive_for_other(void) {
     // Write through AS1's mapping, unmap AS1, then verify AS2's mapping
     // (a DIFFERENT address space, possibly a different VA) still sees
     // the write and the physical page is still very much alive.
-    if (ok) { uint8_t* p = (uint8_t*)physmem64_to_virt(s->base_phys); p[0] = 0xAB; }
+    if (ok) { uint8_t* p = (uint8_t*)physmem64_to_virt(s->obj->base_phys); p[0] = 0xAB; }
     if (ok && uservm64_munmap(&vm1, &as1, addr1, 0x1000) < 0) ok = 0;
     if (ok && s->refcount != 2) ok = 0;
 
@@ -292,14 +296,58 @@ static int test_multiple_objects_simultaneously(void) {
     if (shm64_create(2 * 0x1000ULL, &b) < 0) { shm64_release(a); return 0; }
     if (shm64_create(0x1000, &c) < 0) { shm64_release(a); shm64_release(b); return 0; }
 
-    int ok = (a->base_phys != b->base_phys && b->base_phys != c->base_phys && a->base_phys != c->base_phys);
-    ok = ok && a->npages == 1 && b->npages == 2 && c->npages == 1;
+    int ok = (a->obj->base_phys != b->obj->base_phys && b->obj->base_phys != c->obj->base_phys && a->obj->base_phys != c->obj->base_phys);
+    ok = ok && a->obj->npages == 1 && b->obj->npages == 2 && c->obj->npages == 1;
 
     shm64_release(a);
     shm64_release(b);
     shm64_release(c);
     physmem64_stats(&after);
     if (before.free_pages != after.free_pages || before.used_pages != after.used_pages) ok = 0;
+
+    return ok;
+}
+
+// M+1A: closes a pre-existing gap -- shm64_find_by_token() (the
+// cross-process handoff mechanism kernel/syscall64.c's SYS64_SHM_TOKEN/
+// SYS64_SHM_OPEN_TOKEN and every real compositor client's
+// wm_attach_surface() depend on) had no dedicated self-test case before
+// this milestone, only implicit exercise via the real graphical desktop.
+// Worth adding now specifically because M+1A changed what a token
+// resolves to internally (a view over a memobj64_t, not a direct
+// base_phys/npages struct) -- this proves that change is invisible to
+// every token-based caller.
+static int test_token_lookup(void) {
+    shm64_t* s;
+    if (shm64_create(0x1000, &s) < 0) return 0;
+    int ok = 1;
+
+    uint64_t tok = s->token;
+    if (tok == 0) ok = 0; // 0 is never a valid token
+
+    shm64_t* found = shm64_find_by_token(tok);
+    if (found != s) ok = 0;
+
+    // A second, unrelated object must resolve to ITSELF, never to `s`
+    // -- proves lookup is keyed correctly, not just "any live object".
+    shm64_t* other;
+    if (shm64_create(0x1000, &other) < 0) { shm64_release(s); return 0; }
+    if (shm64_find_by_token(other->token) != other) ok = 0;
+    if (other->token == tok) ok = 0; // tokens must be distinct
+
+    // A token that never existed (well past both real ones, and past
+    // g_next_token's own monotonic counter at this point in the test
+    // run) must resolve to NULL, not to some unrelated live object.
+    uint64_t bogus = tok > other->token ? tok + 1000000 : other->token + 1000000;
+    if (shm64_find_by_token(bogus) != 0) ok = 0;
+
+    shm64_release(other);
+    shm64_release(s);
+
+    // Once released (refcount -> 0, object freed), the ORIGINAL token
+    // must no longer resolve to anything -- a stale token is exactly as
+    // invalid as one that never existed, never a dangling pointer.
+    if (shm64_find_by_token(tok) != 0) ok = 0;
 
     return ok;
 }
@@ -367,6 +415,7 @@ int shm64_selftest(void) {
     SHM64_TEST("unmap from one AS keeps object alive for another", test_unmap_one_keeps_alive_for_other());
     SHM64_TEST("read-only mapping rejects writes (paging64_check_user_range)", test_readonly_perms_enforced());
     SHM64_TEST("multiple shm objects alive simultaneously", test_multiple_objects_simultaneously());
+    SHM64_TEST("token lookup resolves correctly, and not past release", test_token_lookup());
     SHM64_TEST("repeated create/map/unmap/release cycles, no leak", test_repeated_cycles_no_leak());
     SHM64_TEST("ring3 driver: real cross-process sharing + isolation", test_ring3_driver());
 

@@ -20,6 +20,7 @@
 #include "../include/heap64.h"
 #include "../include/process64.h"
 #include "../include/shm64.h"
+#include "../include/memobj64.h"
 #include "../include/klog.h"
 
 void uservm64_init(uservm64_state_t* vm) {
@@ -116,8 +117,24 @@ int uservm64_mmap(uservm64_state_t* vm, paging64_as_t* as, uint64_t size, uint64
     return 0;
 }
 
+// M+1A: bump this (and nothing else in this function's structure) the
+// day memobj64 gains a real scatter-gather backing kind -- see
+// include/memobj64.h's own header comment. Every memobj64_t today has
+// exactly one contiguous run, so 1 is always sufficient; this constant
+// exists so that fact is asserted once, here, rather than assumed
+// silently by a flat base_phys+i*4096 loop the way this function used
+// to read shm->base_phys/shm->npages directly.
+#define UVM64_MAP_SHM_MAX_RUNS 1
+
 int uservm64_map_shm(uservm64_state_t* vm, paging64_as_t* as, shm64_t* shm, int writable, uint64_t* addr_out) {
-    uint64_t size = (uint64_t)shm->npages * 0x1000ULL;
+    memobj64_run_t runs[UVM64_MAP_SHM_MAX_RUNS];
+    int nruns = memobj64_get_runs(shm->obj, runs, UVM64_MAP_SHM_MAX_RUNS);
+    if (nruns < 1) return -1; // no backing, or more runs than this caller is sized for
+
+    uint64_t total_pages = 0;
+    for (int r = 0; r < nruns; r++) total_pages += runs[r].npages;
+    uint64_t size = total_pages * 0x1000ULL;
+
     uint64_t base = find_mmap_gap(vm, size);
     if (!base) return -1;
 
@@ -125,16 +142,20 @@ int uservm64_map_shm(uservm64_state_t* vm, paging64_as_t* as, shm64_t* shm, int 
     if (!node) return -1;
 
     uint32_t flags = writable ? PAGING64_WRITE : 0;
-    uint32_t i;
-    for (i = 0; i < shm->npages; i++) {
-        uint64_t phys = shm->base_phys + (uint64_t)i * 0x1000ULL;
-        if (paging64_map(as, base + (uint64_t)i * 0x1000ULL, phys, flags) < 0) break;
+    uint64_t mapped = 0; // pages successfully mapped so far, across every run -- what rollback undoes
+    int ok = 1;
+    for (int r = 0; ok && r < nruns; r++) {
+        for (uint32_t i = 0; i < runs[r].npages; i++) {
+            uint64_t phys = runs[r].phys + (uint64_t)i * 0x1000ULL;
+            if (paging64_map(as, base + mapped * 0x1000ULL, phys, flags) < 0) { ok = 0; break; }
+            mapped++;
+        }
     }
-    if (i < shm->npages) {
+    if (!ok) {
         // Roll back exactly what THIS call mapped -- these PTEs are
         // cleared only (paging64_unmap, never _and_free): the physical
         // pages belong to `shm`, not to this mapping attempt.
-        for (uint32_t j = 0; j < i; j++) paging64_unmap(as, base + (uint64_t)j * 0x1000ULL, 0);
+        for (uint64_t j = 0; j < mapped; j++) paging64_unmap(as, base + j * 0x1000ULL, 0);
         kfree(node);
         return -1;
     }

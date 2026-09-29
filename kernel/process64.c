@@ -87,10 +87,12 @@
 #include "../include/physmem64.h"
 #include "../include/pipe64.h"
 #include "../include/shm64.h"
+#include "../include/gpu64.h"
 #include "../include/vfs64.h"
 #include "../include/input64.h"
 #include "../include/display64.h"
 #include "../include/service64.h"
+#include "../include/irq64.h"
 #include "../include/klog.h"
 
 extern void context_switch64(uint64_t* old_rsp_ptr, uint64_t* new_rsp_ptr);
@@ -238,6 +240,7 @@ static void perform_switch(int old_idx, int new_idx, process64_t* to_cleanup) {
     }
 
     if (to_cleanup) {
+        process64_preempt_disable();   // M+11C: this cleanup cannot block (kwait64 returns WOULDBLOCK)
         // Milestone 26: uservm64_teardown now ALSO clears the PTEs of
         // (and drops this mapping's reference to) every shared-memory
         // region -- it must run BEFORE paging64_destroy_as, which
@@ -254,6 +257,7 @@ static void perform_switch(int old_idx, int new_idx, process64_t* to_cleanup) {
         // fds[]/txfs64_close cleanup loop that used to run here is gone,
         // folded into this one pass over the unified handle table.
         close_all_handles(to_cleanup);
+        process64_preempt_enable();
     }
 
     current_idx = new_idx;
@@ -273,7 +277,9 @@ static void perform_switch(int old_idx, int new_idx, process64_t* to_cleanup) {
         __asm__ volatile("fxrstor (%0)" :: "r"(new_fpu) : "memory");
     }
 
+    int saved_in_irq = irq64_irq_ctx_suspend();   // M+11C: interrupt nesting belongs to the context, not the CPU
     context_switch64(old_rsp_ptr, new_rsp_ptr);
+    irq64_irq_ctx_resume(saved_in_irq);
     // Resumes here once something later switches back to old_idx --
     // EXCEPT when new_idx was a brand-new process, which jumps straight
     // into ring3 via process64_resume_trapframe instead and never
@@ -325,6 +331,7 @@ static void reap(process64_t* p) {
     p->state = PROCESS64_UNUSED;
     p->pid = 0;
     p->parent_pid = 0;
+    p->sleep_until_tick = 0; // defensive -- never actually consulted once state != BLOCKED, but leaves no stale value behind for this slot's next occupant
 }
 
 // ── Public API ───────────────────────────────────────────────────────
@@ -362,6 +369,7 @@ static void close_all_handles(process64_t* p) {
         case HANDLE64_PIPE_READ:  pipe64_close_read((pipe64_t*)p->handles[i].obj); break;
         case HANDLE64_PIPE_WRITE: pipe64_close_write((pipe64_t*)p->handles[i].obj); break;
         case HANDLE64_SHM:        shm64_release((shm64_t*)p->handles[i].obj); break;
+        case HANDLE64_GPU_BUFFER: gpu64_buffer_release((gpu64_buffer_t*)p->handles[i].obj); break;
         case HANDLE64_FILE:
         case HANDLE64_DIR:        vfs64_file_release((vfs64_file_t*)p->handles[i].obj); break;
         case HANDLE64_INPUT:      input64_release(); break;
@@ -400,6 +408,10 @@ static void inherit_handle_slot(process64_t* child, process64_t* parent, int slo
         break;
     case HANDLE64_SHM:
         shm64_add_ref((shm64_t*)parent->handles[slot].obj);
+        child->handles[slot] = parent->handles[slot];
+        break;
+    case HANDLE64_GPU_BUFFER:
+        gpu64_buffer_add_ref((gpu64_buffer_t*)parent->handles[slot].obj);
         child->handles[slot] = parent->handles[slot];
         break;
     case HANDLE64_FILE:
@@ -573,10 +585,22 @@ int process64_current_pid(void) {
 
 // ── Generalized blocking (Milestone 26) ─────────────────────────────
 // See include/process64.h's header comment for the full contract.
+// M+12B: never-reset diagnostic -- see include/process64.h's own comment
+// on wait_is_multi's ownership invariant. Incremented ONLY if a process
+// is ever found with wait_is_multi still set at the moment it's about to
+// enter an ordinary single-channel block, which that invariant says
+// should be structurally impossible (every path that clears BLOCKED
+// state also clears wait_is_multi). A pure defensive backstop, not a
+// normal code path -- see process64_stat_stale_multiwait().
+static uint32_t g_stat_stale_multiwait = 0;
+
 void process64_block_on(void* chan) {
     process64_t* cur = &procs[current_idx];
+    if (cur->wait_is_multi) g_stat_stale_multiwait++;   // see g_stat_stale_multiwait's own comment -- should never fire
     cur->state = PROCESS64_BLOCKED;
     cur->wait_chan = chan;
+    cur->wait_is_multi = 0;
+    cur->wait_any_count = 0;
     yield_to_next_or_idle(0);
     // Resumes here once woken (state was set back to READY and later
     // scheduled by process64_tick or another yield point) -- interrupts
@@ -585,12 +609,30 @@ void process64_block_on(void* chan) {
     // CPU); only the caller's own saved-flags restore re-enables them.
 }
 
+// M+12B: the one place wait_is_multi is actually consulted -- shared by
+// wake_one/wake_all/wake so there is exactly one definition of "does
+// this blocked process match this chan," covering both the pre-M+12B
+// single-channel case (unchanged: bare pointer equality) and the new
+// bounded multi-channel case.
+static inline int wait_matches(process64_t* p, void* chan) {
+    if (p->wait_is_multi) {
+        for (int j = 0; j < p->wait_any_count; j++) {
+            if (p->wait_any_chans[j] == chan) return 1;
+        }
+        return 0;
+    }
+    return p->wait_chan == chan;
+}
+
 void process64_wake_one(void* chan) {
     uint64_t flags = process64_lock();
     for (int i = 0; i < PROCESS64_MAX; i++) {
-        if (procs[i].state == PROCESS64_BLOCKED && procs[i].wait_chan == chan) {
+        if (procs[i].state == PROCESS64_BLOCKED && wait_matches(&procs[i], chan)) {
             procs[i].state = PROCESS64_READY;
             procs[i].wait_chan = 0;
+            procs[i].wait_is_multi = 0;
+            procs[i].wait_any_count = 0;
+            procs[i].sleep_until_tick = 0;       // M+11C: a deadline block must not keep a stale deadline
             break;
         }
     }
@@ -600,12 +642,110 @@ void process64_wake_one(void* chan) {
 void process64_wake_all(void* chan) {
     uint64_t flags = process64_lock();
     for (int i = 0; i < PROCESS64_MAX; i++) {
-        if (procs[i].state == PROCESS64_BLOCKED && procs[i].wait_chan == chan) {
+        if (procs[i].state == PROCESS64_BLOCKED && wait_matches(&procs[i], chan)) {
             procs[i].state = PROCESS64_READY;
             procs[i].wait_chan = 0;
+            procs[i].wait_is_multi = 0;
+            procs[i].wait_any_count = 0;
+            procs[i].sleep_until_tick = 0;
         }
     }
     process64_unlock(flags);
+}
+
+// ── M+11C ────────────────────────────────────────────────────────────
+static int      g_resched_hint = -1;          // most recently woken process, preferred at the IRQ-exit switch
+static int      g_preempt_depth = 0;
+static uint32_t g_stat_wakes = 0, g_stat_deadline_wakes = 0;
+
+void process64_wake(void* chan) {
+    uint64_t flags = process64_lock();
+    for (int i = 0; i < PROCESS64_MAX; i++) {
+        if (procs[i].state == PROCESS64_BLOCKED && wait_matches(&procs[i], chan)) {
+            procs[i].state = PROCESS64_READY;
+            procs[i].wait_chan = 0;
+            procs[i].wait_is_multi = 0;
+            procs[i].wait_any_count = 0;
+            procs[i].sleep_until_tick = 0;
+            g_resched_hint = i;
+            g_stat_wakes++;
+            irq64_request_reschedule();
+            break;
+        }
+    }
+    process64_unlock(flags);
+}
+
+void process64_block_on_deadline(void* chan, uint64_t deadline_tick) {
+    process64_t* cur = &procs[current_idx];
+    if (cur->wait_is_multi) g_stat_stale_multiwait++;   // see g_stat_stale_multiwait's own comment -- should never fire
+    cur->state = PROCESS64_BLOCKED;
+    cur->wait_chan = chan;
+    cur->wait_is_multi = 0;
+    cur->wait_any_count = 0;
+    cur->sleep_until_tick = deadline_tick ? deadline_tick : 1;   // 0 means "no deadline"
+    yield_to_next_or_idle(0);
+}
+
+// M+12B: see include/process64.h's own header comment on
+// process64_block_on_any/wait_is_multi for the full contract. `count`
+// must already be validated by the caller (1..PROCESS64_WAIT_ANY_MAX) --
+// this function trusts it, exactly like process64_block_on trusts `chan`.
+void process64_block_on_any(void* const* chans, int count, uint64_t deadline_tick) {
+    process64_t* cur = &procs[current_idx];
+    cur->state = PROCESS64_BLOCKED;
+    cur->wait_chan = 0;           // unused in multi mode -- keep it inert, never a stale match target
+    cur->wait_is_multi = 1;
+    for (int i = 0; i < count; i++) cur->wait_any_chans[i] = chans[i];
+    cur->wait_any_count = count;
+    cur->sleep_until_tick = deadline_tick ? deadline_tick : 0;
+    yield_to_next_or_idle(0);
+}
+
+uint32_t process64_stat_stale_multiwait(void) { return g_stat_stale_multiwait; }
+
+void process64_irq_exit_reschedule(void) {
+    int next = -1;
+    if (g_resched_hint >= 0 && g_resched_hint != current_idx && procs[g_resched_hint].state == PROCESS64_READY)
+        next = g_resched_hint;
+    else
+        next = pick_next_ready(current_idx);
+    g_resched_hint = -1;
+    if (next < 0) return;
+    if (current_idx >= 0 && procs[current_idx].state == PROCESS64_RUNNING) procs[current_idx].state = PROCESS64_READY;
+    procs[next].state = PROCESS64_RUNNING;
+    perform_switch(current_idx, next, 0);
+}
+
+void process64_preempt_disable(void) { g_preempt_depth++; }
+void process64_preempt_enable(void) { if (g_preempt_depth > 0) g_preempt_depth--; }
+int  process64_preempt_disabled(void) { return g_preempt_depth; }
+int  process64_can_block(void) { return current_idx >= 0 && g_preempt_depth == 0 && irq64_in_irq() == 0; }
+uint32_t process64_stat_wakes(void) { return g_stat_wakes; }
+uint32_t process64_stat_deadline_wakes(void) { return g_stat_deadline_wakes; }
+
+// M+4 investigation: see include/process64.h's own header comment on
+// why this exists. Deliberately NOT built on process64_block_on()'s
+// wait_chan mechanism -- there is no second party to call wake_one/
+// wake_all here (nothing else "wakes" a sleeper), so process64_tick()
+// itself checks sleep_until_tick directly instead of a channel match.
+extern uint64_t timer64_get_ticks(void);
+
+void process64_sleep_ticks(uint64_t ticks) {
+    process64_t* cur = &procs[current_idx];
+    // Milestone 26-style atomicity: the deadline write and the state
+    // change must happen as one unit with respect to process64_tick()
+    // (a timer IRQ landing between them would see BLOCKED with a stale
+    // or missing deadline) -- same cli/restore discipline
+    // process64_wait's own polling loop already uses.
+    uint64_t flags = process64_lock();
+    cur->sleep_until_tick = timer64_get_ticks() + ticks;
+    cur->state = PROCESS64_BLOCKED;
+    process64_unlock(flags);
+    yield_to_next_or_idle(0);
+    // Resumes here once process64_tick() reaches the deadline and sets
+    // this process back to READY -- same resumption contract as
+    // process64_block_on's own comment.
 }
 
 void process64_log_waiters(const char* label, void* chan) {
@@ -625,6 +765,11 @@ static void exit_current(int code, const char* why) {
     if (idx < 0) return; // never called with no current process
 
     process64_t* self = &procs[idx];
+    // M+11C exit_prepare: release every handle (GPU buffers, display, files...) while
+    // this is still an ordinary, BLOCKABLE process. Handle release can issue GPU
+    // commands that wait for a completion interrupt; the later close_all_handles in
+    // perform_switch runs in a non-blockable context and finds nothing left to do.
+    close_all_handles(self);
     self->exit_code = code;
     self->state = PROCESS64_ZOMBIE;
 
@@ -694,7 +839,46 @@ int process64_wait(uint32_t pid) {
     return code;
 }
 
+// M+4 second stale-line/lag investigation: see process64_dump_sched_accounting()'s
+// own header comment. Ticks where current_idx < 0 (the kernel/idle
+// context, no real process running) since the last dump/reset.
+static uint64_t g_idle_ticks_window = 0;
+
 void process64_tick(void) {
+    // M+4 second stale-line/lag investigation: sample which process (or
+    // idle) actually held the CPU for this tick BEFORE any switch
+    // decision below -- see include/process64.h's own comment on
+    // ticks_running.
+    if (current_idx >= 0) procs[current_idx].ticks_running++;
+    else g_idle_ticks_window++;
+
+    // M+4 investigation: wake every sleeper whose deadline has arrived
+    // BEFORE picking who runs next, so a just-woken process is eligible
+    // to be chosen by THIS same tick's pick_next_ready() rather than
+    // waiting for a later one. timer64.c increments ticks64 before
+    // calling here, so timer64_get_ticks() already reflects the tick
+    // this call is servicing.
+    uint64_t now = timer64_get_ticks();
+    for (int i = 0; i < PROCESS64_MAX; i++) {
+        if (procs[i].state == PROCESS64_BLOCKED && procs[i].sleep_until_tick != 0 && now >= procs[i].sleep_until_tick) {
+            procs[i].state = PROCESS64_READY;
+            procs[i].sleep_until_tick = 0;
+            // M+11C: deadline wake of a channel waiter. M+12B: a
+            // multi-wait blocker has wait_chan==0 by construction (see
+            // process64_block_on_any), so the deadline-wake stat is
+            // counted on wait_is_multi too, not just wait_chan -- and
+            // BOTH multi-wait fields are unconditionally cleared here,
+            // not gated behind `if (wait_chan)`, or a process that timed
+            // out of a multi-wait would carry a stale wait_is_multi==1
+            // into whatever it blocks on next (see wait_is_multi's own
+            // ownership-invariant comment in include/process64.h).
+            if (procs[i].wait_chan || procs[i].wait_is_multi) g_stat_deadline_wakes++;
+            procs[i].wait_chan = 0;
+            procs[i].wait_is_multi = 0;
+            procs[i].wait_any_count = 0;
+        }
+    }
+
     int next = pick_next_ready(current_idx);
     if (next < 0) return; // nothing else ready -- let current (or idle) keep running
 
@@ -713,6 +897,24 @@ static const char* state_name(process64_state_t s) {
     case PROCESS64_ZOMBIE:  return "ZOMBIE";
     }
     return "?";
+}
+
+void process64_dump_sched_accounting(void) {
+    klog("process64: sched_accounting ---\n");
+    klog_hex("  idle_ticks_this_window=  ", (uint32_t)g_idle_ticks_window);
+    for (int i = 0; i < PROCESS64_MAX; i++) {
+        process64_t* p = &procs[i];
+        if (p->state == PROCESS64_UNUSED) continue;
+        char pidbuf[24];
+        dec_to_str(p->pid, pidbuf);
+        klog("  pid="); klog(pidbuf);
+        klog(" path="); klog(p->path);
+        klog(" state="); klog(state_name(p->state));
+        klog_hex(" ticks_running=", (uint32_t)p->ticks_running);
+        p->ticks_running = 0;
+    }
+    g_idle_ticks_window = 0;
+    klog("process64: sched_accounting end ---\n");
 }
 
 void process64_dump(void) {
@@ -906,6 +1108,59 @@ static int test_fpu_state_isolation(void) {
     return process64_wait(pid) == 42;
 }
 
+// M+12B: pure-logic regression for wait_matches() -- no real scheduling
+// needed, since wait_matches only ever reads its process64_t argument's
+// wait_is_multi/wait_chan/wait_any_chans/wait_any_count fields. Uses a
+// throwaway stack-local process64_t, mirroring kernel/service64.c's own
+// alloc_fake_process() precedent for its standalone (non-ring3) cases --
+// valid here for the exact same reason: wait_matches never touches
+// anything else on the struct.
+static int test_wait_matches_single_channel_unchanged(void) {
+    process64_t p;
+    p.wait_is_multi = 0;
+    p.wait_chan = (void*)0x1000;
+    return wait_matches(&p, (void*)0x1000) && !wait_matches(&p, (void*)0x2000);
+}
+
+static int test_wait_matches_multi_channel_any_member(void) {
+    process64_t p;
+    p.wait_is_multi = 1;
+    p.wait_any_count = 3;
+    p.wait_any_chans[0] = (void*)0x1000;
+    p.wait_any_chans[1] = (void*)0x2000;
+    p.wait_any_chans[2] = (void*)0x3000;
+    return wait_matches(&p, (void*)0x1000) && wait_matches(&p, (void*)0x2000) &&
+           wait_matches(&p, (void*)0x3000) && !wait_matches(&p, (void*)0x4000);
+}
+
+static int test_wait_matches_duplicate_chans_harmless(void) {
+    process64_t p;
+    p.wait_is_multi = 1;
+    p.wait_any_count = 3;
+    p.wait_any_chans[0] = (void*)0x1000;
+    p.wait_any_chans[1] = (void*)0x1000;
+    p.wait_any_chans[2] = (void*)0x2000;
+    return wait_matches(&p, (void*)0x1000) && wait_matches(&p, (void*)0x2000) && !wait_matches(&p, (void*)0x3000);
+}
+
+// M+12B: real cross-process end-to-end test of the actual
+// SYS64_HANDLE_WAIT_ANY syscall -- see user64/wait_any_test64.c for the
+// full scenario roster (multi-channel wake, close-while-waiting,
+// duplicate/invalid handles, immediately-ready, deadline-then-ordinary-
+// reblock, service-listener wake). Requires `make populate
+// PACKAGE_DEBUG64=1`, same precedent as test_ring3_driver
+// (kernel/pipe64.c) and test_fpu_state_isolation above -- simply
+// reports FAIL (not a special "skipped") if the binary isn't present on
+// this build, matching those same existing cases exactly.
+#define WAIT_ANY_TEST_PROGRAM "/wait_any_test64.nex64"
+
+static int test_ring3_wait_any_driver(void) {
+    uint32_t pid = 0;
+    if (process64_spawn(WAIT_ANY_TEST_PROGRAM, "", 0, &pid) < 0) return 0;
+    if (pid == 0) return 0;
+    return process64_wait(pid) == 42;
+}
+
 #define PROCESS64_TEST(name, expr) do {          \
     int _r = (expr);                             \
     klog("process64_selftest: " name " ");       \
@@ -924,6 +1179,12 @@ int process64_selftest(void) {
     PROCESS64_TEST("pid monotonic, slot reused", test_pid_and_slot_reuse());
     PROCESS64_TEST("repeated spawn/wait cycles, no page leak", test_repeated_cycles_no_leak());
     PROCESS64_TEST("FPU/SSE state isolation across concurrent processes", test_fpu_state_isolation());
+    PROCESS64_TEST("M+12B: wait_matches single-channel behavior unchanged", test_wait_matches_single_channel_unchanged());
+    PROCESS64_TEST("M+12B: wait_matches multi-channel wake on any member", test_wait_matches_multi_channel_any_member());
+    PROCESS64_TEST("M+12B: wait_matches duplicate channels harmless", test_wait_matches_duplicate_chans_harmless());
+    PROCESS64_TEST("M+12B: stale-multiwait diagnostic stays 0 so far", process64_stat_stale_multiwait() == 0);
+    PROCESS64_TEST("M+12B: ring3 driver, real SYS64_HANDLE_WAIT_ANY end to end", test_ring3_wait_any_driver());
+    PROCESS64_TEST("M+12B: stale-multiwait diagnostic still 0 after ring3 driver", process64_stat_stale_multiwait() == 0);
 
     char passbuf[24], failbuf[24];
     dec_to_str((uint64_t)pass, passbuf);

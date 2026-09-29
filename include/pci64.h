@@ -28,6 +28,12 @@
 #define PCI64_VENDOR_VIRTIO       0x1AF4
 #define PCI64_DEVICE_VIRTIO_BLK_LEGACY 0x1001 // also the transitional device ID QEMU uses by default
 
+// M+2: the standard PCI "vendor-specific" capability ID (generic PCI,
+// not itself a VirtIO concept) -- every modern VirtIO capability
+// (COMMON_CFG/NOTIFY_CFG/ISR_CFG/DEVICE_CFG/PCI_CFG) is carried inside
+// one of these. See pci64_find_capability()'s own header comment.
+#define PCI64_CAP_ID_VENDOR_SPECIFIC 0x09
+
 typedef enum {
     PCI64_BAR_NONE = 0, // unused slot, or the high dword of a 64-bit BAR (already folded into the preceding slot)
     PCI64_BAR_IO,
@@ -49,6 +55,11 @@ typedef struct pci64_device_s {
     uint8_t header_type;   // raw byte (bit 7 = multifunction), as read from the device
     uint8_t irq_line, irq_pin;
     pci64_bar_t bar[6];    // bar[i].type == PCI64_BAR_NONE for the high-dword slot of a 64-bit BAR
+    // M+11B: opaque pci64_irq_set (kernel/pci_irq64.c) once ToxenOS owns this
+    // device's MSI/MSI-X interrupts; NULL otherwise. Also a one-shot flag
+    // for the malformed-capability-list log.
+    void* irq_state;
+    uint8_t cap_malformed_logged;
     struct pci64_device_s* next;
 } pci64_device_t;
 
@@ -60,6 +71,39 @@ uint16_t pci64_config_read16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t of
 uint8_t  pci64_config_read8 (uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
 void     pci64_config_write32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value);
 void     pci64_config_write16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint16_t value);
+void     pci64_config_write8 (uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint8_t value);
+
+// M+11B: every accessor above is a single NATIVE-width access, executed
+// with interrupts off (CF8 is shared mutable state); a misaligned offset
+// (word not 2-aligned, dword not 4-aligned) is rejected -- reads return
+// all-ones, writes are dropped, both counted -- never masked to a
+// neighbouring field.
+//
+// pci64_cfg_update8/16/32: atomic read-modify-write of one control field at
+// its OWN width: raw read, (old & ~clear) | set, raw write, all inside ONE
+// interrupt-off critical section (a separate read then write would leave a
+// window where another config access could change CF8). Return the
+// pre-modification value.
+uint8_t  pci64_cfg_update8 (uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint8_t  clear, uint8_t  set);
+uint16_t pci64_cfg_update16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint16_t clear, uint16_t set);
+uint32_t pci64_cfg_update32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t clear, uint32_t set);
+
+// Raw backend (self-test hook). Ops perform NO locking and NO alignment
+// checks -- the generic layer above provides both. Passing NULL restores the
+// real CF8/CFC backend. Returns the previous backend.
+typedef struct {
+    uint8_t  (*read8) (uint8_t bus, uint8_t slot, uint8_t func, uint8_t off);
+    uint16_t (*read16)(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off);
+    uint32_t (*read32)(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off);
+    void     (*write8) (uint8_t bus, uint8_t slot, uint8_t func, uint8_t off, uint8_t  v);
+    void     (*write16)(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off, uint16_t v);
+    void     (*write32)(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off, uint32_t v);
+} pci64_cfg_backend_t;
+const pci64_cfg_backend_t* pci64_cfg_set_backend(const pci64_cfg_backend_t* be);
+uint32_t pci64_cfg_misaligned_count(void);
+// Number of config critical sections entered so far. A read-modify-write is
+// ONE section: its raw read and raw write observe the same value.
+uint32_t pci64_cfg_lock_generation(void);
 
 // Enumerates every PCI bus (0-255)/slot (0-31)/function, correctly
 // following the multifunction bit (header type 0x80) to scan functions
@@ -88,6 +132,32 @@ pci64_device_t* pci64_find_class(uint8_t class_code, int subclass, int prog_if, 
 pci64_device_t* pci64_find_device(uint16_t vendor_id, uint16_t device_id, pci64_device_t* prev);
 
 int pci64_device_count(void);
+
+// M+2: safe traversal of the standard (offsets 0x00-0xFF -- this
+// kernel's port-0xCF8/0xCFC mechanism #1 can never address PCIe extended
+// config space anyway, see this header's own Milestone 28 comment)
+// PCI capability list. Finds the first capability whose ID matches
+// `cap_id`, starting either from the device's own capability-list head
+// (`start_after == 0`) or resuming right after a previously-found
+// capability at `start_after` (its own offset, as returned by a prior
+// call) -- used to enumerate MULTIPLE capabilities of the same ID (every
+// modern VirtIO device has several PCI64_CAP_ID_VENDOR_SPECIFIC entries,
+// one per cfg_type). Returns the matching capability's own config-space
+// offset (always >= 0x40), or -1 if none remain OR the list is malformed
+// in any way this function can detect: the status register's
+// capabilities-list bit isn't set, a pointer lands inside the fixed
+// 0x00-0x3F header, a pointer leaves no room for even a 2-byte id/next
+// pair before offset 0x100, the same offset is visited twice (a loop,
+// self-referencing or otherwise), or the chain runs longer than any real
+// device's capability list plausibly could (a generous fixed bound, not
+// a real per-spec limit -- just a backstop against a pathological fake
+// chain spinning this function forever). Never trusts a single pointer
+// value without these checks -- see this milestone's own instruction not
+// to trust PCI capability chains blindly.
+int pci64_find_capability(pci64_device_t* dev, uint8_t cap_id, uint8_t start_after);
+// M+11B: implemented over kernel/pci_cap64.c's strict walker -- a
+// capability pointer with low bits set (misaligned) is now MALFORMED (-1)
+// rather than silently masked; results for well-formed lists are identical.
 
 // Logs every enumerated device (bus:slot.func, vendor:device,
 // class/subclass/prog-if, every valid BAR's type/address/size,

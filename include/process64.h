@@ -45,6 +45,18 @@
 // (timer64_init), so a divisor of 1 gives a genuine ~10ms quantum.
 #define PROCESS64_TICK_DIVISOR 1
 
+// M+12B: bounded multi-handle WAIT_ANY -- tied to PROCESS64_MAX_HANDLES
+// (handle64.h, included above) rather than a separately-hardcoded number,
+// because the interest set a process passes to SYS64_HANDLE_WAIT_ANY is
+// always a subset of the handles IT ITSELF currently holds (each entry is
+// resolved from cur->handles[h] -- see kernel/syscall64.c's
+// resolve_wait_any_chan), and no process can ever hold more handles than
+// its own table has slots. This makes PROCESS64_WAIT_ANY_MAX a structural
+// bound, not a tuning choice: it is automatically sufficient for any
+// caller, and automatically tracks PROCESS64_MAX_HANDLES if that limit
+// ever changes later.
+#define PROCESS64_WAIT_ANY_MAX PROCESS64_MAX_HANDLES
+
 typedef enum {
     PROCESS64_UNUSED,   // free slot -- must be the zero value (procs[] starts zeroed)
     PROCESS64_READY,    // runnable, waiting for the scheduler to pick it
@@ -72,6 +84,44 @@ typedef struct {
     // mechanism instead of a special case per syscall -- see
     // process64_block_on/process64_wake_one/process64_wake_all.
     void*               wait_chan;
+    // M+12B: bounded multi-channel wait (see process64_block_on_any,
+    // below). wait_is_multi selects which of wait_chan/wait_any_chans[]
+    // is meaningful while state==BLOCKED -- 0 (the overwhelmingly common
+    // case, unchanged from every pre-M+12B blocker) means wait_chan;
+    // nonzero means wait_any_chans[0..wait_any_count). Ownership
+    // invariant: ONLY process64_block_on_any sets this to 1; every path
+    // that clears BLOCKED state (process64_wake_one/wake_all/wake, and
+    // process64_tick's deadline-expiry sweep) unconditionally clears it
+    // back to 0 alongside wait_chan/sleep_until_tick, and
+    // process64_block_on/process64_block_on_deadline defensively clear it
+    // on entry too -- so a stale 1 can never survive into a later,
+    // unrelated single-channel block. See kernel/process64.c's
+    // wait_matches() for the one place this is actually consulted.
+    int                 wait_is_multi;
+    void*               wait_any_chans[PROCESS64_WAIT_ANY_MAX];
+    int                 wait_any_count;
+    // M+4 investigation: nonzero while state==BLOCKED via
+    // process64_sleep_ticks() -- the PIT tick (kernel/timer64.c's
+    // ticks64) at or after which process64_tick() wakes this process on
+    // its own, with no wait_chan/wake_one/wake_all involved (nothing
+    // else ever "wakes" a sleeper; the timer tick that reaches the
+    // deadline is the only wake source). Zero whenever not sleeping --
+    // a real tick count of exactly 0 can never be a valid deadline
+    // (sleep_ticks(0) still requires waiting for the NEXT tick, per
+    // process64_sleep_ticks()'s own contract), so this doubles safely
+    // as the "not sleeping" sentinel alongside state.
+    uint64_t            sleep_until_tick;
+    // M+4 second stale-line/lag investigation: incremented once per PIT
+    // tick (kernel/timer64.c, 100Hz) for whichever process was RUNNING
+    // at that tick, sampled BEFORE process64_tick()'s own switch
+    // decision -- a coarse (10ms-resolution) per-process "how much of
+    // the CPU did this process actually get" accounting, requested to
+    // determine whether interactive lag is scheduler contention (many
+    // processes fighting for the same CPU) rather than any single
+    // subsystem's own cost. Never reset except by
+    // process64_sched_accounting_reset() (kernel-internal diagnostic
+    // only, no syscall).
+    uint64_t            ticks_running;
     uservm64_state_t    vm;             // Milestone 25: heap (brk) + anonymous/shared mmap state
     // Milestone 26: pipe/shm kernel-object handles. Milestone 27: also
     // open files/directories (HANDLE64_FILE/HANDLE64_DIR, obj =
@@ -97,6 +147,35 @@ typedef struct {
 } process64_t;
 
 void process64_init(void);
+
+// ── M+11C: wake / deadline-block / IRQ-exit reschedule ─────────────────
+// process64_wake: like process64_wake_one, but ALSO records the woken process
+// as the preferred switch target and asks the generic IRQ-exit path to
+// consider rescheduling (irq64_request_reschedule). IRQ-safe. Nothing
+// switches inside the caller.
+void process64_wake(void* chan);
+// Like process64_block_on but ALSO arms a wake-up deadline (a timer tick
+// count): woken by process64_wake*/deadline, whichever comes first. BOTH wake
+// paths clear BOTH the channel and the deadline, so neither can go stale.
+// Same contract as process64_block_on (caller holds cli).
+void process64_block_on_deadline(void* chan, uint64_t deadline_tick);
+// IRQ-exit scheduler hook (called ONLY by irq64_dispatch after
+// irq64_exit_may_resched() approved): switches to the woken process (or the
+// next READY one), leaving the interrupted context READY.
+void process64_irq_exit_reschedule(void);
+// Preempt-disable depth (0 = preemptible). Exit-time resource cleanup runs
+// with it raised: it cannot block and must not be switched away from.
+void process64_preempt_disable(void);
+void process64_preempt_enable(void);
+int  process64_preempt_disabled(void);
+// True if the CURRENT context may block via the scheduler: a real process,
+// not in an interrupt handler, not preempt-disabled.
+int  process64_can_block(void);
+uint32_t process64_stat_wakes(void);
+uint32_t process64_stat_deadline_wakes(void);
+// M+12B: see wait_is_multi's own ownership-invariant comment above --
+// should stay 0 forever; a defensive backstop, not a normal counter.
+uint32_t process64_stat_stale_multiwait(void);
 
 // Loads `path` into a brand-new process (own address space, own kernel
 // stack), leaves it READY, and returns 0 with *pid_out set on success.
@@ -209,6 +288,44 @@ void process64_block_on(void* chan);
 // next scheduling point (a timer tick, or the caller's own next yield).
 void process64_wake_one(void* chan);
 void process64_wake_all(void* chan);
+
+// M+12B: like process64_block_on, but the caller is woken by a wake on
+// ANY of chans[0..count) (count must be 1..PROCESS64_WAIT_ANY_MAX), or by
+// `deadline_tick` if nonzero (same "0 == no deadline" sentinel as
+// process64_block_on_deadline). Does NOT report which chan matched --
+// callers always re-check every condition they care about themselves on
+// return (same discipline pipe64_read/pipe64_write already use), so
+// there is nothing to race or lose track of. Same caller-holds-cli
+// contract as process64_block_on.
+void process64_block_on_any(void* const* chans, int count, uint64_t deadline_tick);
+
+// M+4 investigation: a real, blocking sleep -- genuinely gives up the
+// CPU for at least `ticks` PIT ticks (kernel/timer64.c, 100Hz/10ms each)
+// via process64_tick()'s own per-tick deadline check, never a busy-wait
+// loop. Added specifically so a userspace process that wants to pace
+// itself (e.g. an animation loop) no longer has to spin on the CPU to
+// do it -- see user64/gfx_demo64.c's own before/after and this
+// milestone's investigation report for why a busy-looping "pacing" loop
+// starves every OTHER process (including the compositor) under this
+// kernel's plain round-robin scheduler, regardless of which display
+// presentation backend is active. `ticks == 0` still yields the CPU for
+// at least one reschedule point (wakes on the very next tick) rather
+// than being a true no-op -- this codebase has no separate zero-cost
+// yield primitive, and a caller that wants "give up my remaining
+// quantum" gets that from sleep_ticks(0) at effectively the same real-
+// time cost as one PIT tick. Must be called with current_idx >= 0 (a
+// real process, never idle/kernel-only context).
+void process64_sleep_ticks(uint64_t ticks);
+
+// M+4 second stale-line/lag investigation: logs every non-UNUSED
+// process's pid/path/state and its ticks_running accumulated since the
+// last call to this function (or boot, if never called), then zeroes
+// every process's counter -- so successive calls report WINDOWED, not
+// cumulative, per-process CPU share. Also logs how many ticks in the
+// window went to the idle/kernel context (no process running) via
+// `idle_ticks`, which the caller supplies (this file has no standalone
+// concept of "seconds elapsed" beyond the tick counter itself).
+void process64_dump_sched_accounting(void);
 
 // Diagnostics helper: klogs "<label><pid> " for every process currently
 // BLOCKED on `chan` (nothing logged if none) -- lets kernel/pipe64.c and

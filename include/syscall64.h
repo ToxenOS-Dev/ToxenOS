@@ -321,6 +321,250 @@
 // pipe (no reader left at all), matching SYS64_HANDLE_WRITE.
 #define SYS64_HANDLE_TRY_WRITE 42 // (int handle, const char* buf, uint64_t len) -> bytes, -1=error/broken pipe, or SYS64_ERR_WOULDBLOCK
 
+// M-next (compositor performance hardening, §17 of the GPU/display
+// architecture proposal): the smallest possible userspace time source
+// for software frame pacing -- exposes the existing 100Hz PIT tick
+// counter (kernel/timer64.c's ticks64, already driving the scheduler)
+// read-only, with no new blocking primitive, no new handle kind, and
+// no change to how the timer itself works. Deliberately NOT a sleep/
+// yield syscall -- the compositor still busy-polls exactly as
+// documented in its own file header; this only lets it CHEAPLY check
+// "has enough real time passed to render a frame yet" instead of
+// rendering on every dirty event immediately.
+#define SYS64_GET_TICKS 43 // () -> uint64_t PIT ticks since boot (100Hz, i.e. 10ms/tick) -- never fails
+
+// M+1B: generic GPU buffer syscalls -- literal ports of the SYS64_SHM_*
+// create/token/open_token/size quartet (include/shm64.h's own header
+// comment on shm64_t::token has the full cross-process handoff
+// rationale; it applies identically here). `device_idx` selects a
+// registered gpu64_device_t the same way Revision 2 originally proposed
+// (include/gpu64.h's gpu64_by_index()) -- index 0 is whichever device
+// registered first, exactly like blockdev64's own "no fixed slot"
+// registry. No SYS64_GPU_BUFFER_MAP exists yet -- see include/gpu64.h's
+// header comment for why this milestone doesn't need one.
+#define SYS64_GPU_BUFFER_CREATE     44 // (uint32_t device_idx, uint64_t size, uint32_t usage) -> handle, or (uint64_t)-1
+#define SYS64_GPU_BUFFER_TOKEN      45 // (int handle) -> uint64_t token, or (uint64_t)-1
+#define SYS64_GPU_BUFFER_OPEN_TOKEN 46 // (uint64_t token) -> handle, or -1
+#define SYS64_GPU_BUFFER_SIZE       47 // (int handle) -> uint64_t byte size (whole pages), or (uint64_t)-1
+
+// M+4 investigation: a real, genuinely-blocking sleep (kernel/process64.c's
+// process64_sleep_ticks) -- the CALLER stops running and does not
+// consume any CPU for at least `ticks` PIT ticks (kernel/timer64.c,
+// 100Hz/10ms each), unlike a busy-wait loop. Added specifically because
+// this codebase had no way for a process to pace itself without
+// spinning (see user64/gfx_demo64.c's own before/M+4-after and the M+4
+// investigation report on how an always-runnable busy-looping process
+// starves every OTHER process, including the compositor, under this
+// kernel's plain round-robin scheduler -- regardless of which display
+// presentation backend is active). `ticks == 0` still yields for at
+// least one reschedule point (wakes on the very next tick) rather than
+// being a true no-op. Never fails.
+#define SYS64_SLEEP_TICKS 48 // (uint64_t ticks) -> 0, never fails
+
+// M+7: generic hardware-cursor control, gated on ownership of a
+// HANDLE64_DISPLAY handle (same access-control precedent as
+// SYS64_DISPLAY_PRESENT -- only the process that opened the display,
+// i.e. the compositor, may control the hardware cursor). Deliberately
+// generic: no VirtIO-specific concept (a command type, a virtqueue, a
+// resource ID) ever crosses this boundary -- see include/display64.h's
+// own header comment on display64_cursor_set_image/move/set_visible,
+// which these four calls are thin, validated wrappers over.
+//
+// SYS64_CURSOR_AVAILABLE: whether a hardware cursor backend is
+// currently registered (kernel/virtio_gpu64.c's virtio_gpu64_init_cursor()
+// succeeded this boot) -- 0 if not (no such device, no cursor
+// virtqueue, or any setup step failed). A compositor should check this
+// once at startup and fall back to its own software cursor path if it
+// comes back 0; never fatal either way.
+#define SYS64_CURSOR_AVAILABLE 49 // (int handle) -> 1 or 0
+
+// SYS64_CURSOR_SET_IMAGE uploads new cursor pixel data and establishes
+// it as the displayed cursor image (with a hotspot) -- called once at
+// startup and again only if the image/hotspot ever changes, never on
+// ordinary pointer movement. `width`/`height` must currently equal
+// exactly the hardware's one persistent cursor resource size (64x64 as
+// of this milestone -- see include/virtio_gpu64.h's own
+// VIRTIO_GPU64_CURSOR_DIM); any other size is rejected (-1), which is
+// how a caller discovers the required size is not what it assumed
+// without the kernel needing a separate query call. The request struct
+// is packed through one pointer, same precedent as
+// SYS64_DISPLAY_PRESENT's own request struct:
+//   typedef struct {
+//       uint64_t pixels_ptr; // user pointer, tightly packed 0xAARRGGBB pixels, width*height*4 bytes, row-major
+//       uint32_t width, height;
+//       uint32_t hot_x, hot_y;
+//   } cursor64_set_image_req_t;
+// Returns 0, or -1 (bad handle/pointer, wrong size, no cursor backend
+// registered, or the underlying device call failed).
+#define SYS64_CURSOR_SET_IMAGE 50 // (int handle, const cursor64_set_image_req_t* req) -> 0 or -1
+
+// SYS64_CURSOR_MOVE is the cheap, common-case operation -- repositions
+// the already-uploaded cursor image, with no resource re-upload
+// anywhere on this path. `x`/`y` are logical screen coordinates
+// (identical coordinate space to SYS64_DISPLAY_PRESENT's own rect
+// origin) -- a negative value is clamped to 0 by the driver rather than
+// rejected, since it's cheaper and safer than forcing every caller to
+// pre-clamp. Returns 0, or -1 (bad handle, or no cursor backend
+// registered).
+#define SYS64_CURSOR_MOVE 51 // (int handle, int32_t x, int32_t y) -> 0 or -1
+
+// SYS64_CURSOR_SET_VISIBLE shows/hides the hardware cursor without
+// touching its uploaded image or remembered position -- e.g. a
+// compositor falling back to software cursor after a runtime failure
+// calls this with 0 first, so the hardware cursor plane doesn't keep
+// showing a stale position while software cursor drawing resumes.
+// Returns 0, or -1 (bad handle, or no cursor backend registered).
+#define SYS64_CURSOR_SET_VISIBLE 52 // (int handle, uint32_t visible) -> 0 or -1
+
+// M+7A: SYS64_INPUT_GET_ABS_RANGE lets a consumer (compositor64) learn
+// the currently-active absolute pointer device's own device-space
+// range ONCE at startup, so it can normalize INPUT64_EVENT_POINTER_ABS's
+// raw (a,b) into its own logical display coordinates without any driver
+// ever hardcoding a display resolution -- see include/input64.h's own
+// input64_get_abs_range() comment. `req` must point at:
+//   typedef struct {
+//       int32_t min_x, max_x, min_y, max_y;
+//   } input64_abs_range_req_t;
+// Returns 0 with *req filled, or -1 (bad handle/pointer, or no absolute
+// pointer device is currently active -- e.g. plain PS/2-only boot).
+#define SYS64_INPUT_GET_ABS_RANGE 53 // (int handle, input64_abs_range_req_t* req) -> 0 or -1
+
+// M+9B: direct-scanout / composition-bypass syscalls -- same
+// single-owner-display access control every other SYS64_DISPLAY_*/
+// SYS64_CURSOR_* call already enforces (`handle` must be this
+// process's own open HANDLE64_DISPLAY). See include/display64.h's own
+// header comment for the full per-slot state machine and cache model
+// these five thin wrappers expose; compositor64 is the only intended
+// caller. A small, fixed-size cache of bound resources lives in
+// display64.c itself (system-wide, not per-process), keyed by each
+// client buffer's own shm_token -- see DISPLAY64_DIRECT_MAX_SLOTS --
+// sized for one double-buffered fullscreen client's own buffer pair,
+// matching this milestone's eligibility rule that exactly one
+// fullscreen client may ever be the ACTIVE scanout source.
+//
+// SYS64_DISPLAY_DIRECT_QUERY: is a direct-scanout backend registered
+// at all (capability, not current state)? A framebuffer-only boot (no
+// VirtIO-GPU) always reports 0 here -- compositor64 must treat that as
+// DIRECT_SCANOUT_UNSUPPORTED and never attempt to bind.
+#define SYS64_DISPLAY_DIRECT_QUERY 54 // (int handle) -> 1 or 0
+
+// SYS64_DISPLAY_DIRECT_BIND: resolves `req->shm_token` (a client's own
+// already-attached committed buffer's token -- the SAME token
+// compositor64 already validated via WM_MSG_ATTACH_BUFFER) to its
+// memobj64 backing and binds/caches it as a direct-scanout resource
+// sized req->width x req->height, keyed by that same token. A second
+// bind of a token already cached (matching size) is a cheap no-op
+// success reusing the existing resource -- see include/display64.h's
+// own cache comment for why (GfxDemo-style clients double-buffer even
+// while fullscreen; this is what avoids RESOURCE_CREATE_2D/
+// ATTACH_BACKING/DESTROY every single frame). Does NOT make it the
+// active scanout yet -- see SYS64_DISPLAY_DIRECT_PRESENT's own
+// switch_active flag. Struct-by-pointer, same reason
+// SYS64_DISPLAY_PRESENT's own request is (this codebase's syscall ABI
+// tops out at 3 register arguments -- see user64/tox64.h's
+// SYSCALL0..3 -- so anything needing more fields goes through
+// copy_from_user64() instead of a 4th/5th/6th register):
+//   typedef struct {
+//       uint64_t shm_token;
+//       uint32_t width, height;
+//   } display64_direct_bind_req_t;
+// Returns 0, or -1 (bad handle/pointer, unsupported backend, the
+// token is new AND the small cache is already full, bad token, or the
+// backend's own resource-create/attach-backing failed -- nothing left
+// bound on any failure).
+#define SYS64_DISPLAY_DIRECT_BIND 55 // (int handle, const display64_direct_bind_req_t* req) -> 0 or -1
+
+// SYS64_DISPLAY_DIRECT_PRESENT: TRANSFER_TO_HOST_2D the damaged rect
+// of the resource cached under `req->shm_token`, then (only if
+// req->switch_active != 0) SET_SCANOUT to make THAT resource the
+// active one, then RESOURCE_FLUSH -- exact ordering per this
+// milestone's own Linux virtio_gpu_primary_plane_update reference
+// audit. Struct-by-pointer, same reason as SYS64_DISPLAY_DIRECT_BIND
+// above:
+//   typedef struct {
+//       uint64_t shm_token;
+//       uint32_t x, y, w, h;
+//       uint32_t switch_active;
+//   } display64_direct_present_req_t;
+// Returns 0 only if (x,y,w,h) is now genuinely part of the visible
+// output (same honest-SUCCESS contract SYS64_DISPLAY_PRESENT already
+// established for M+8) -- -1 on ANY failure (including `shm_token` not
+// currently bound), in which case whatever was previously the active
+// source remains authoritative (never a faked success).
+#define SYS64_DISPLAY_DIRECT_PRESENT 56 // (int handle, const display64_direct_present_req_t* req) -> 0 or -1
+
+// SYS64_DISPLAY_DIRECT_LEAVE: switches scanout back to the normal
+// compositor resource and flushes it -- the only sanctioned way out of
+// the ACTIVE state (whichever cached slot currently holds it). The
+// slot itself stays bound/cached afterward, exactly like the OTHER
+// (non-active) slot always does -- see SYS64_DISPLAY_DIRECT_UNBIND for
+// the separate, explicit teardown step. compositor64 must have already
+// recomposited and run its own normal SYS64_DISPLAY_PRESENT call before
+// this (see
+// include/display64.h's own §11-ordering comment) so the compositor
+// resource's content is already fresh by the time scanout switches
+// back to it. Returns 0, or -1 (not currently ACTIVE, or the
+// switch-back/flush itself failed -- the old direct buffer stays
+// ACTIVE and alive on failure, never torn down).
+#define SYS64_DISPLAY_DIRECT_LEAVE 57 // (int handle) -> 0 or -1
+
+// SYS64_DISPLAY_DIRECT_UNBIND: releases the slot cached under
+// `shm_token` -- its GPU resource and memobj64 reference. Refused
+// (-1, safe no-op) if that slot is currently the ACTIVE scanout source
+// -- callers must SYS64_DISPLAY_DIRECT_LEAVE first. Safe to call for a
+// token that isn't cached at all (no-op, returns 0).
+#define SYS64_DISPLAY_DIRECT_UNBIND 58 // (int handle, uint64_t shm_token) -> 0 or -1
+
+// M+10A: read-only debug snapshot of display64's M+10 atomic state --
+// added specifically for the compositor's own liveness dump (spec §5:
+// "display64 (atomic state validity, current primary source, VALID/
+// RECOVERY_REQUIRED)"). Deliberately NOT the full display64_state_t
+// (cursor/output fields, backend_handle, damage rect) -- only the three
+// fields a liveness dump actually needs, so this stays a narrow
+// diagnostic addition rather than a second public state-marshaling API.
+// Same access-control gate as every other SYS64_DISPLAY_* call.
+#define SYS64_DISPLAY_DEBUG_STATE 59 // (int handle, display64_debug_state_req_t* out) -> 0 or -1
+
+// M+12B: bounded multi-handle wait -- the one primitive ToxenOS was
+// missing to let a process (the compositor, principally) block on
+// "whichever of several handles becomes ready first" instead of
+// busy-polling every one of them every iteration (SYS64_HANDLE_TRY_READ/
+// SYS64_HANDLE_TRY_WRITE/SYS64_SERVICE_ACCEPT's own non-blocking
+// contracts are exactly what made that polling possible, but never gave
+// a way to SLEEP between polls). Supported handle kinds are exactly the
+// four that already have a kernel-side wait-channel concept:
+// HANDLE64_PIPE_READ, HANDLE64_PIPE_WRITE, HANDLE64_INPUT,
+// HANDLE64_SERVICE_LISTEN -- any other kind (or an out-of-range/UNUSED
+// handle) anywhere in the list fails the WHOLE call with -1, no partial
+// registration. `count` must be 1..PROCESS64_WAIT_ANY_MAX
+// (== PROCESS64_MAX_HANDLES, include/process64.h) -- a process can
+// never usefully name more handles than its own table holds. Duplicate
+// handles/channels in the list are harmless, just redundant.
+//
+// `timeout_ticks`: 0 = poll once, never block (mirrors
+// SYS64_HANDLE_TRY_READ's non-blocking contract exactly); UINT64_MAX
+// (SYS64_WAIT_FOREVER) = block with no deadline; anything else = a real
+// deadline `now + timeout_ticks`.
+//
+// Returns 0 if something MAY now be ready (immediately, or after a real
+// block/wake) -- the caller must re-poll every handle it cares about
+// with the ordinary non-blocking calls to find out what, exactly, since
+// this call deliberately reports no more than "something changed, go
+// look" (see this milestone's own design notes on why a ready-handle
+// bitmask is deferred, not a free addition later). Returns
+// SYS64_ERR_TIMEOUT if the deadline passed with nothing ready, or -1 for
+// any invalid argument (bad pointer, count out of range, an unsupported
+// or invalid handle anywhere in the list).
+#define SYS64_HANDLE_WAIT_ANY 60 // (const wait_any_req64_t* req) -> 0, -1, or SYS64_ERR_TIMEOUT
+#define SYS64_ERR_TIMEOUT ((uint64_t)-3)
+#define SYS64_WAIT_FOREVER ((uint64_t)-1)
+
+typedef struct {
+    const int* handles;      // user pointer to `count` handle numbers
+    uint32_t   count;
+    uint64_t   timeout_ticks;
+} wait_any_req64_t;
+
 void syscall64_dispatch(trapframe64_t* tf);
 
 #endif // SYSCALL64_H

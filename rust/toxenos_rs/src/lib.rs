@@ -37,3 +37,6 @@ pub mod panic;
 pub mod pci;
 pub mod pcidemo;
 pub mod selftest;
+pub mod virtio_gpu;
+pub mod virtio_input;
+pub mod virtio_pci;

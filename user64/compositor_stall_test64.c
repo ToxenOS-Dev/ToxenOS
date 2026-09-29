@@ -73,16 +73,35 @@ static void put_int(const char* prefix, int v) {
 // ── Role 'n': normal client -- proves ongoing liveness ───────────────
 #define NORMAL_ROUNDS 20
 
-static int run_normal(void) {
+// M-next test-harness fix: `done_w` lets this client signal the driver
+// (which forwards the signal to 'l') the moment its own round loop is
+// over, win or lose -- see run_late()'s own comment for the race this
+// closes. Not a compositor change: compositor64.c is untouched by this
+// fix, only this test's own client-to-client synchronization.
+static int run_normal(int done_w) {
     wm_client_t c;
-    if (wm_connect(&c) < 0) { put("compositor_stall_test64: normal client: connect failed\n"); return 0; }
+    if (wm_connect(&c) < 0) {
+        put("compositor_stall_test64: normal client: connect failed\n");
+        if (done_w >= 0) { uint8_t one = 'D'; sys_handle_write(done_w, (const char*)&one, 1); sys_handle_close(done_w); }
+        return 0;
+    }
 
     int ok_count = 0;
+    // M+10A: declared OUTSIDE the loop and reused every round -- the
+    // dispatcher's tracked_windows[] registry stores a POINTER to this,
+    // so a loop-local declaration would leave stale entries pointing at
+    // reused-but-semantically-different stack slots across rounds.
+    wm_window_t win_state;
     for (int i = 0; i < NORMAL_ROUNDS; i++) {
-        uint32_t win = wm_create_window(&c, WIN_W, WIN_H, "Normal");
+        uint32_t win = wm_create_window(&c, WIN_W, WIN_H, "Normal", &win_state);
         if (win == 0) { put_int("compositor_stall_test64: normal client: create_window failed at round", i); break; }
-        if (wm_destroy_window(&c, win) < 0) { put_int("compositor_stall_test64: normal client: destroy_window failed at round", i); break; }
+        if (wm_destroy_window(&c, &win_state) < 0) { put_int("compositor_stall_test64: normal client: destroy_window failed at round", i); break; }
         ok_count++;
+    }
+    if (done_w >= 0) {
+        uint8_t one = 'D';
+        sys_handle_write(done_w, (const char*)&one, 1);
+        sys_handle_close(done_w);
     }
     return ok_count == NORMAL_ROUNDS;
 }
@@ -138,12 +157,41 @@ static int run_stalled(int ready_w) {
 }
 
 // ── Role 'l': late client -- connects after the flood, ends the test compositor ─
-static int run_late(void) {
+// M-next test-harness fix: this role used to send WM_MSG_TEST_SHUTDOWN
+// (which ends the shared disposable test compositor -- see this file's
+// header comment) the instant ITS OWN single create_window round-trip
+// finished, with no regard for whether 'n' had completed its 20 rounds
+// yet. 'n' and 'l' are independently scheduled processes with no
+// ordering guarantee between them; under the M-next compositor's
+// (correctly) slightly heavier per-message CREATE_WINDOW/DESTROY_WINDOW
+// handling (damage-rect bookkeeping that Milestone 30's original
+// compositor never did), 'n' sometimes hadn't finished all 20 rounds by
+// the time 'l' shut the shared compositor down out from under it --
+// observed directly via added diagnostic logging as "normal client:
+// create_window failed at round19" immediately preceded by the test
+// compositor's own clean exit (code 0) from 'l''s shutdown message,
+// while 'n' was still mid-round. This is a latent race in the TEST
+// ITSELF (present since Milestone 32.1, just unlikely enough under the
+// old compositor's lighter per-message cost to go unnoticed), not a
+// correctness bug in compositor64.c -- confirmed by comparing against
+// the pre-M-next compositor64.c, which never triggers it, purely
+// because its unconditional full-redraw-on-any-dirty path happens to
+// service 'n' faster, not because anything about 'l' or the shared test
+// compositor differs. Fixed here, in the test driver, by having 'l'
+// wait for 'n' to actually finish before ending the shared compositor.
+static int run_late(int n_done_r) {
     wm_client_t c;
     if (wm_connect(&c) < 0) return 0;
 
-    uint32_t win = wm_create_window(&c, WIN_W, WIN_H, "Late");
+    wm_window_t win_state;
+    uint32_t win = wm_create_window(&c, WIN_W, WIN_H, "Late", &win_state);
     int ok = (win != 0);
+
+    if (n_done_r >= 0) {
+        uint8_t one;
+        sys_handle_read(n_done_r, (char*)&one, 1); // blocks until 'n' has finished its own round loop
+        sys_handle_close(n_done_r);
+    }
 
     wm_msg_t m; zero_msg(&m);
     m.type = WM_MSG_TEST_SHUTDOWN;
@@ -161,8 +209,20 @@ static int run_driver(void) {
     int ready_r, ready_w;
     if (sys_pipe_create(&ready_r, &ready_w) < 0) { sys_wait((uint32_t)comp_pid); return 2; }
 
-    int64_t n_pid = sys_spawn(SELF_PATH, "n");
+    // M-next test-harness fix: see run_late()'s own comment -- this
+    // second pipe lets 'n' tell 'l' when it has genuinely finished its
+    // 20 rounds, so 'l' no longer ends the shared test compositor out
+    // from under a still-running 'n'.
+    int ndone_r, ndone_w;
+    if (sys_pipe_create(&ndone_r, &ndone_w) < 0) { sys_wait((uint32_t)comp_pid); return 2; }
+
+    char n_args[4];
+    n_args[0] = 'n';
+    n_args[1] = (char)('0' + ndone_w);
+    n_args[2] = 0;
+    int64_t n_pid = sys_spawn(SELF_PATH, n_args);
     if (n_pid < 0) { put("compositor_stall_test64: cannot spawn normal client\n"); return 3; }
+    sys_handle_close(ndone_w); // driver's own copy -- 'n' holds the one that matters
 
     char s_args[4];
     s_args[0] = 's';
@@ -181,9 +241,16 @@ static int run_driver(void) {
     // Milestone 32.1: proves the compositor accepts a BRAND NEW
     // connection while the stalled client exists / is being torn down
     // -- spawned only now, deliberately overlapping with 's' still
-    // possibly mid-teardown.
-    int64_t l_pid = sys_spawn(SELF_PATH, "l");
+    // possibly mid-teardown. Still connects immediately (that part of
+    // the scenario is unchanged) -- only its TEST_SHUTDOWN is now held
+    // back until 'n' signals done, per run_late()'s own comment.
+    char l_args[4];
+    l_args[0] = 'l';
+    l_args[1] = (char)('0' + ndone_r);
+    l_args[2] = 0;
+    int64_t l_pid = sys_spawn(SELF_PATH, l_args);
     if (l_pid < 0) { put("compositor_stall_test64: cannot spawn late client\n"); return 6; }
+    sys_handle_close(ndone_r); // driver's own copy -- 'l' holds the one that matters
 
     int n_ok = (int)sys_wait((uint32_t)n_pid) == OK_EXIT;
     int s_ok = (int)sys_wait((uint32_t)s_pid) == OK_EXIT;
@@ -206,12 +273,14 @@ void _start(void) {
     if (args[0] == 0) {
         code = run_driver();
     } else if (args[0] == 'n') {
-        code = run_normal() ? OK_EXIT : 1;
+        int done_w = args[1] - '0';
+        code = run_normal(done_w) ? OK_EXIT : 1;
     } else if (args[0] == 's') {
         int ready_w = args[1] - '0';
         code = run_stalled(ready_w) ? OK_EXIT : 1;
     } else if (args[0] == 'l') {
-        code = run_late() ? OK_EXIT : 1;
+        int n_done_r = args[1] - '0';
+        code = run_late(n_done_r) ? OK_EXIT : 1;
     } else {
         code = 1;
     }

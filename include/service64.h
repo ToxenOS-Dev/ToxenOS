@@ -69,6 +69,17 @@ typedef struct service64 {
     service64_pending_t* pending_head; // FIFO: oldest not-yet-accepted connection first
     service64_pending_t* pending_tail;
     uint32_t pending_count;
+    // M+12B: "a client just connected to THIS listener" -- distinct
+    // from the file-scope g_registry_chan (kernel/service64.c), which
+    // means "some service, any service, was just published" and only
+    // service64_wait_for_registration()/blocking sys_service_connect
+    // consume it. Before M+12B nothing ever woke on this event at all
+    // (service64_accept was always polled) -- see service64_connect()'s
+    // own new process64_wake_all(&svc->wait_chan) call. Since
+    // HANDLE64_SERVICE_LISTEN is a non-inherited singleton
+    // (include/handle64.h), at most one process can ever be blocked on
+    // a given service64_t's wait_chan.
+    uint8_t wait_chan;
     struct service64* dbg_next; // intrusive global list, diagnostics + lookup
 } service64_t;
 
@@ -137,6 +148,15 @@ int service64_connect(service64_t* svc, process64_t* caller, service64_endpoints
 // queued, untouched, so a retry after freeing a handle can still
 // succeed), or -2 (nothing pending right now).
 int service64_accept(service64_t* svc, process64_t* caller, service64_endpoints_t* out);
+
+// M+12B: side-effect-free readiness check for SYS64_HANDLE_WAIT_ANY --
+// 1 if svc has at least one not-yet-accepted connection queued, 0
+// otherwise. Never consumes.
+int service64_has_pending(service64_t* svc);
+
+// M+12B: svc's own wait-channel identity (see service64_t::wait_chan's
+// header comment above), for kernel/syscall64.c's resolve_wait_any_chan.
+void* service64_wait_chan(service64_t* svc);
 
 // Unpublishes `svc`: unlinks it from the global registry immediately
 // (so a fresh service64_listen with the same name can succeed right

@@ -43,6 +43,11 @@ typedef enum {
     // service64_unpublish), which is what lets a replacement process
     // register the same name again after this one exits or crashes.
     HANDLE64_SERVICE_LISTEN,
+    // M+1B: obj = gpu64_buffer_t* -- a refcounted, token-shareable view
+    // over a memobj64_t (include/gpu64.h), mirroring HANDLE64_SHM's own
+    // inheritance/close/token semantics exactly (see kernel/process64.c's
+    // per-kind switches and kernel/gpu64.c's own header comment).
+    HANDLE64_GPU_BUFFER,
 } handle64_kind_t;
 
 typedef struct {

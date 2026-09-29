@@ -27,12 +27,16 @@
 #include "../include/console64.h"
 #include "../include/pipe64.h"
 #include "../include/shm64.h"
+#include "../include/gpu64.h"
 #include "../include/input64.h"
 #include "../include/display64.h"
 #include "../include/paging64.h"
 #include "../include/heap64.h"
 #include "../include/service64.h"
 #include "../include/klog.h"
+#include "../include/tsc64.h"
+#include "../include/virtio_gpu64.h"
+#include "../include/timer64.h"
 
 #define SYS64_WRITE_MAX 256
 #define SYS64_READ_MAX  1024
@@ -568,6 +572,7 @@ static uint64_t sys64_handle_close(int h) {
     case HANDLE64_PIPE_READ:  pipe64_close_read((pipe64_t*)cur->handles[h].obj); break;
     case HANDLE64_PIPE_WRITE: pipe64_close_write((pipe64_t*)cur->handles[h].obj); break;
     case HANDLE64_SHM:        shm64_release((shm64_t*)cur->handles[h].obj); break;
+    case HANDLE64_GPU_BUFFER: gpu64_buffer_release((gpu64_buffer_t*)cur->handles[h].obj); break;
     case HANDLE64_FILE:
     case HANDLE64_DIR:        vfs64_file_release((vfs64_file_t*)cur->handles[h].obj); break;
     case HANDLE64_INPUT:      input64_release(); break;
@@ -578,6 +583,97 @@ static uint64_t sys64_handle_close(int h) {
     cur->handles[h].kind = HANDLE64_UNUSED;
     cur->handles[h].obj = 0;
     return 0;
+}
+
+// ── M+12B: SYS64_HANDLE_WAIT_ANY ─────────────────────────────────────
+// See include/syscall64.h's own header comment for the full contract.
+// Supported handle kinds are exactly the four that already have a
+// wait-channel concept -- resolve_wait_any_chan/wait_any_handle_ready
+// dispatch on handle KIND the same way sys64_handle_try_read/
+// sys64_handle_close above already do; any other kind is simply
+// unsupported here (returns -1 from resolve_wait_any_chan, which fails
+// the whole call before anything blocks).
+static int resolve_wait_any_chan(process64_t* cur, int h, void** chan_out) {
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES) return -1;
+    switch (cur->handles[h].kind) {
+    case HANDLE64_PIPE_READ:      *chan_out = &((pipe64_t*)cur->handles[h].obj)->read_chan;  return 0;
+    case HANDLE64_PIPE_WRITE:     *chan_out = &((pipe64_t*)cur->handles[h].obj)->write_chan; return 0;
+    case HANDLE64_INPUT:          *chan_out = input64_wait_chan(); return 0;
+    case HANDLE64_SERVICE_LISTEN: *chan_out = service64_wait_chan((service64_t*)cur->handles[h].obj); return 0;
+    default: return -1; // SHM/FILE/DIR/DISPLAY/GPU_BUFFER/UNUSED -- no wait-channel concept, unsupported
+    }
+}
+
+// Side-effect-free -- see pipe64_read_ready/pipe64_write_ready/
+// input64_ready/service64_has_pending's own header comments. `h` must
+// already have been validated by resolve_wait_any_chan (same kind
+// switch, so an unsupported kind here just means "never ready," which
+// never actually happens since resolve_wait_any_chan already rejected
+// it before this is ever called for that handle).
+static int wait_any_handle_ready(process64_t* cur, int h) {
+    switch (cur->handles[h].kind) {
+    case HANDLE64_PIPE_READ:      return pipe64_read_ready((pipe64_t*)cur->handles[h].obj);
+    case HANDLE64_PIPE_WRITE:     return pipe64_write_ready((pipe64_t*)cur->handles[h].obj);
+    case HANDLE64_INPUT:          return input64_ready();
+    case HANDLE64_SERVICE_LISTEN: return service64_has_pending((service64_t*)cur->handles[h].obj);
+    default: return 0;
+    }
+}
+
+static inline uint64_t wait_any_syscall_lock(void) {
+    uint64_t flags;
+    __asm__ volatile ("pushfq\n\tpop %0\n\tcli" : "=r"(flags) :: "memory");
+    return flags;
+}
+static inline void wait_any_syscall_unlock(uint64_t flags) {
+    if (flags & (1ULL << 9)) __asm__ volatile ("sti" ::: "memory");
+}
+
+// The exact "hold cli across check -> maybe block -> recheck" discipline
+// sys64_service_connect (above) already uses for ITS own blocking case,
+// generalized from one condition to a bounded set of them. Every
+// readiness check happens under the SAME critical section that also
+// protects the eventual process64_block_on_any call, so no IRQ-driven
+// wake (input64_push, pipe64_*'s own wake_all-on-space-freed) can land
+// in the gap between "decided nothing is ready" and "actually blocked"
+// -- see this milestone's own design notes for the full race analysis.
+static uint64_t sys64_handle_wait_any(uint64_t req_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+
+    wait_any_req64_t req;
+    if (copy_from_user64(&req, req_ptr, sizeof(req)) < 0) return (uint64_t)-1;
+    if (req.count == 0 || req.count > PROCESS64_WAIT_ANY_MAX) return (uint64_t)-1;
+
+    int hbuf[PROCESS64_WAIT_ANY_MAX];
+    if (copy_from_user64(hbuf, (uint64_t)req.handles, (uint64_t)req.count * sizeof(int)) < 0) return (uint64_t)-1;
+
+    void* chans[PROCESS64_WAIT_ANY_MAX];
+    uint64_t flags = wait_any_syscall_lock();
+
+    // All-or-nothing validation, same discipline as
+    // sys64_service_accept's own rollback-on-bad-pointer precedent: an
+    // invalid handle/kind ANYWHERE in the list fails the whole call
+    // before anything is registered or blocked.
+    for (uint32_t i = 0; i < req.count; i++) {
+        if (resolve_wait_any_chan(cur, hbuf[i], &chans[i]) < 0) {
+            wait_any_syscall_unlock(flags);
+            return (uint64_t)-1;
+        }
+    }
+
+    uint64_t deadline = (req.timeout_ticks == 0 || req.timeout_ticks == SYS64_WAIT_FOREVER)
+                       ? 0 : (timer64_get_ticks() + req.timeout_ticks);
+    for (;;) {
+        int ready = 0;
+        for (uint32_t i = 0; i < req.count; i++) {
+            if (wait_any_handle_ready(cur, hbuf[i])) { ready = 1; break; }
+        }
+        if (ready) { wait_any_syscall_unlock(flags); return 0; }
+        if (req.timeout_ticks == 0) { wait_any_syscall_unlock(flags); return SYS64_ERR_TIMEOUT; }
+        if (deadline != 0 && timer64_get_ticks() >= deadline) { wait_any_syscall_unlock(flags); return SYS64_ERR_TIMEOUT; }
+        process64_block_on_any(chans, (int)req.count, deadline);   // returns still under cli, per process64_block_on's own contract
+    }
 }
 
 static uint64_t sys64_shm_create(uint64_t size) {
@@ -619,7 +715,7 @@ static uint64_t sys64_shm_size(int h) {
     process64_t* cur = process64_current();
     if (!cur) return (uint64_t)-1;
     if (h < 0 || h >= PROCESS64_MAX_HANDLES || cur->handles[h].kind != HANDLE64_SHM) return (uint64_t)-1;
-    return (uint64_t)((shm64_t*)cur->handles[h].obj)->npages * 0x1000ULL;
+    return (uint64_t)((shm64_t*)cur->handles[h].obj)->obj->npages * 0x1000ULL;
 }
 
 static uint64_t sys64_shm_open_token(uint64_t token) {
@@ -635,6 +731,60 @@ static uint64_t sys64_shm_open_token(uint64_t token) {
     shm64_add_ref(s);
     cur->handles[slot].kind = HANDLE64_SHM;
     cur->handles[slot].obj = s;
+    return (uint64_t)slot;
+}
+
+// ── M+1B: generic GPU buffer syscalls -- literal ports of the shm64
+// four above (create/token/open_token/size), same validation shape,
+// same handle-kind check pattern. SYS64_GPU_BUFFER_MAP is deliberately
+// not implemented this milestone -- see include/gpu64.h's own header
+// comment for why nothing in M+1B's required tests or its null driver
+// needs a CPU mapping of the GPU-side view.
+static uint64_t sys64_gpu_buffer_create(uint32_t device_idx, uint64_t size, uint32_t usage) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+
+    gpu64_device_t* dev = gpu64_by_index(device_idx);
+    if (!dev) return (uint64_t)-1;
+
+    int slot = find_free_handle(cur);
+    if (slot < 0) return (uint64_t)-1;
+
+    gpu64_buffer_t* buf;
+    if (gpu64_buffer_create(dev, size, usage, &buf) < 0) return (uint64_t)-1;
+
+    cur->handles[slot].kind = HANDLE64_GPU_BUFFER;
+    cur->handles[slot].obj = buf;
+    return (uint64_t)slot;
+}
+
+static uint64_t sys64_gpu_buffer_token(int h) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES || cur->handles[h].kind != HANDLE64_GPU_BUFFER) return (uint64_t)-1;
+    return ((gpu64_buffer_t*)cur->handles[h].obj)->token;
+}
+
+static uint64_t sys64_gpu_buffer_size(int h) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+    if (h < 0 || h >= PROCESS64_MAX_HANDLES || cur->handles[h].kind != HANDLE64_GPU_BUFFER) return (uint64_t)-1;
+    return (uint64_t)((gpu64_buffer_t*)cur->handles[h].obj)->backing->npages * 0x1000ULL;
+}
+
+static uint64_t sys64_gpu_buffer_open_token(uint64_t token) {
+    process64_t* cur = process64_current();
+    if (!cur) return (uint64_t)-1;
+
+    gpu64_buffer_t* buf = gpu64_buffer_find_by_token(token);
+    if (!buf) return (uint64_t)-1;
+
+    int slot = find_free_handle(cur);
+    if (slot < 0) return (uint64_t)-1;
+
+    gpu64_buffer_add_ref(buf);
+    cur->handles[slot].kind = HANDLE64_GPU_BUFFER;
+    cur->handles[slot].obj = buf;
     return (uint64_t)slot;
 }
 
@@ -785,6 +935,29 @@ static uint64_t sys64_input_open(void) {
     return (uint64_t)slot;
 }
 
+// M+7A: see include/syscall64.h's own header comment on
+// SYS64_INPUT_GET_ABS_RANGE. Requires a HANDLE64_INPUT handle -- the
+// same ownership check SYS64_INPUT_OPEN's own handle already implies --
+// so only the process that opened the input stream can query this.
+typedef struct {
+    int32_t min_x, max_x, min_y, max_y;
+} input64_abs_range_req_t;
+
+static uint64_t sys64_input_get_abs_range(int handle, uint64_t req_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur || handle < 0 || handle >= PROCESS64_MAX_HANDLES || cur->handles[handle].kind != HANDLE64_INPUT) {
+        return (uint64_t)-1;
+    }
+    input64_abs_range_t range;
+    if (input64_get_abs_range(&range) < 0) return (uint64_t)-1;
+
+    input64_abs_range_req_t out;
+    out.min_x = range.min_x; out.max_x = range.max_x;
+    out.min_y = range.min_y; out.max_y = range.max_y;
+    if (copy_to_user64(req_ptr, &out, sizeof(out)) < 0) return (uint64_t)-1;
+    return 0;
+}
+
 static uint64_t sys64_display_open(uint64_t width_out_ptr, uint64_t height_out_ptr, uint64_t format_out_ptr) {
     process64_t* cur = process64_current();
     if (!cur) return (uint64_t)-1;
@@ -816,7 +989,68 @@ typedef struct {
     uint32_t x, y, w, h;
 } display64_present_req_t;
 
+// M+9B: request structs for the direct-scanout syscalls -- same
+// struct-by-pointer convention as display64_present_req_t above (this
+// codebase's syscall ABI tops out at 3 register args; see
+// user64/tox64.h's SYSCALL0..3). Independently duplicated in
+// user64/tox64.h, kept in sync manually -- same precedent as every
+// other request struct and SYS64_* constant in this codebase.
+typedef struct {
+    uint64_t shm_token;
+    uint32_t width, height;
+} display64_direct_bind_req_t;
+
+typedef struct {
+    uint64_t shm_token;
+    uint32_t x, y, w, h;
+    uint32_t switch_active;
+} display64_direct_present_req_t;
+
 #define SYS64_DISPLAY_MAX_DIM 4096 // sanity cap -- real display width/height already enforce the true bound
+
+// M+4 item 12 / M+4 investigation: define to have SYS64_DISPLAY_PRESENT
+// accumulate total time spent inside itself (the row-copy loop plus,
+// when active, the GPU backend's transfer+flush) and periodically klog
+// a summary -- backend-agnostic instrumentation living at the ONE call
+// site both backends share, so the SAME real compositor workload can be
+// measured under software presentation and VirtIO-GPU presentation with
+// no other code difference between the two runs. Originally built on
+// the 100Hz PIT tick (SYS64_GET_TICKS); upgraded to kernel/tsc64.c's
+// RDTSC-based clock after manual interactive testing found real lag the
+// 10ms tick granularity could not explain -- most individual present
+// calls complete well under one tick, so a tick-based total was
+// frequently just "0" regardless of the real cost. Also dumps the
+// VirtIO-GPU driver's own per-command counters (commands, poll
+// iterations, blocked time -- kernel/virtio_gpu64.c's
+// virtio_gpu64_debug_stats_report()) alongside, since the interesting
+// question isn't just "how long did presenting take" but "how much of
+// that time was VirtIO command/poll overhead specifically." Matches
+// this codebase's existing convention of gating development-only
+// diagnostics behind an explicit #define rather than always-on logging.
+// Not left enabled by default.
+// #define SYS64_DISPLAY_PRESENT_PERF_STATS 1
+
+#ifdef SYS64_DISPLAY_PRESENT_PERF_STATS
+static uint64_t g_present_stat_cycles = 0;
+static uint64_t g_present_stat_calls = 0;
+static uint64_t g_present_stat_pixels = 0;
+static uint64_t g_present_stat_window_start_tick = 0;
+static void present_perf_report_if_due(void) {
+    if (g_present_stat_calls < 200) return; // report every N present calls -- klog_hex() always terminates its own line, one field per line
+    extern uint64_t timer64_get_ticks(void);
+    uint64_t window_ms = (timer64_get_ticks() - g_present_stat_window_start_tick) * 10; // 100Hz = 10ms/tick
+    uint64_t us_total = tsc64_cycles_to_us(g_present_stat_cycles);
+    klog_hex("sys64_display_present perf: calls=          ", (uint32_t)g_present_stat_calls);
+    klog_hex("sys64_display_present perf: total_us=       ", (uint32_t)us_total);
+    klog_hex("sys64_display_present perf: avg_us/call=    ", (uint32_t)(g_present_stat_calls ? us_total / g_present_stat_calls : 0));
+    klog_hex("sys64_display_present perf: pixels=         ", (uint32_t)g_present_stat_pixels);
+    klog_hex("sys64_display_present perf: window_ms=      ", (uint32_t)window_ms);
+    virtio_gpu64_debug_stats_report(window_ms);
+    virtio_gpu64_debug_stats_reset();
+    g_present_stat_cycles = 0; g_present_stat_calls = 0; g_present_stat_pixels = 0;
+    g_present_stat_window_start_tick = timer64_get_ticks();
+}
+#endif
 
 static uint64_t sys64_display_present(int handle, uint64_t req_ptr) {
     process64_t* cur = process64_current();
@@ -849,6 +1083,10 @@ static uint64_t sys64_display_present(int handle, uint64_t req_ptr) {
     uint32_t* rowbuf = (uint32_t*)kmalloc((uint64_t)req.w * 4u);
     if (!rowbuf) return (uint64_t)-1;
 
+#ifdef SYS64_DISPLAY_PRESENT_PERF_STATS
+    uint64_t perf_start = tsc64_read();
+#endif
+
     for (uint32_t row = 0; row < req.h; row++) {
         const uint32_t* src = (const uint32_t*)(uintptr_t)(req.buf_ptr + (uint64_t)row * pitch);
         for (uint32_t col = 0; col < req.w; col++) rowbuf[col] = src[col];
@@ -856,6 +1094,214 @@ static uint64_t sys64_display_present(int handle, uint64_t req_ptr) {
     }
 
     kfree(rowbuf);
+
+    // M+4: one flush per whole present call, after every row has been
+    // written -- a safe no-op when the active backend is the legacy
+    // framebuffer (blit_row's writes already landed directly in the
+    // physical framebuffer). See include/display64.h's own header
+    // comment on why this is batched here rather than called from
+    // inside display64_blit_row itself.
+    // M+8: its return value is now this whole syscall's own honest
+    // success/failure verdict -- see display64_gpu_flush_rect()'s own
+    // header comment for exactly what SUCCESS means here. Previously
+    // discarded entirely, which is precisely the gap that made it
+    // impossible for compositor64 to ever distinguish a real
+    // presentation failure from success.
+    if (display64_gpu_flush_rect(req.x, req.y, req.w, req.h) < 0) return (uint64_t)-1;
+
+#ifdef SYS64_DISPLAY_PRESENT_PERF_STATS
+    g_present_stat_cycles += tsc64_read() - perf_start;
+    g_present_stat_calls++;
+    g_present_stat_pixels += (uint64_t)req.w * req.h;
+    present_perf_report_if_due();
+#endif
+
+    return 0;
+}
+
+// Shared by SYS64_DISPLAY_DIRECT_*, SYS64_CURSOR_* below, and every
+// other syscall restricted to whichever process holds the one open
+// HANDLE64_DISPLAY handle -- moved above both call sites rather than
+// duplicated (originally defined only right before the M+7 cursor
+// syscalls further down, which M+9B's own direct-scanout calls also
+// need).
+static inline int cursor64_caller_owns_display(process64_t* cur, int handle) {
+    return handle >= 0 && handle < PROCESS64_MAX_HANDLES && cur->handles[handle].kind == HANDLE64_DISPLAY;
+}
+
+// ── M+9B: direct-scanout / composition-bypass syscalls ────────────────
+// All four share SYS64_DISPLAY_PRESENT's own access-control check --
+// only the process holding the open HANDLE64_DISPLAY handle (the
+// compositor) may call any of these. Genuinely thin: each one
+// validates its own inputs then calls straight into the display64.c
+// state machine, which owns every real invariant (§7-11) itself -- see
+// include/display64.h's own header comment.
+static uint64_t sys64_display_direct_query(int handle) {
+    process64_t* cur = process64_current();
+    if (!cur || !cursor64_caller_owns_display(cur, handle)) return 0;
+    return (uint64_t)display64_direct_scanout_supported();
+}
+
+static uint64_t sys64_display_direct_bind(int handle, uint64_t req_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur || !cursor64_caller_owns_display(cur, handle)) return (uint64_t)-1;
+
+    display64_direct_bind_req_t req;
+    if (copy_from_user64(&req, req_ptr, sizeof(req)) < 0) return (uint64_t)-1;
+    if (req.width == 0 || req.height == 0) return (uint64_t)-1;
+
+    // Same token-resolution primitive SYS64_SHM_OPEN_TOKEN already uses
+    // (shm tokens are cross-process-shareable by design -- M+5's whole
+    // client/compositor model depends on it) -- but no new handle/ref is
+    // taken on the shm64_t itself: gpu64_buffer_wrap() (reached via
+    // display64_direct_scanout_bind() -> the registered bind_fn) takes
+    // its OWN independent reference directly on the memobj64_t backing,
+    // per include/gpu64.h's own documented contract, so this shm64_t
+    // borrow only needs to survive this one function call.
+    shm64_t* s = shm64_find_by_token(req.shm_token);
+    if (!s) return (uint64_t)-1;
+
+    void* out_handle = 0;
+    if (display64_direct_scanout_bind(req.shm_token, s->obj, req.width, req.height, &out_handle) < 0) return (uint64_t)-1;
+    return 0;
+}
+
+static uint64_t sys64_display_direct_present(int handle, uint64_t req_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur || !cursor64_caller_owns_display(cur, handle)) return (uint64_t)-1;
+
+    display64_direct_present_req_t req;
+    if (copy_from_user64(&req, req_ptr, sizeof(req)) < 0) return (uint64_t)-1;
+
+    // No client-facing handle number or geometry is passed here at all
+    // -- display64.c already remembers both (per shm_token identity)
+    // from the bind() call, and re-deriving/re-validating them per
+    // present would just be a second place they could drift out of
+    // sync (see display64_direct_present()'s own header comment).
+    if (display64_direct_present(req.shm_token, req.x, req.y, req.w, req.h, (int)req.switch_active) < 0) {
+        return (uint64_t)-1;
+    }
+    return 0;
+}
+
+static uint64_t sys64_display_direct_leave(int handle) {
+    process64_t* cur = process64_current();
+    if (!cur || !cursor64_caller_owns_display(cur, handle)) return (uint64_t)-1;
+    return (uint64_t)(int64_t)display64_leave_direct_scanout();
+}
+
+static uint64_t sys64_display_direct_unbind(int handle, uint64_t shm_token) {
+    process64_t* cur = process64_current();
+    if (!cur || !cursor64_caller_owns_display(cur, handle)) return (uint64_t)-1;
+    display64_direct_scanout_unbind(shm_token);
+    return 0;
+}
+
+// M+10A: see include/syscall64.h's own SYS64_DISPLAY_DEBUG_STATE comment
+// -- three fields only, read via the existing display64_state_get_current()/
+// display64_state_get_validity() accessors (§5-§10 of the M+10 header),
+// never mutating anything.
+typedef struct {
+    uint32_t validity;         // display64_validity_t: 0 = VALID, 1 = RECOVERY_REQUIRED
+    uint32_t primary_kind;     // display64_primary_kind_t: 0 = COMPOSITED, 1 = DIRECT
+    uint64_t primary_identity; // DIRECT only -- 0 for COMPOSITED
+} display64_debug_state_req_t;
+
+static uint64_t sys64_display_debug_state(int handle, uint64_t out_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur || !cursor64_caller_owns_display(cur, handle)) return (uint64_t)-1;
+
+    display64_state_t st;
+    display64_state_get_current(&st);
+
+    display64_debug_state_req_t out;
+    out.validity = (uint32_t)display64_state_get_validity();
+    out.primary_kind = (uint32_t)st.primary.kind;
+    out.primary_identity = st.primary.identity;
+
+    if (copy_to_user64(out_ptr, &out, sizeof(out)) < 0) return (uint64_t)-1;
+    return 0;
+}
+
+// ── M+7: generic hardware cursor control ─────────────────────────────
+// See include/syscall64.h's own header comment on SYS64_CURSOR_AVAILABLE/
+// SET_IMAGE/MOVE/SET_VISIBLE for the full design. All four require the
+// caller to hold a HANDLE64_DISPLAY handle -- the same ownership check
+// SYS64_DISPLAY_PRESENT already uses -- so only the process that opened
+// the display (the compositor) may drive the hardware cursor.
+static uint64_t sys64_cursor_available(int handle) {
+    process64_t* cur = process64_current();
+    if (!cur || !cursor64_caller_owns_display(cur, handle)) return 0;
+    return (uint64_t)display64_cursor_available();
+}
+
+typedef struct {
+    uint64_t pixels_ptr;
+    uint32_t width, height;
+    uint32_t hot_x, hot_y;
+} cursor64_set_image_req_t;
+
+static uint64_t sys64_cursor_set_image(int handle, uint64_t req_ptr) {
+    process64_t* cur = process64_current();
+    if (!cur || !cursor64_caller_owns_display(cur, handle)) return (uint64_t)-1;
+
+    cursor64_set_image_req_t req;
+    if (copy_from_user64(&req, req_ptr, sizeof(req)) < 0) return (uint64_t)-1;
+    if (req.width == 0 || req.height == 0) return (uint64_t)-1;
+
+    // Overflow-checked span (the width*height multiplication itself can
+    // never overflow a uint64_t -- two uint32_t operands top out well
+    // under UINT64_MAX -- but the subsequent *4 for byte count can, for
+    // a large enough width/height, so that step is what's actually
+    // guarded here; same discipline as virtio_gpu64_init_compositor_backend's
+    // own geometry-overflow check).
+    uint64_t pixel_count = (uint64_t)req.width * (uint64_t)req.height;
+    if (pixel_count > (0xFFFFFFFFFFFFFFFFULL / 4u)) return (uint64_t)-1;
+    uint64_t span = pixel_count * 4u;
+
+    uint32_t* kbuf = (uint32_t*)kmalloc(span);
+    if (!kbuf) return (uint64_t)-1;
+    if (copy_from_user64(kbuf, req.pixels_ptr, span) < 0) { kfree(kbuf); return (uint64_t)-1; }
+
+    // display64_cursor_set_image() itself (via the registered driver
+    // callback) is what actually rejects a width/height that doesn't
+    // match the hardware's one persistent cursor resource size -- this
+    // syscall handler never hardcodes that number, keeping it a
+    // driver-owned detail exactly like every other VirtIO-specific fact.
+    int rc = display64_cursor_set_image(req.width, req.height, kbuf, req.hot_x, req.hot_y);
+    kfree(kbuf);
+    return (uint64_t)(int64_t)rc;
+}
+
+static uint64_t sys64_cursor_move(int handle, int32_t x, int32_t y) {
+    process64_t* cur = process64_current();
+    if (!cur || !cursor64_caller_owns_display(cur, handle)) return (uint64_t)-1;
+    return (uint64_t)(int64_t)display64_cursor_move(x, y);
+}
+
+static uint64_t sys64_cursor_set_visible(int handle, uint32_t visible) {
+    process64_t* cur = process64_current();
+    if (!cur || !cursor64_caller_owns_display(cur, handle)) return (uint64_t)-1;
+    return (uint64_t)(int64_t)display64_cursor_set_visible((int)visible);
+}
+
+// M-next: see include/syscall64.h's SYS64_GET_TICKS comment. No header
+// exists for timer64.c (kernel64.c itself declares timer64_init/
+// timer64_handler the same inline-extern way) -- matching that existing
+// convention here rather than introducing a new header for one function.
+extern uint64_t timer64_get_ticks(void);
+static uint64_t sys64_get_ticks(void) {
+    return timer64_get_ticks();
+}
+
+// M+4 investigation: see include/syscall64.h's own header comment on
+// SYS64_SLEEP_TICKS. Deliberately does NOT gate on process64_current()
+// the way most syscalls do -- process64_sleep_ticks() itself requires a
+// real current process (documented in its own header comment) and
+// every caller of a syscall is, by construction, a real ring-3 process;
+// there is no untracked-stub precedent here the way sys64_write() has.
+static uint64_t sys64_sleep_ticks(uint64_t ticks) {
+    process64_sleep_ticks(ticks);
     return 0;
 }
 
@@ -980,6 +1426,62 @@ void syscall64_dispatch(trapframe64_t* tf) {
         break;
     case SYS64_HANDLE_TRY_WRITE:
         tf->rax = sys64_handle_try_write((int)tf->rdi, tf->rsi, tf->rdx);
+        break;
+    case SYS64_GET_TICKS:
+        tf->rax = sys64_get_ticks();
+        break;
+    case SYS64_GPU_BUFFER_CREATE:
+        tf->rax = sys64_gpu_buffer_create((uint32_t)tf->rdi, tf->rsi, (uint32_t)tf->rdx);
+        break;
+    case SYS64_GPU_BUFFER_TOKEN:
+        tf->rax = sys64_gpu_buffer_token((int)tf->rdi);
+        break;
+    case SYS64_GPU_BUFFER_OPEN_TOKEN:
+        tf->rax = sys64_gpu_buffer_open_token(tf->rdi);
+        break;
+    case SYS64_GPU_BUFFER_SIZE:
+        tf->rax = sys64_gpu_buffer_size((int)tf->rdi);
+        break;
+    case SYS64_SLEEP_TICKS:
+        tf->rax = sys64_sleep_ticks(tf->rdi);
+        break;
+    case SYS64_CURSOR_AVAILABLE:
+        tf->rax = sys64_cursor_available((int)tf->rdi);
+        break;
+    case SYS64_CURSOR_SET_IMAGE:
+        tf->rax = sys64_cursor_set_image((int)tf->rdi, tf->rsi);
+        break;
+    case SYS64_CURSOR_MOVE:
+        tf->rax = sys64_cursor_move((int)tf->rdi, (int32_t)tf->rsi, (int32_t)tf->rdx);
+        break;
+    case SYS64_CURSOR_SET_VISIBLE:
+        tf->rax = sys64_cursor_set_visible((int)tf->rdi, (uint32_t)tf->rsi);
+        break;
+
+    case SYS64_INPUT_GET_ABS_RANGE:
+        tf->rax = sys64_input_get_abs_range((int)tf->rdi, tf->rsi);
+        break;
+
+    case SYS64_DISPLAY_DIRECT_QUERY:
+        tf->rax = sys64_display_direct_query((int)tf->rdi);
+        break;
+    case SYS64_DISPLAY_DIRECT_BIND:
+        tf->rax = sys64_display_direct_bind((int)tf->rdi, tf->rsi);
+        break;
+    case SYS64_DISPLAY_DIRECT_PRESENT:
+        tf->rax = sys64_display_direct_present((int)tf->rdi, tf->rsi);
+        break;
+    case SYS64_DISPLAY_DIRECT_LEAVE:
+        tf->rax = sys64_display_direct_leave((int)tf->rdi);
+        break;
+    case SYS64_DISPLAY_DIRECT_UNBIND:
+        tf->rax = sys64_display_direct_unbind((int)tf->rdi, tf->rsi);
+        break;
+    case SYS64_DISPLAY_DEBUG_STATE:
+        tf->rax = sys64_display_debug_state((int)tf->rdi, tf->rsi);
+        break;
+    case SYS64_HANDLE_WAIT_ANY:
+        tf->rax = sys64_handle_wait_any(tf->rdi);
         break;
     default:
         tf->rax = (uint64_t)-1;

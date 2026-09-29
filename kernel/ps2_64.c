@@ -55,6 +55,23 @@ int ps2_64_output_full(void) {
     return (inb(PS2_STATUS) & PS2_STATUS_OUTPUT_FULL) != 0;
 }
 
+int ps2_64_rx_poll(const ps2_64_rx_t* rx) {
+    uint8_t st = rx->read_status();
+    if (!(st & PS2_STATUS_OBF)) return 0;       // nothing there: never touch 0x60
+    uint8_t b = rx->read_data();
+    if (st & PS2_STATUS_AUXDATA) rx->aux_sink(b);
+    else                         rx->kbd_sink(b);
+    return 1;
+}
+
+static uint8_t real_status(void) { return inb(PS2_STATUS); }
+static uint8_t real_data(void)   { return inb(PS2_DATA); }
+static const ps2_64_rx_t g_real_rx = { real_status, real_data, keyboard64_feed_byte, mouse64_feed_byte };
+
+int ps2_64_service(void) {
+    return ps2_64_rx_poll(&g_real_rx);
+}
+
 void ps2_64_write_kbd(uint8_t data) {
     wait_input_clear();
     outb(PS2_DATA, data);

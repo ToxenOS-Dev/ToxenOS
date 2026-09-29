@@ -25,12 +25,19 @@
 #include "../include/lapic64.h"
 #include "../include/console64.h"
 #include "../include/pipe64.h"
+#include "../include/memobj64.h"
 #include "../include/shm64.h"
+#include "../include/gpu64.h"
 #include "../include/blockdev64.h"
 #include "../include/pci64.h"
+#include "../include/pci_irq64.h"
+#include "../include/virtio_irq64.h"
 #include "../include/ahci64.h"
 #include "../include/nvme64.h"
 #include "../include/virtio_blk64.h"
+#include "../include/virtio_pci64.h"
+#include "../include/virtio_gpu64.h"
+#include "../include/virtio_input64.h"
 #include "../include/pixfmt64.h"
 #include "../include/display64.h"
 #include "../include/ps2_64.h"
@@ -38,6 +45,7 @@
 #include "../include/mouse64.h"
 #include "../include/service64.h"
 #include "../include/rustffi64.h"
+#include "../include/tsc64.h"
 
 // Comment out to skip the deliberate int3/ud2 exception tests — the
 // PIC/IRQ/sti bring-up below always runs regardless of this flag.
@@ -93,10 +101,22 @@
 // `make populate PACKAGE_DEBUG64=1` for pipe_test64.nex64.
 // #define PIPE64_RUN_TESTS 1
 
+// M+1A: define to run the memobj64 self-test suite (kernel-only, no
+// ring3 fixture needed -- unlike SHM64_RUN_TESTS below, this one has no
+// PACKAGE_DEBUG64 dependency). Runs BEFORE SHM64_RUN_TESTS when both are
+// enabled, since memobj64 is the lower layer shm64 now sits on top of.
+// #define MEMOBJ64_RUN_TESTS 1
+
 // Define to run the Milestone 26 shared-memory self-test suite, same
 // timing requirements as PROCESS64_RUN_TESTS -- requires
 // `make populate PACKAGE_DEBUG64=1` for shm_test64.nex64.
 // #define SHM64_RUN_TESTS 1
+
+// M+1B: define to run the gpu64 self-test suite (kernel-only, no ring3
+// fixture needed -- registers its own private null/test driver). Runs
+// AFTER SHM64_RUN_TESTS when both are enabled, since several of its own
+// cases exercise a real shm64_t sharing backing with a gpu64_buffer_t.
+// #define GPU64_RUN_TESTS 1
 
 // Define to run the Milestone 27 TxFS64 block/indirect-write self-test
 // suite right after TxFS64 mounts, before init64/shell64 launch --
@@ -172,6 +192,74 @@
 // verbose, development use only, never needed for normal boot.
 // #define STORAGE64_DUMP 1
 
+// M+2: define to probe a modern (disable-legacy=on) VirtIO PCI device
+// (PCI64_DEVICE_VIRTIO_GPU_MODERN -- see include/virtio_pci64.h's own
+// comment on why this device ID, used for probing only, is never
+// registered as a real GPU device) right after pci64_enumerate() and
+// run the Rust-side transport self-test against it: full status/feature
+// negotiation, one virtqueue set up, DRIVER_OK set. Touches real device
+// state (unlike RUST64_PCI_DEMO_RUN above), so it must run here, before
+// the first process64_spawn() -- see physmem64_map_mmio()'s own
+// ordering requirement, identical to every storage driver below. A
+// no-op (logs "not found") if no such device is attached; never
+// interacts with kernel/virtio_blk64.c's own legacy device (a different
+// PCI device ID entirely). Requires a real modern VirtIO PCI device
+// under QEMU, e.g. `-device virtio-gpu-pci,disable-legacy=on`.
+// #define VIRTIO_PCI64_TEST_RUN 1
+
+// M+2: device-independent self-test (pure bounds-check arithmetic, no
+// real hardware needed -- see kernel/virtio_pci64.c's own header
+// comment). Safe to run on every boot, unlike VIRTIO_PCI64_TEST_RUN
+// above.
+// #define VIRTIO_PCI64_RUN_TESTS 1
+
+// M+3/M+4: VirtIO-GPU probing is now UNCONDITIONAL (see this file's own
+// "M+4: unconditional VirtIO-GPU probe" block below, right after
+// pci64_enumerate()) -- no debug flag gates it any more, matching
+// ahci64_init()/nvme64_init()/virtio_blk64_init()'s own "always
+// attempt, no-op cleanly if absent" convention. A no-op (logs "not
+// found") if no such device is attached -- the existing Multiboot
+// framebuffer / display64 software path, and compositor64 on top of
+// it, are completely untouched either way (this milestone's own "must
+// not destroy the fallback" requirement). This IS still mutually
+// exclusive with VIRTIO_PCI64_TEST_RUN above -- both would
+// independently reset/renegotiate the SAME physical device, which a
+// real device does not tolerate gracefully; never enable
+// VIRTIO_PCI64_TEST_RUN on a boot that also has a real VirtIO-GPU
+// device attached.
+//
+// The four flags below are now purely additional, opt-in DIAGNOSTICS
+// layered on top of that always-on init -- not prerequisites for it.
+
+// M+3: logs the unconditionally-initialized device's GET_DISPLAY_INFO
+// result (every enabled scanout's geometry).
+// #define VIRTIO_GPU64_DISPLAY_INFO_RUN 1
+
+// M+3: runs the item-9 isolated scanout proof (kernel/virtio_gpu64.c's
+// virtio_gpu64_run_scanout_test()) -- an obvious color-bars test
+// pattern, driven through create/attach/transfer/set_scanout/flush.
+// M+4: this now REFUSES (logs and returns NULL, changes nothing) once
+// virtio_gpu64_init_compositor_backend() has already claimed scanout 0
+// for the real compositor -- which, since that call is now
+// unconditional, means this flag is effectively a no-op whenever a
+// real VirtIO-GPU device is present. Kept only for the rare case of
+// debugging the driver with the compositor backend deliberately not
+// wired up; harmless to leave enabled otherwise.
+// #define VIRTIO_GPU64_SCANOUT_TEST_RUN 1
+
+// M+3: the full virtio_gpu64 self-test suite (device-dependent -- see
+// kernel/virtio_gpu64.c's own header comment). M+4: its scanout-round-
+// trip sub-case is SKIPPED, not failed, whenever the real compositor
+// backend already owns scanout 0 -- see virtio_gpu64_selftest()'s own
+// updated comment.
+// #define VIRTIO_GPU64_RUN_TESTS 1
+
+// M+3 item 15: logs a raw before/after tick-count comparison between the
+// software present path and VirtIO-GPU's transfer+flush, for a full
+// 1024x768 frame and a smaller 128x128 damaged region. Never touches
+// scanout, so it's unaffected by whether the compositor backend is live.
+// #define VIRTIO_GPU64_PERF_COMPARE_RUN 1
+
 // Define to log framebuffer/display and input-subsystem diagnostics
 // (kernel/display64.c's display64_dump(), kernel/mouse64.c's
 // mouse64_dump(), kernel/input64.c's input64_dump()) right after
@@ -231,9 +319,8 @@
 // cleared (vgaterm64_clear, right before the handoff) so the user lands
 // on a clean shell prompt instead of a wall of boot text.
 
-extern void timer64_handler(void);
 extern void timer64_init(uint32_t frequency);
-extern void keyboard64_handler(void);
+extern void keyboard64_init(void); // M+7A: input64 device-model registration only
 
 _Static_assert(sizeof(void*) == 8, "kernel64.c must be compiled as 64-bit (-m64)");
 
@@ -476,17 +563,13 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     // instead of returning here.
 #endif
 
-    // Milestone 24: must come before pic_remap()/sti -- on real UEFI/APIC
-    // hardware the 8259 PIC's output often isn't wired to the CPU by
-    // default, so without this, no IRQ (timer or keyboard) would ever
-    // arrive after `sti`. QEMU's default machine leaves PIC routing
-    // intact regardless, so this has no observable effect there.
-    lapic64_virtual_wire_init();
-
-    pic_remap();
-    irq64_register(0, timer64_handler);
-    irq64_register(1, keyboard64_handler);
-    out_line("PIC remapped, IRQ0/IRQ1 registered");
+    // M+11A: interrupt core bring-up. Remaps + masks the 8259s, discovers
+    // ACPI/MADT and decides PIC vs LAPIC+IOAPIC (transactionally, with
+    // rollback), then each driver below requests its own IRQ. Replaces the
+    // M24 lapic64_virtual_wire_init()+pic_remap()+irq64_register() sequence
+    // (the PIC path still performs the virtual-wire setup internally).
+    irq64_init(mb_info_addr);
+    out_line("Interrupt core initialized");
 
     // Milestone 29: bring up the shared 8042 controller (flush, enable
     // both ports + their IRQs in the configuration byte) before the
@@ -496,6 +579,7 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     // event queue must exist before either IRQ1 or IRQ12 could
     // possibly fire.
     input64_init();
+    keyboard64_init(); // M+7A input64 registration + M+11A IRQ1 request
     ps2_64_init();
     mouse64_init(); // registers+unmasks IRQ12 itself; a no-op failure if no mouse responds
     out_line("PS/2 controller + mouse initialized");
@@ -513,8 +597,17 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     process64_init();
     service64_init(); // Milestone 32: must precede the first process64_spawn() below
 
+    irq64_selftest_run(); // M+11A: deterministic interrupt-foundation tests (IF still 0)
+
     __asm__ volatile ("sti");
     out_line("Interrupts enabled (sti) -- timer at 100Hz, scheduler ready");
+
+    // M+4 investigation: calibrate the RDTSC-based high-resolution clock
+    // now that real PIT ticks are advancing (tsc64_init() busy-waits on
+    // them). Needed because the 100Hz PIT tick's 10ms granularity could
+    // not expose the sub-millisecond VirtIO-GPU command costs manual
+    // testing found real interactive lag from.
+    tsc64_init();
 
     // Milestone 28: PCI enumeration and every storage driver's MMIO
     // mapping/DMA setup MUST happen here, strictly before the first
@@ -533,6 +626,14 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     // over an unrelated ATA drive coincidentally also present.
     pci64_enumerate();
 
+    // M+11B: deterministic MSI/MSI-X foundation tests (fake devices + a
+    // private irq table; real devices are only inspected read-only), then --
+    // if built with -DMSI64_EDU_TEST and a QEMU `edu` device is attached --
+    // the real-MSI test. Both run before any process is spawned.
+    pci_irq64_selftest_run();
+    virtio_irq64_selftest_run();   // M+11C: kwait/resched/ownership/orchestration tests (kernel/virtio_irq64_selftest.c)
+    msi64_edu_test_run();
+
 #ifdef RUST64_PCI_DEMO_RUN
     {
         pci64_device_t* first = pci64_iter(0);
@@ -545,6 +646,138 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
         }
     }
 #endif
+
+#ifdef VIRTIO_PCI64_TEST_RUN
+    {
+        pci64_device_t* modern = pci64_find_device(PCI64_VENDOR_VIRTIO, PCI64_DEVICE_VIRTIO_GPU_MODERN, 0);
+        if (!modern) {
+            out_line("VIRTIO_PCI64_TEST_RUN: no modern VirtIO device found");
+        } else {
+            pci64_enable_device(modern);
+            virtio_pci64_transport_info_t info;
+            if (virtio_pci64_probe(modern, &info) < 0) {
+                out_line("VIRTIO_PCI64_TEST_RUN: device has no vendor-specific PCI capabilities");
+            } else {
+                virtio_pci64_dump(&info);
+                int32_t rc = toxenos_rust_virtio_pci_selftest(&info);
+                out_kv("VIRTIO_PCI64_TEST_RUN: toxenos_rust_virtio_pci_selftest rc = ", (uint64_t)(int64_t)rc);
+            }
+        }
+    }
+#endif
+
+    // M+4: unconditional VirtIO-GPU probe + real compositor-backend
+    // wiring -- matches every other storage/PCI driver's own "always
+    // attempt, no-op cleanly if absent" convention (ahci64_init/
+    // nvme64_init/virtio_blk64_init below), no longer a manual debug-
+    // only path (that was M+3's narrower scope: proving the driver in
+    // isolation before anything depended on it). A failure at EITHER
+    // step is silently safe: virtio_gpu64_init() logs and returns -1 if
+    // no device exists or transport bring-up fails, exactly as always;
+    // virtio_gpu64_init_compositor_backend() independently logs and
+    // returns -1 WITHOUT touching display64 at all if display setup
+    // fails after that -- display64 is simply left on whatever
+    // framebuffer-or-none state it already had, and compositor64 (via
+    // SYS64_DISPLAY_OPEN) has no idea which backend won.
+    {
+        int rc = virtio_gpu64_init();
+        out_kv("virtio_gpu64_init rc = ", (uint64_t)(int64_t)rc);
+        if (rc == 0) {
+            int brc = virtio_gpu64_init_compositor_backend();
+            out_kv("virtio_gpu64_init_compositor_backend rc = ", (uint64_t)(int64_t)brc);
+
+            // M+7: unconditional, "always probe, no-op cleanly if
+            // absent" convention, same as every other driver step here.
+            // A failure (no cursor virtqueue, or any setup step) is NOT
+            // fatal and does not affect display or compositor backend
+            // state at all -- compositor64's own SYS64_CURSOR_AVAILABLE
+            // query simply reports 0 and it keeps using its existing,
+            // unmodified software cursor path.
+            int crc = virtio_gpu64_init_cursor();
+            out_kv("virtio_gpu64_init_cursor rc = ", (uint64_t)(int64_t)crc);
+
+            // M+10: atomic display state backend, registered BEFORE the
+            // M+7 cursor pixel self-test below -- display64_cursor_set_image()
+            // (which that self-test calls, via the real
+            // display64_cursor_set_image() entry point) now routes
+            // through display64_state_check()/commit(), which requires
+            // an atomic backend to validate/issue a CURSOR_IMAGE delta
+            // (see display64_state_check()'s own §19 fallback rule).
+            // Registering here first means every cursor/display64 self-
+            // test below runs against the SAME fully-live pipeline real
+            // clients will use later, not a stale pre-atomic window.
+            int arc = virtio_gpu64_init_atomic_backend();
+            out_kv("virtio_gpu64_init_atomic_backend rc = ", (uint64_t)(int64_t)arc);
+
+            // Deterministic byte-level proof, no visual inspection
+            // needed -- see this function's own header comment.
+            virtio_gpu64_cursor_pixel_selftest();
+        }
+
+#ifdef VIRTIO_GPU64_DISPLAY_INFO_RUN
+        if (rc == 0) {
+            virtio_gpu64_display_mode_t modes[VIRTIO_GPU64_MAX_SCANOUTS];
+            int enabled = virtio_gpu64_get_display_info(modes);
+            out_kv("VIRTIO_GPU64_DISPLAY_INFO_RUN: enabled scanouts = ", (uint64_t)(int64_t)enabled);
+            for (int i = 0; i < VIRTIO_GPU64_MAX_SCANOUTS; i++) {
+                if (!modes[i].enabled) continue;
+                out_kv("  scanout width  = ", modes[i].width);
+                out_kv("  scanout height = ", modes[i].height);
+            }
+        }
+#endif
+
+#ifdef VIRTIO_GPU64_SCANOUT_TEST_RUN
+        if (rc == 0) {
+            gpu64_buffer_t* test_buf = virtio_gpu64_run_scanout_test(1024, 768);
+            out_kv("VIRTIO_GPU64_SCANOUT_TEST_RUN: buffer created = ", (uint64_t)(test_buf != 0));
+            // Deliberately never torn down here -- this debug-only flag
+            // exists purely so the color-bars pattern stays on screen
+            // for an external screenshot to capture (see this flag's own
+            // header comment). `test_buf` intentionally goes unused past
+            // this point; the driver keeps the resource/scanout live
+            // regardless of what happens to this local variable, exactly
+            // like every "left visible for manual inspection" debug flag
+            // elsewhere in this file (e.g. DISPLAY64_RUN_TESTS's own
+            // "scribbles over the screen" note).
+            (void)test_buf;
+        }
+#endif
+
+#ifdef VIRTIO_GPU64_RUN_TESTS
+        if (rc == 0) {
+            klog_hex("virtio_gpu64_selftest: all passed = ", (uint32_t)virtio_gpu64_selftest());
+        }
+#endif
+
+#ifdef VIRTIO_GPU64_PERF_COMPARE_RUN
+        if (rc == 0) {
+            virtio_gpu64_perf_compare(1024, 768, 30);
+            virtio_gpu64_perf_compare(128, 128, 2000);
+        }
+#endif
+    }
+
+    // M+7A: unconditional VirtIO-input probe -- same "always attempt,
+    // no-op cleanly if absent" convention as virtio_gpu64_init() above.
+    // A missing device, or one with no absolute axes, leaves PS/2 as the
+    // sole pointer source exactly as before this milestone -- see
+    // include/virtio_input64.h's own header comment.
+    {
+        int irc = virtio_input64_init();
+        out_kv("virtio_input64_init rc = ", (uint64_t)(int64_t)irc);
+        virtio_irq64_post_init_check();   // M+11C: ownership checks against the real, now-initialised devices
+        virtio_irq64_report();            // M+11C: per-device interrupt-mode summary (BDF / MSI-X entry / irq / vector)
+#ifdef VIRTIO_IRQ_TEST_DROP_CTL_IRQ
+        virtio_gpu64_irq_test_drop_ctl(); // M+11C test build: lost-interrupt recovery + verified demotion
+#endif
+#ifdef VIRTIO_IRQ_TEST_DEMOTE_INPUT
+        virtio_input64_irq_test_demote(); // M+11C test build: on-demand verified demotion of the input device
+#endif
+        // Pure arithmetic, no device required -- see this function's
+        // own header comment. Always run, regardless of irc.
+        virtio_input64_selftest();
+    }
 
     ahci64_init();
     nvme64_init();
@@ -592,8 +825,20 @@ void kernel_main64(uint64_t magic, uint64_t mb_info_addr) {
     klog_hex("pipe64_selftest: all passed = ", (uint32_t)pipe64_selftest());
 #endif
 
+#ifdef MEMOBJ64_RUN_TESTS
+    klog_hex("memobj64_selftest: all passed = ", (uint32_t)memobj64_selftest());
+#endif
+
 #ifdef SHM64_RUN_TESTS
     klog_hex("shm64_selftest: all passed = ", (uint32_t)shm64_selftest());
+#endif
+
+#ifdef GPU64_RUN_TESTS
+    klog_hex("gpu64_selftest: all passed = ", (uint32_t)gpu64_selftest());
+#endif
+
+#ifdef VIRTIO_PCI64_RUN_TESTS
+    klog_hex("virtio_pci64_selftest: all passed = ", (uint32_t)virtio_pci64_selftest());
 #endif
 
 #ifdef VFS64_RUN_TESTS

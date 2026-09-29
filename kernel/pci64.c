@@ -5,6 +5,7 @@
 #include "../include/heap64.h"
 #include "../include/klog.h"
 #include "../include/rustffi64.h"
+#include "../include/pci_cap64.h"
 
 static inline void outl(uint16_t port, uint32_t val) {
     __asm__ volatile ("outl %0,%1" :: "a"(val), "Nd"(port));
@@ -21,31 +22,105 @@ static uint32_t config_address(uint8_t bus, uint8_t slot, uint8_t func, uint8_t 
          | (offset & 0xFCu);
 }
 
+// M+11B: native-width config access. CF8 is shared mutable state, so
+// EVERY access -- and, crucially, an entire read-modify-write -- runs in
+// ONE interrupt-off critical section (save RFLAGS, cli, ..., restore the
+// ORIGINAL IF). The backend ops below are RAW (no locking, no alignment
+// checks): the locking lives in the generic layer, so a locked helper can
+// compose raw read + raw write inside a single critical section, and so
+// tests can substitute a fake backend that asserts IF==0 on every raw op.
+// Sub-dword accesses are single native-width port accesses (byte lane
+// selected via CFC+(off&3)/(off&2)) -- never a wider read-modify-write
+// (which would rewrite adjacent fields and clear write-1-to-clear Status
+// bits when only Command was meant to change).
+static inline void outb_p(uint16_t port, uint8_t v) { __asm__ volatile ("outb %0,%1" :: "a"(v), "Nd"(port)); }
+static inline void outw_p(uint16_t port, uint16_t v) { __asm__ volatile ("outw %0,%1" :: "a"(v), "Nd"(port)); }
+static inline uint8_t  inb_p(uint16_t port) { uint8_t r;  __asm__ volatile ("inb %1,%0" : "=a"(r) : "Nd"(port)); return r; }
+static inline uint16_t inw_p(uint16_t port) { uint16_t r; __asm__ volatile ("inw %1,%0" : "=a"(r) : "Nd"(port)); return r; }
+
+static uint8_t  hw_r8 (uint8_t b, uint8_t s, uint8_t f, uint8_t o) { outl(PCI64_CONFIG_ADDRESS, config_address(b, s, f, o)); return inb_p((uint16_t)(PCI64_CONFIG_DATA + (o & 3))); }
+static uint16_t hw_r16(uint8_t b, uint8_t s, uint8_t f, uint8_t o) { outl(PCI64_CONFIG_ADDRESS, config_address(b, s, f, o)); return inw_p((uint16_t)(PCI64_CONFIG_DATA + (o & 2))); }
+static uint32_t hw_r32(uint8_t b, uint8_t s, uint8_t f, uint8_t o) { outl(PCI64_CONFIG_ADDRESS, config_address(b, s, f, o)); return inl(PCI64_CONFIG_DATA); }
+static void hw_w8 (uint8_t b, uint8_t s, uint8_t f, uint8_t o, uint8_t v)  { outl(PCI64_CONFIG_ADDRESS, config_address(b, s, f, o)); outb_p((uint16_t)(PCI64_CONFIG_DATA + (o & 3)), v); }
+static void hw_w16(uint8_t b, uint8_t s, uint8_t f, uint8_t o, uint16_t v) { outl(PCI64_CONFIG_ADDRESS, config_address(b, s, f, o)); outw_p((uint16_t)(PCI64_CONFIG_DATA + (o & 2)), v); }
+static void hw_w32(uint8_t b, uint8_t s, uint8_t f, uint8_t o, uint32_t v) { outl(PCI64_CONFIG_ADDRESS, config_address(b, s, f, o)); outl(PCI64_CONFIG_DATA, v); }
+
+static const pci64_cfg_backend_t g_hw_backend = { hw_r8, hw_r16, hw_r32, hw_w8, hw_w16, hw_w32 };
+static const pci64_cfg_backend_t* g_be = &g_hw_backend;
+static volatile uint32_t g_cfg_misaligned = 0;
+
+const pci64_cfg_backend_t* pci64_cfg_set_backend(const pci64_cfg_backend_t* be) {
+    const pci64_cfg_backend_t* old = g_be;
+    g_be = be ? be : &g_hw_backend;
+    return old;
+}
+uint32_t pci64_cfg_misaligned_count(void) { return g_cfg_misaligned; }
+
+static volatile uint32_t g_lock_gen = 0;   // incremented per critical section (self-test: proves RMW == ONE section)
+uint32_t pci64_cfg_lock_generation(void) { return g_lock_gen; }
+
+static inline uint64_t cfg_lock(void) {
+    uint64_t f;
+    __asm__ volatile ("pushfq; pop %0; cli" : "=r"(f) :: "memory");
+    g_lock_gen++;
+    return f;
+}
+static inline void cfg_unlock(uint64_t f) {
+    if (f & 0x200) __asm__ volatile ("sti" ::: "memory");
+}
+
+// A misaligned access is REJECTED (reads return all-ones, writes are
+// dropped) and counted -- never silently masked to a neighbouring field.
+#define ALIGN_OR(off, mask, ret) do { if ((off) & (mask)) { g_cfg_misaligned++; return ret; } } while (0)
+
 uint32_t pci64_config_read32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
-    outl(PCI64_CONFIG_ADDRESS, config_address(bus, slot, func, offset));
-    return inl(PCI64_CONFIG_DATA);
+    ALIGN_OR(offset, 3, 0xFFFFFFFFu);
+    uint64_t f = cfg_lock(); uint32_t v = g_be->read32(bus, slot, func, offset); cfg_unlock(f); return v;
 }
-
 uint16_t pci64_config_read16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
-    uint32_t dword = pci64_config_read32(bus, slot, func, offset & 0xFC);
-    return (uint16_t)(dword >> ((offset & 2) * 8));
+    ALIGN_OR(offset, 1, 0xFFFFu);
+    uint64_t f = cfg_lock(); uint16_t v = g_be->read16(bus, slot, func, offset); cfg_unlock(f); return v;
 }
-
 uint8_t pci64_config_read8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
-    uint32_t dword = pci64_config_read32(bus, slot, func, offset & 0xFC);
-    return (uint8_t)(dword >> ((offset & 3) * 8));
+    uint64_t f = cfg_lock(); uint8_t v = g_be->read8(bus, slot, func, offset); cfg_unlock(f); return v;
 }
-
 void pci64_config_write32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value) {
-    outl(PCI64_CONFIG_ADDRESS, config_address(bus, slot, func, offset));
-    outl(PCI64_CONFIG_DATA, value);
+    if (offset & 3) { g_cfg_misaligned++; return; }
+    uint64_t f = cfg_lock(); g_be->write32(bus, slot, func, offset, value); cfg_unlock(f);
+}
+void pci64_config_write16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint16_t value) {
+    if (offset & 1) { g_cfg_misaligned++; return; }
+    uint64_t f = cfg_lock(); g_be->write16(bus, slot, func, offset, value); cfg_unlock(f);
+}
+void pci64_config_write8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint8_t value) {
+    uint64_t f = cfg_lock(); g_be->write8(bus, slot, func, offset, value); cfg_unlock(f);
 }
 
-void pci64_config_write16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint16_t value) {
-    uint32_t dword = pci64_config_read32(bus, slot, func, offset & 0xFC);
-    uint32_t shift = (offset & 2) * 8;
-    dword = (dword & ~(0xFFFFu << shift)) | ((uint32_t)value << shift);
-    pci64_config_write32(bus, slot, func, offset & 0xFC, dword);
+// Atomic read-modify-write of one control field at its OWN width: raw read,
+// modify only the requested bits, raw write -- all inside ONE critical
+// section. Returns the value read (pre-modification).
+uint8_t pci64_cfg_update8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint8_t clear, uint8_t set) {
+    uint64_t f = cfg_lock();
+    uint8_t old = g_be->read8(bus, slot, func, offset);
+    g_be->write8(bus, slot, func, offset, (uint8_t)((old & ~clear) | set));
+    cfg_unlock(f);
+    return old;
+}
+uint16_t pci64_cfg_update16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint16_t clear, uint16_t set) {
+    ALIGN_OR(offset, 1, 0xFFFFu);
+    uint64_t f = cfg_lock();
+    uint16_t old = g_be->read16(bus, slot, func, offset);
+    g_be->write16(bus, slot, func, offset, (uint16_t)((old & ~clear) | set));
+    cfg_unlock(f);
+    return old;
+}
+uint32_t pci64_cfg_update32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t clear, uint32_t set) {
+    ALIGN_OR(offset, 3, 0xFFFFFFFFu);
+    uint64_t f = cfg_lock();
+    uint32_t old = g_be->read32(bus, slot, func, offset);
+    g_be->write32(bus, slot, func, offset, (old & ~clear) | set);
+    cfg_unlock(f);
+    return old;
 }
 
 static pci64_device_t* g_head = 0;
@@ -121,6 +196,7 @@ static void probe_function(uint8_t bus, uint8_t slot, uint8_t func) {
     if (!dev) { klog("pci64: out of memory during enumeration\n"); return; }
 
     dev->bus = bus; dev->slot = slot; dev->func = func;
+    dev->irq_state = 0; dev->cap_malformed_logged = 0;
     dev->vendor_id = vendor;
     dev->device_id = pci64_config_read16(bus, slot, func, 0x02);
 
@@ -177,9 +253,9 @@ int pci64_enumerate(void) {
 }
 
 void pci64_enable_device(pci64_device_t* dev) {
-    uint16_t cmd = pci64_config_read16(dev->bus, dev->slot, dev->func, 0x04);
-    cmd |= 0x1 /* I/O space */ | 0x2 /* memory space */ | 0x4 /* bus master */;
-    pci64_config_write16(dev->bus, dev->slot, dev->func, 0x04, cmd);
+    // M+11B: one native 16-bit read-modify-write of Command only.
+    pci64_cfg_update16(dev->bus, dev->slot, dev->func, 0x04, 0,
+                       0x1 /* I/O space */ | 0x2 /* memory space */ | 0x4 /* bus master */);
 }
 
 pci64_device_t* pci64_iter(pci64_device_t* prev) {
@@ -204,6 +280,25 @@ pci64_device_t* pci64_find_device(uint16_t vendor_id, uint16_t device_id, pci64_
 }
 
 int pci64_device_count(void) { return g_count; }
+
+// M+2 / M+11B: compatibility wrapper over the pure walker in
+// kernel/pci_cap64.c (strict pointer validation, loop/hop/alignment/bounds
+// checks, over the native-width backend). Contract unchanged: the offset of
+// the first matching capability after `start_after` (0 = from the head), or
+// -1 for "none" OR "malformed" (a malformed list is logged once per device).
+// M+11B change: misaligned capability pointers are now MALFORMED instead of
+// being silently masked.
+int pci64_find_capability(pci64_device_t* dev, uint8_t cap_id, uint8_t start_after) {
+    pci_cfg_ro_t ro;
+    pci_cfg_ro_for_dev(dev, &ro);
+    int off = -1, matches = 0;
+    int st = pci_cap_find(&ro, cap_id, start_after, &off, &matches);
+    if (st == PCI_CAP_MALFORMED && !dev->cap_malformed_logged) {
+        dev->cap_malformed_logged = 1;
+        klog("pci64: malformed capability list on a device -- treated as no capability\n");
+    }
+    return st == PCI_CAP_FOUND ? off : -1;
+}
 
 static void hex32_to_str(uint32_t val, char* out) {
     const char* h = "0123456789ABCDEF";

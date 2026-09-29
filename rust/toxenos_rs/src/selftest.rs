@@ -182,6 +182,11 @@ pub unsafe extern "C" fn toxenos_rust_selftest() -> i32 {
     // still a valid test of the abstraction's read/write/offset logic).
     check(&mut pass, &mut fail, 128, "mmio abstraction", crate::mmio::selftest());
 
+    // 9. M+2's virtio_pci notify-address bounds/overflow defense,
+    // exercised synthetically (no real device needed -- see that
+    // module's own selftest_bounds_synthetic() doc comment).
+    check(&mut pass, &mut fail, 256, "virtio_pci notify bounds check", crate::virtio_pci::selftest_bounds_synthetic());
+
     crate::klog_fmt!("toxenos_rs: selftest: pass={} fail_mask={:#x}", pass, fail);
     if fail == 0 {
         console::log_line("toxenos_rs: selftest: all passed");

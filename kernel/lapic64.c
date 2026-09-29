@@ -54,25 +54,52 @@ static uint64_t map_lapic_phys(uint64_t phys) {
     return phys; // identity-mapped: VA == PA
 }
 
+static volatile uint32_t* g_lapic = 0;
+volatile uint64_t lapic64_eoi_count = 0;
+
+int lapic64_map(uint64_t phys) {
+    uint64_t va = map_lapic_phys(phys);
+    if (!va) return -1;
+    g_lapic = (volatile uint32_t*)(uintptr_t)va;
+    return 0;
+}
+
+uint32_t lapic64_read(uint32_t reg) {
+    return g_lapic ? g_lapic[reg / 4] : 0xFFFFFFFFu;
+}
+
+void lapic64_write(uint32_t reg, uint32_t val) {
+    if (g_lapic) g_lapic[reg / 4] = val;
+}
+
+uint32_t lapic64_id(void) {
+    return lapic64_read(LAPIC_REG_ID) >> 24;
+}
+
+void lapic64_eoi(void) {
+    lapic64_eoi_count++;
+    lapic64_write(LAPIC_REG_EOI, 0);
+}
+
+// PIC-mode path (and PIC fallback after a rolled-back APIC transaction):
+// unchanged M24 behavior -- LAPIC software-enabled with LINT0 = ExtINT
+// so the 8259's INTA-supplied vectors reach the CPU.
 void lapic64_virtual_wire_init(void) {
-    uint64_t va = map_lapic_phys(LAPIC64_BASE);
-    if (!va) {
+    if (lapic64_map(LAPIC64_BASE) != 0) {
         klog("lapic64: failed to map LAPIC MMIO -- IRQ delivery may fail on real hardware\n");
         return;
     }
 
-    volatile uint32_t* lapic = (volatile uint32_t*)(uintptr_t)va;
-
     // SVR (0x0F0): software-enable LAPIC (bit 8), spurious vector 0xFF.
-    lapic[0x0F0 / 4] = 0x1FFu;
+    lapic64_write(LAPIC_REG_SVR, 0x1FFu);
     // TPR (0x080): task priority 0 -- accept all interrupt priorities.
-    lapic[0x080 / 4] = 0;
+    lapic64_write(LAPIC_REG_TPR, 0);
     // LVT LINT0 (0x350): ExtINT delivery, edge-triggered, unmasked -- on
     // each 8259 interrupt the CPU does an INTA cycle to the PIC, which
     // supplies the actual vector (0x20+), exactly as if wired directly.
-    lapic[0x350 / 4] = 0x700u;
+    lapic64_write(LAPIC_REG_LINT0, 0x700u);
     // LVT LINT1 (0x360): NMI delivery, edge-triggered, unmasked.
-    lapic[0x360 / 4] = 0x400u;
+    lapic64_write(LAPIC_REG_LINT1, 0x400u);
 
     klog("lapic64: virtual wire mode (LINT0=ExtINT)\n");
 }

@@ -201,6 +201,57 @@ IRQ64 15, 47
 ; exactly like #BP, dispatching to syscall64_dispatch instead of halting. ──
 ISR64_NOERR 128
 
+; ── M+11A: generic vector stubs for the dynamic vector pool ─────────────
+; One stub per allocatable vector 0x30..0xEE (0x80 is the syscall gate and
+; is skipped), all funnelling into irq64_dispatch with the real vector in
+; the frame. irq64_vec_stub_table[v - 0x30] holds each stub's address (0 for
+; 0x80) so idt64_init() can install them without 190 extern declarations.
+%macro IRQV64 1
+irqv64_%1:
+    push qword 0
+    push qword %1
+    COMMON_TAIL irq64_dispatch
+%endmacro
+
+%assign v 0x30
+%rep 0xEF - 0x30
+%if v != 0x80
+    IRQV64 v
+%endif
+%assign v v+1
+%endrep
+
+section .rodata
+align 8
+global irq64_vec_stub_table
+irq64_vec_stub_table:
+%assign v 0x30
+%rep 0xEF - 0x30
+%if v != 0x80
+    dq irqv64_ %+ v
+%else
+    dq 0
+%endif
+%assign v v+1
+%endrep
+section .text
+
+; ── LAPIC spurious vector 0xFF ──────────────────────────────────────────
+; A spurious LAPIC interrupt sets NO bit in the In-Service Register, so an
+; EOI here would wrongly retire a real in-service interrupt. The stub
+; therefore touches nothing but a counter -- no GPR saves needed because
+; only memory is modified (inc leaves no register clobbered; flags are
+; restored by iretq).
+section .bss
+align 8
+global lapic64_spurious_count
+lapic64_spurious_count: resq 1
+section .text
+global isr64_spurious
+isr64_spurious:
+    inc qword [rel lapic64_spurious_count]
+    iretq
+
 ; ── Default catch-all for any vector without an explicit stub (>=48) ──
 ; A single shared stub can't know which of the many unused vectors fired
 ; it — it reports a sentinel vector number rather than the real one.

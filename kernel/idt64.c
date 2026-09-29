@@ -80,6 +80,15 @@ void idt64_init(void)
     idt64_set_gate(46, (uint64_t)irq64_14, 0, IDT64_INTERRUPT_GATE_K);
     idt64_set_gate(47, (uint64_t)irq64_15, 0, IDT64_INTERRUPT_GATE_K);
 
+    // M+11A: generic stubs for the dynamic vector pool 0x30..0xEE (0x80
+    // excluded -- it is the syscall gate below) and the LAPIC spurious
+    // vector 0xFF (counter-only stub, no EOI).
+    for (int v = 0x30; v <= 0xEE; v++) {
+        if (v == 0x80) continue;
+        idt64_set_gate(v, irq64_vec_stub_table[v - 0x30], 0, IDT64_INTERRUPT_GATE_K);
+    }
+    idt64_set_gate(0xFF, (uint64_t)isr64_spurious, 0, IDT64_INTERRUPT_GATE_K);
+
     // Syscall gate -- DPL=3 (IDT64_INTERRUPT_GATE_U) so ring3 can invoke
     // it via `int 0x80` without a #GP.
     idt64_set_gate(128, (uint64_t)isr64_128, 0, IDT64_INTERRUPT_GATE_U);

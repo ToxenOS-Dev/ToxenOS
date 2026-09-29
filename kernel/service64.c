@@ -100,6 +100,7 @@ int service64_listen(const char* name, uint32_t owner_pid, service64_t** out) {
     s->pending_head = 0;
     s->pending_tail = 0;
     s->pending_count = 0;
+    s->wait_chan = 0;
     s->dbg_next = g_service_list;
     g_service_list = s;
     service64_unlock(flags);
@@ -162,10 +163,25 @@ int service64_connect(service64_t* svc, process64_t* caller, service64_endpoints
     svc->pending_count++;
     service64_unlock(flags);
 
+    // M+12B: wake anyone blocked (via WAIT_ANY) waiting for a new
+    // connection on this listener -- see service64_t::wait_chan's own
+    // header comment. Before this, service64_accept was ALWAYS polled;
+    // nothing ever woke on a fresh pending connection at all.
+    process64_wake_all(&svc->wait_chan);
+
     out->send = slot_send;
     out->recv = slot_recv;
     return 0;
 }
+
+int service64_has_pending(service64_t* svc) {
+    uint64_t flags = service64_lock();
+    int has = (svc->pending_head != 0);
+    service64_unlock(flags);
+    return has;
+}
+
+void* service64_wait_chan(service64_t* svc) { return &svc->wait_chan; }
 
 int service64_accept(service64_t* svc, process64_t* caller, service64_endpoints_t* out) {
     uint64_t flags = service64_lock();

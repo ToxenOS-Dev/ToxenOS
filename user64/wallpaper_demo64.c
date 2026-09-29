@@ -37,7 +37,8 @@ void _start(void) {
     wm_client_t c;
     if (wm_connect(&c) < 0) { put("wallpaper_demo64: wm_connect failed\n"); sys_exit(1); }
 
-    uint32_t win = wm_create_window(&c, WIN_W, WIN_H, "Wallpaper");
+    wm_window_t win_state;
+    uint32_t win = wm_create_window(&c, WIN_W, WIN_H, "Wallpaper", &win_state);
     if (win == 0) { put("wallpaper_demo64: wm_create_window failed\n"); sys_exit(1); }
 
     uint32_t stride;
@@ -62,7 +63,7 @@ void _start(void) {
         wm_msg_t ev;
         if (wm_wait_event(&c, &ev) < 0) break;
         if (ev.type == WM_MSG_CLOSE_REQUEST) {
-            wm_destroy_window(&c, win);
+            wm_destroy_window(&c, &win_state);
             break;
         }
     }

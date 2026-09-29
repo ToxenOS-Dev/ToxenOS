@@ -9,16 +9,26 @@
 // input64 queue AND (for backward compatibility) keyboard_buffer64's
 // ASCII ring, rather than the old design where keyboard_buffer64 did
 // its own scancode parsing directly.
+//
+// M-next follow-up: that "AND" was unconditional -- every keypress fed
+// keyboard_buffer64 regardless of who, if anyone, currently owns
+// input64/display64. shell64 keeps running as a live sibling process in
+// graphical mode (user64/init64.c) and reads keyboard_buffer64 via
+// sys_getch()/tox_readline(), so typing while the compositor owned the
+// screen was ALSO being interpreted as shell commands the whole time --
+// invisible before M-next only because the old compositor's constant
+// full-screen redraws painted over whatever shell64 printed within one
+// frame (see kernel/console64.c's own comment for the other half of
+// this bug). Fixed by feeding keyboard_buffer64 only while no graphical
+// owner holds display64 -- input64_push() below is untouched and still
+// unconditional, so a focused graphical client keeps receiving every
+// keystroke exactly as before.
 #include <stdint.h>
 #include "../include/keyboard_buffer64.h"
 #include "../include/input64.h"
-
-static inline uint8_t inb(uint16_t port)
-{
-    uint8_t ret;
-    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
+#include "../include/display64.h"
+#include "../include/ps2_64.h"
+#include "../include/irq64.h"
 
 // Unshifted / shifted ASCII for the base (non-extended) Set 1 make-code
 // range. Index is the raw make code (0-127); 0 = no ASCII mapping.
@@ -104,14 +114,33 @@ static void handle_key(uint8_t sc, int extended, int pressed) {
 
     // Compatibility path: SYS64_GETCH/tox_readline only ever see
     // translated ASCII characters on press, exactly as Milestone 10-28
-    // behaved (no key-up events, no raw scancodes).
-    if (ascii) keyboard_buffer64_push(ascii);
+    // behaved (no key-up events, no raw scancodes). M-next: only while
+    // no graphical owner holds display64 -- see this file's own header
+    // comment.
+    if (ascii && display64_owner_pid() == 0) keyboard_buffer64_push(ascii);
 }
 
-void keyboard64_handler(void)
-{
-    uint8_t sc = inb(0x60);
+// M+7A: registers with the generic input64 device model (diagnostic/
+// enumeration only -- see include/input64.h's own header comment).
+// keyboard64.c never had its own init() before this -- kernel/kernel64.c
+// just registered the IRQ1 handler directly -- so this is a small,
+// purely additive entry point, not a functional change to key handling.
+void keyboard64_init(void) {
+    irq64_request_legacy(1, keyboard64_irq, 0, "keyboard");
 
+    static input64_device_t dev;
+    dev.name[0]='p'; dev.name[1]='s'; dev.name[2]='2'; dev.name[3]='k';
+    dev.name[4]='b'; dev.name[5]='d'; dev.name[6]=0;
+    dev.kind = INPUT64_DEVICE_PS2_KEYBOARD;
+    dev.capabilities = INPUT64_CAP_KEY;
+    input64_register_device(&dev);
+}
+
+// M+11A: byte-level entry, fed by the shared 8042 receive path
+// (ps2_64_rx_poll) for every keyboard-port byte regardless of which IRQ
+// line fired. The parsing below is unchanged from the old IRQ1 handler.
+void keyboard64_feed_byte(uint8_t sc)
+{
     if (sc == 0xE0) { extended_pending = 1; return; }
 
     int extended = extended_pending;
@@ -120,4 +149,11 @@ void keyboard64_handler(void)
     int pressed = !(sc & 0x80);
     uint8_t code = sc & 0x7F;
     handle_key(code, extended, pressed);
+}
+
+// M+11A: thin irq64 thunk for IRQ1.
+irq64_ret_t keyboard64_irq(void* ctx)
+{
+    (void)ctx;
+    return ps2_64_service() ? IRQ64_RET_HANDLED : IRQ64_RET_NONE;
 }

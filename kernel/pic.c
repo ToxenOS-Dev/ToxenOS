@@ -63,3 +63,35 @@ void pic_unmask(uint8_t irq)
     if (irq >= 8) irq -= 8;
     outb(port, inb(port) & ~(1 << irq));
 }
+// M+11A: chip-agnostic helpers (used by the 64-bit interrupt core; the
+// 32-bit kernel does not call them).
+void pic_mask_all(void)
+{
+    outb(PIC1_DATA, 0xFF);
+    outb(PIC2_DATA, 0xFF);
+}
+
+uint8_t pic_get_mask(int slave)
+{
+    return inb(slave ? PIC2_DATA : PIC1_DATA);
+}
+
+void pic_set_mask(int slave, uint8_t mask)
+{
+    outb(slave ? PIC2_DATA : PIC1_DATA, mask);
+}
+
+// OCW3 "read ISR" (0x0B), then read the command port. Leaves the chip
+// in ISR-read mode; the default IRR mode is not relied upon anywhere.
+uint8_t pic_read_isr(int slave)
+{
+    uint16_t port = slave ? PIC2_COMMAND : PIC1_COMMAND;
+    outb(port, 0x0B);
+    return inb(port);
+}
+
+// Master-only EOI (cascade line), used after a spurious slave IRQ15.
+void pic_send_eoi_master(void)
+{
+    outb(PIC1_COMMAND, PIC_EOI);
+}

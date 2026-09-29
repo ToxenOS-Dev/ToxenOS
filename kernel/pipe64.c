@@ -210,6 +210,23 @@ int64_t pipe64_try_write(pipe64_t* p, const uint8_t* kbuf, uint64_t len) {
     return (int64_t)len;
 }
 
+// M+12B: see include/pipe64.h's own header comment on these two --
+// called under the SAME pipe64_lock()/unlock() discipline as every
+// other accessor here, from kernel/syscall64.c's sys64_handle_wait_any.
+int pipe64_read_ready(pipe64_t* p) {
+    uint64_t flags = pipe64_lock();
+    int ready = (p->count > 0) || (p->writers == 0);
+    pipe64_unlock(flags);
+    return ready;
+}
+
+int pipe64_write_ready(pipe64_t* p) {
+    uint64_t flags = pipe64_lock();
+    int ready = (p->count < p->capacity) || (p->readers == 0);
+    pipe64_unlock(flags);
+    return ready;
+}
+
 void pipe64_dump(void) {
     uint64_t flags = pipe64_lock();
     klog("pipe64: dump ---\n");

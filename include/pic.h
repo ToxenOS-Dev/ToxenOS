@@ -15,4 +15,11 @@ void pic_send_eoi(uint8_t irq);
 void pic_mask(uint8_t irq);
 void pic_unmask(uint8_t irq);
 
+// M+11A (64-bit interrupt core only):
+void    pic_mask_all(void);
+uint8_t pic_get_mask(int slave);            // slave: 0 = master IMR, 1 = slave IMR
+void    pic_set_mask(int slave, uint8_t mask);
+uint8_t pic_read_isr(int slave);            // OCW3 ISR read
+void    pic_send_eoi_master(void);
+
 #endif

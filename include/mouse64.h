@@ -20,14 +20,17 @@
 // IRQ in the 8042 configuration byte).
 //
 // Packet synchronization: byte 0 of every packet always has bit 3 set
-// (an 8042/PS2-mouse protocol invariant); mouse64_handler() uses this
+// (an 8042/PS2-mouse protocol invariant); mouse64_feed_byte() uses this
 // to detect and recover from a lost/misaligned byte -- any byte seen
 // where a packet's first byte is expected, but which doesn't have bit
 // 3 set, is dropped and the handler keeps waiting for a genuine first
 // byte, rather than assembling a corrupt packet.
 int mouse64_init(void);
 
-void mouse64_handler(void);
+// M+11A: IRQ12 thunk (irq64 handler). Receive + AUX routing live in the
+// shared 8042 path (ps2_64_service); this only adapts the return type.
+#include "irq64.h"
+irq64_ret_t mouse64_irq(void* ctx);
 
 typedef struct {
     uint32_t detected;         // 1 if a mouse responded during init

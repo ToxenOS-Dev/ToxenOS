@@ -495,6 +495,26 @@ run64-nvme: kernel64 user populate
 		-device nvme,drive=nvmedisk0,serial=toxnvme0 \
 		-serial stdio
 
+# M+12H test-environment fix: one canonical target for interactive/visual
+# graphical acceptance testing (mouse, hardware cursor, F11 fullscreen,
+# direct scanout), replacing hand-assembled QEMU commands that repeatedly
+# drifted from this project's real supported configuration and cost three
+# separate false-alarm investigations:
+#   - a bare "qemu64" CPU (missing +ssse3,+sse4.1) looks like a toxui #UD
+#     crash -- see TOXENOS64_QEMU_CPU's own comment above.
+#   - omitting -vga none lets QEMU's own legacy VGA window hide the real
+#     virtio-gpu-pci output, looking like a boot stall.
+#   - adding -device virtio-keyboard-pci makes F11 (and all other keys)
+#     look broken: ToxenOS has no VirtIO-keyboard driver at all
+#     (kernel/virtio_input64.c only ever handles pointer samples) -- real
+#     keyboard input is PS/2 only (kernel/keyboard64.c), which QEMU already
+#     provides by default, so that device must NOT be added here.
+run64-interactive: kernel64 user populate
+	qemu-system-x86_64 -m 256 -cpu $(TOXENOS64_QEMU_CPU) -boot order=d -cdrom build/ToxenOS64.iso \
+		-drive file=build/disk.img,format=raw,if=virtio \
+		-device virtio-gpu-pci -device virtio-tablet-pci -vga none -display gtk \
+		-serial stdio
+
 run: all build/target.img
 	qemu-system-i386 \
 		-enable-kvm -cpu host,+cmov,+cx8 \

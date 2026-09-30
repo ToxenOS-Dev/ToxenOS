@@ -26,6 +26,7 @@
 // timer preemption is unconditional).
 #include <stdint.h>
 #include "tox64.h"
+#include "output64.h"
 #include "wmproto64.h"
 
 // ── Minimal 8x16 bitmap font, ASCII 32-127 ──────────────────────────
@@ -390,7 +391,7 @@ static int32_t g_drag_off_x = 0, g_drag_off_y = 0;
 static uint32_t g_next_window_id = 1;
 static uint32_t g_next_client_id = 1;
 
-static int g_display_h = -1, g_input_h = -1;
+static int g_input_h = -1; // M+12H: g_display_h retired -- the display handle now lives entirely inside output64.cpp's own Output instance
 static uint32_t g_disp_w = 0, g_disp_h = 0;
 static uint32_t* g_backbuffer = 0;
 
@@ -1277,8 +1278,8 @@ static void dump_window_liveness(window_t* w, const char* tag) {
         put_slot_kv(i, "release_ground_truth=", (uint64_t)w->slot_release_ground_truth[i]);
     }
 
-    display64_debug_state_req_t dbg;
-    if (g_display_h >= 0 && sys_display_debug_state(g_display_h, &dbg) == 0) {
+    output64_debug_state_t dbg;
+    if (output64_debug_state(&dbg) == 0) {
         put("  display64_validity="); put(dbg.validity == 0 ? "VALID" : "RECOVERY_REQUIRED"); put("\n");
         put_kv("  display64_primary_kind=", (uint64_t)dbg.primary_kind);
         put_kv("  display64_primary_identity=", dbg.primary_identity);
@@ -1845,32 +1846,25 @@ static int m8_fault_inject_should_fail(void) {
 static int present_rect(rect_t r) {
     r = rect_clip_to_display(r);
     if (!rect_valid(r)) return 1; // nothing to present -- trivially not wrong
-    display64_present_req_t req;
-    // BUG FOUND DURING THIS MILESTONE'S OWN VISUAL VERIFICATION: the
-    // backbuffer is ONE g_disp_w-wide buffer that a sub-rect present is
-    // just a window into -- its REAL per-row stride is g_disp_w*4
-    // regardless of how wide the rect being presented is. Passing
-    // pitch=0 (meaning "tightly packed at req.w", per
-    // sys64_display_present's own contract) was silently correct for
-    // Milestone 30's full-screen-only present (req.w was always
-    // g_disp_w there, so the two happened to coincide) but reads each
-    // row from the wrong offset -- producing a diagonal shearing
-    // corruption pattern, caught immediately by screenshotting the
-    // very first partial-redraw frame -- for any narrower rect.
-    // buf_ptr must also point at the rect's own top-left pixel WITHIN
-    // the backbuffer, not always the backbuffer's origin.
-    req.buf_ptr = (uint64_t)(uintptr_t)(g_backbuffer + (uint64_t)r.y0 * g_disp_w + (uint64_t)r.x0);
-    req.pitch = g_disp_w * 4;
-    req.x = r.x0; req.y = r.y0; req.w = (uint32_t)(r.x1 - r.x0); req.h = (uint32_t)(r.y1 - r.y0);
+    // BUG FOUND DURING M+8'S OWN VISUAL VERIFICATION: the backbuffer is
+    // ONE g_disp_w-wide buffer that a sub-rect present is just a window
+    // into -- its REAL per-row stride is g_disp_w*4 regardless of how
+    // wide the rect being presented is. output64_present_rect()'s own
+    // `stride_pixels` parameter exists specifically so this is never
+    // silently wrong again -- see that function's own comment. The
+    // pointer passed must also point at the rect's own top-left pixel
+    // WITHIN the backbuffer, not always the backbuffer's origin.
+    const uint32_t* src_origin = g_backbuffer + (uint64_t)r.y0 * g_disp_w + (uint64_t)r.x0;
+    uint32_t rw = (uint32_t)(r.x1 - r.x0), rh = (uint32_t)(r.y1 - r.y0);
 
 #ifdef M8_FAULT_INJECT
-    int64_t rc = m8_fault_inject_should_fail() ? (int64_t)-1 : sys_display_present(g_display_h, &req);
+    int64_t rc = m8_fault_inject_should_fail() ? (int64_t)-1 : output64_present_rect(src_origin, g_disp_w, r.x0, r.y0, rw, rh);
 #else
-    int64_t rc = sys_display_present(g_display_h, &req);
+    int64_t rc = output64_present_rect(src_origin, g_disp_w, r.x0, r.y0, rw, rh);
 #endif
 #ifdef COMPOSITOR_PERF_STATS
     g_stat_presents++;
-    if (rc == 0) g_stat_pixels += (uint64_t)req.w * req.h;
+    if (rc == 0) g_stat_pixels += (uint64_t)rw * rh;
     else g_stat_present_failures++;
 #endif
     if (rc < 0) {
@@ -1879,7 +1873,7 @@ static int present_rect(rect_t r) {
         // g_diag_stale_commit_generation_count above) -- unlike
         // COMPOSITOR_PERF_STATS's own g_stat_present_failures, this is never
         // zeroed periodically, so "stays exactly 0 for the whole session" is
-        // a real, checkable invariant. sys_display_present() failing at all
+        // a real, checkable invariant. output64_present_rect() failing at all
         // during ordinary operation (no fault injection armed) means the
         // compositor's own display handle -- or the request derived from
         // g_backbuffer -- has gone bad; the has_surface bug this counter was
@@ -1888,25 +1882,25 @@ static int present_rect(rect_t r) {
         // was closed.
         g_diag_present_failure_count++;
 #ifdef COMPOSITOR_PRESENT_FAIL_TRACE
-        put("DBG_PRESENT_FAIL: sys_display_present failed\n");
+        put("DBG_PRESENT_FAIL: output64_present_rect failed\n");
         put_kv("  g_diag_present_failure_count=", g_diag_present_failure_count);
-        put_kv("  req.x=", (uint64_t)req.x); put_kv("  req.y=", (uint64_t)req.y);
-        put_kv("  req.w=", (uint64_t)req.w); put_kv("  req.h=", (uint64_t)req.h);
+        put_kv("  x=", (uint64_t)r.x0); put_kv("  y=", (uint64_t)r.y0);
+        put_kv("  w=", (uint64_t)rw); put_kv("  h=", (uint64_t)rh);
 #endif
         return 0; // FAILURE -- g_frontbuffer is not touched, per this function's own header comment
     }
 
     // SUCCESS -- mirror ONLY this rect, row by row, directly from
-    // g_backbuffer (the pixels display64 was just proven to have
+    // g_backbuffer (the pixels the output was just proven to have
     // presented) into g_frontbuffer. Both buffers share g_disp_w as
     // their real stride (same layout, same allocation size).
-    for (uint32_t row = 0; row < req.h; row++) {
+    for (uint32_t row = 0; row < rh; row++) {
         uint32_t* dst = &g_frontbuffer[(uint32_t)(r.y0 + (int32_t)row) * g_disp_w + (uint32_t)r.x0];
         const uint32_t* src = &g_backbuffer[(uint32_t)(r.y0 + (int32_t)row) * g_disp_w + (uint32_t)r.x0];
-        for (uint32_t col = 0; col < req.w; col++) dst[col] = src[col];
+        for (uint32_t col = 0; col < rw; col++) dst[col] = src[col];
     }
 #ifdef COMPOSITOR_PERF_STATS
-    g_stat_front_mirror_bytes += (uint64_t)req.w * req.h * 4u;
+    g_stat_front_mirror_bytes += (uint64_t)rw * rh * 4u;
 #endif
     return 1;
 }
@@ -2209,7 +2203,7 @@ static void direct_scanout_force_leave(void) {
         return;
     }
 
-    if (sys_display_direct_leave(g_display_h) < 0) {
+    if (output64_direct_leave() < 0) {
 #ifdef M9B_STATS
         g_stat_direct_failures++;
 #endif
@@ -2229,7 +2223,7 @@ static void direct_scanout_force_leave(void) {
     // resource, may it be unbound and the client buffer actually
     // released (§7/§11 step 7-8).
     if (slot >= 0 && w->buffers[slot].in_use) {
-        sys_display_direct_unbind(g_display_h, w->buffers[slot].token);
+        output64_direct_unbind(w->buffers[slot].token);
         w->scanout_owned_slot = -1;
         notify_buffer_released(w, slot); // idempotently records slot_release_ground_truth[slot] itself -- see that function's own comment
 #ifdef M9B_STATS
@@ -2258,7 +2252,7 @@ static void direct_scanout_force_leave(void) {
     // harmless for slots that were never bound or already handled above.
     for (int i = 0; i < WM_MAX_BUFFERS_PER_WINDOW; i++) {
         if (i == slot) continue; // already handled above
-        if (w->buffers[i].in_use) sys_display_direct_unbind(g_display_h, w->buffers[i].token);
+        if (w->buffers[i].in_use) output64_direct_unbind(w->buffers[i].token);
     }
 #ifdef M9B_STATS
     m9b_dump_stats();
@@ -2287,7 +2281,7 @@ static int direct_scanout_try_enter_or_update(window_t* w, int idx, int slot, in
     uint64_t token = w->buffers[slot].token;
     uint32_t bytes = w->content_w * w->content_h * 4u;
 
-    if (sys_display_direct_bind(g_display_h, token, w->content_w, w->content_h) < 0) {
+    if (output64_direct_bind(token, w->content_w, w->content_h) < 0) {
 #ifdef M9B_STATS
         g_stat_direct_failures++;
 #endif
@@ -2302,7 +2296,7 @@ static int direct_scanout_try_enter_or_update(window_t* w, int idx, int slot, in
     // itself was already the active owner -- e.g. GfxDemo alternating
     // fs_bufs[0]/fs_bufs[1] every frame needs scanout repointed to
     // whichever one it just committed, every time.
-    int64_t rc = sys_display_direct_present(g_display_h, token, 0, 0, w->content_w, w->content_h, 1);
+    int64_t rc = output64_direct_present(token, 0, 0, w->content_w, w->content_h, 1);
     if (rc < 0) {
 #ifdef M9B_STATS
         g_stat_direct_failures++;
@@ -3198,7 +3192,7 @@ static void handle_input_event(const input64_event_t* ev) {
             // cursor motion alone. Just the one cheap MOVE_CURSOR
             // command through the generic display64 cursor abstraction.
             if (g_hw_cursor_active) {
-                if (sys_cursor_move(g_display_h, nx, ny) < 0) {
+                if (output64_cursor_move(nx, ny) < 0) {
                     // Runtime failure after having worked at startup --
                     // fall back to software cursor cleanly (this
                     // milestone's own item 8): disable the hardware
@@ -3210,7 +3204,7 @@ static void handle_input_event(const input64_event_t* ev) {
                     // baked-in image, since bb_draw_cursor() was never
                     // called anywhere while hardware cursor was active.
                     g_hw_cursor_active = 0;
-                    sys_cursor_set_visible(g_display_h, 0);
+                    output64_cursor_set_visible(0);
                     add_damage_rect(cursor_rect_at(nx, ny));
                     // M+9B §13: software cursor is incompatible with
                     // direct scanout (nothing composites a cursor into a
@@ -3491,10 +3485,7 @@ static uint64_t __attribute__((unused)) compute_wait_any_timeout(uint64_t now, u
 void _start(void) {
     put("compositor64: starting\n");
 
-    uint32_t fmt = 0;
-    int64_t dh = sys_display_open(&g_disp_w, &g_disp_h, &fmt);
-    if (dh < 0) { put("compositor64: sys_display_open FAILED -- no display available\n"); sys_exit(1); }
-    g_display_h = (int)dh;
+    if (!output64_init(&g_disp_w, &g_disp_h)) { put("compositor64: sys_display_open FAILED -- no display available\n"); sys_exit(1); }
     put_kv("compositor64: display width=", g_disp_w);
     put_kv("compositor64: display height=", g_disp_h);
 
@@ -3553,7 +3544,7 @@ void _start(void) {
     //   B: -DCOMPOSITOR_FORCE_NO_DIRECT_SCANOUT  -- hw cursor negotiated normally, direct scanout forced unavailable
     //   C: neither defined                        -- current default (both enabled, whatever the real hardware supports)
 #ifndef COMPOSITOR_FORCE_SOFTWARE_CURSOR
-    if (sys_cursor_available(g_display_h)) {
+    if (output64_cursor_available()) {
         uint64_t hw_cursor_size = (uint64_t)HW_CURSOR_DIM * HW_CURSOR_DIM * 4;
         uint64_t hw_cursor_addr = sys_mmap(hw_cursor_size);
         if (hw_cursor_addr != (uint64_t)-1) {
@@ -3573,8 +3564,8 @@ void _start(void) {
                 put_kv("compositor64: cursor image opaque_pixel_count=", (uint64_t)opaque_count);
             }
 #endif
-            if (sys_cursor_set_image(g_display_h, HW_CURSOR_DIM, HW_CURSOR_DIM, hw_cursor_px, 0, 0) == 0 &&
-                sys_cursor_move(g_display_h, g_cursor_x, g_cursor_y) == 0) {
+            if (output64_cursor_set_image(HW_CURSOR_DIM, HW_CURSOR_DIM, hw_cursor_px, 0, 0) == 0 &&
+                output64_cursor_move(g_cursor_x, g_cursor_y) == 0) {
                 g_hw_cursor_active = 1;
                 put("compositor64: hardware cursor active\n");
             }
@@ -3594,7 +3585,7 @@ void _start(void) {
     g_direct_supported = 0;
     put("compositor64: direct scanout FORCED OFF (M+10A cursor investigation build)\n");
 #else
-    g_direct_supported = (int)sys_display_direct_query(g_display_h);
+    g_direct_supported = (int)output64_direct_supported();
     put(g_direct_supported ? "compositor64: direct scanout backend available\n"
                             : "compositor64: direct scanout unavailable -- fullscreen stays fully composited\n");
 #endif

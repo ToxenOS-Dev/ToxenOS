@@ -161,6 +161,26 @@ void _start(void) {
     // replaces Milestone 30's "compositor spawns its own demo clients,
     // init64 blocks on the compositor before even starting the shell"
     // arrangement.
+    // M+12H: output64_smoke_test64 exercises Output's init/close lifecycle
+    // directly against the real display backend. MUST complete and fully
+    // release HANDLE64_DISPLAY before compositor64 (right below) ever
+    // attempts to open it -- display is a singleton resource, the two
+    // cannot hold it concurrently. Always waited on, never fire-and-forget,
+    // for exactly this reason: its own PASS already proves repeated
+    // init/close cycles release ownership, and compositor64's own
+    // subsequent successful sys_display_open() moments later is the
+    // strongest independent confirmation nothing leaked.
+    {
+        int64_t out_pid = sys_spawn_isolated("/output64_smoke_test64.nex64", 0);
+        if (out_pid < 0) {
+            put("init64: output64_smoke_test64 not present (PACKAGE_DEBUG64 build only) -- skipped\n");
+        } else {
+            int64_t code = sys_wait((uint32_t)out_pid);
+            if (code == 42) put("init64: output64_smoke_test64 PASSED\n");
+            else put_line_int("init64: output64_smoke_test64 FAILED, exit code=", code);
+        }
+    }
+
     int64_t comp_pid = sys_spawn_isolated("/compositor64.nex64", 0);
     if (comp_pid < 0) put("init64: sys_spawn(/compositor64.nex64) failed\n");
 

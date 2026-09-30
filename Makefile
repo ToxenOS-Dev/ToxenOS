@@ -117,6 +117,27 @@ UFLAGS64 := -ffreestanding -fno-stack-protector -fno-pic -m64 \
 # on which optimization level compiles them.
 UFLAGS64_TOXUI := $(filter-out -mno-sse -mno-sse2,$(UFLAGS64)) -msse -msse2 -msse4.1 -O2 -I userlib/toxui
 
+# M+12H: the first C++ translation unit in this project (user64/output64.cpp),
+# approved narrowly for one compositor-internal abstraction -- see that file's
+# own header comment for the full design writeup. Freestanding/codegen flags
+# mirror UFLAGS64 exactly (same target, same ABI, same no-SSE-in-this-TU
+# choice -- output64.cpp touches no floating point); the C++-specific flags
+# are the exact, explicit set this project's own C++ rules require:
+# -fno-exceptions/-fno-rtti (no exception tables, no RTTI/vtable-for-typeid
+# machinery), -fno-use-cxa-atexit (no atexit-registration machinery -- this
+# TU's one file-static object has a trivial destructor, so there is nothing
+# to register anyway, but this keeps that a compile-time guarantee, not an
+# accident), -fno-threadsafe-statics (no guard-variable machinery for
+# function-local statics -- none are used here, same defensive reasoning).
+# Compiled to a plain .o (no -Ttext/-nostartfiles/-static/-no-pie -- those
+# are link-time concerns, applied when this .o is linked into each
+# compositor64 variant below, exactly like build/toxui/libtoxui.a already is
+# for toxui_demo64/wallpaper_demo64/toxui_test64).
+CXXFLAGS64_OUTPUT := -std=c++17 -fno-exceptions -fno-rtti -fno-use-cxa-atexit -fno-threadsafe-statics \
+                     -ffreestanding -fno-stack-protector -fno-pic -m64 -mcmodel=large \
+                     -mno-red-zone -mno-mmx -mno-sse -mno-sse2 \
+                     -Wall -Wextra -Wno-unused-parameter -I user64
+
 # ── Milestone 31: Rust kernel/driver support ─────────────────────────────────
 # rustc's BUILTIN `x86_64-unknown-none` target (stable-compatible: `core`
 # and `alloc` ship prebuilt for it via `rustup target add x86_64-unknown-none`,
@@ -601,7 +622,14 @@ user64: tools/elf2nex64 toxui
 	tools/elf2nex64 build/user64/input_test64.elf64 build/user64/input_test64.nex64
 	gcc $(UFLAGS64) user64/display_test64.c -o build/user64/display_test64.elf64
 	tools/elf2nex64 build/user64/display_test64.elf64 build/user64/display_test64.nex64
-	gcc $(UFLAGS64) user64/compositor64.c -o build/user64/compositor64.elf64
+	# M+12H: output64.o is built ONCE and linked into every compositor64
+	# variant below (none of their own -D flags affect output64.cpp's own
+	# behavior at all) -- same "prebuilt object linked into several user64
+	# programs" pattern build/toxui/libtoxui.a already established for
+	# toxui_demo64/wallpaper_demo64/toxui_test64 above.
+	g++ $(CXXFLAGS64_OUTPUT) -c user64/output64.cpp -o build/user64/output64.o
+	gcc $(UFLAGS64) -c user64/compositor64.c -o build/user64/compositor64.o
+	gcc $(UFLAGS64) build/user64/compositor64.o build/user64/output64.o -o build/user64/compositor64.elf64
 	tools/elf2nex64 build/user64/compositor64.elf64 build/user64/compositor64.nex64
 	gcc $(UFLAGS64) user64/gfx_demo64.c -o build/user64/gfx_demo64.elf64
 	tools/elf2nex64 build/user64/gfx_demo64.elf64 build/user64/gfx_demo64.nex64
@@ -621,7 +649,8 @@ user64: tools/elf2nex64 toxui
 	# holding the exclusive display/input handles. The real
 	# compositor64.nex64 above is completely unaffected (not rebuilt
 	# with this flag).
-	gcc $(UFLAGS64) -DCOMPOSITOR64_TEST_MODE user64/compositor64.c -o build/user64/compositor64_test.elf64
+	gcc $(UFLAGS64) -DCOMPOSITOR64_TEST_MODE -c user64/compositor64.c -o build/user64/compositor64_test.o
+	gcc $(UFLAGS64) build/user64/compositor64_test.o build/user64/output64.o -o build/user64/compositor64_test.elf64
 	tools/elf2nex64 build/user64/compositor64_test.elf64 build/user64/compositor64_test.nex64
 	gcc $(UFLAGS64) user64/compositor_stall_test64.c -o build/user64/compositor_stall_test64.elf64
 	tools/elf2nex64 build/user64/compositor_stall_test64.elf64 build/user64/compositor_stall_test64.nex64
@@ -630,7 +659,8 @@ user64: tools/elf2nex64 toxui
 	# the policy interface is really swappable. Never part of a normal
 	# boot; only ever run manually for M+12A acceptance, same discipline
 	# as COMPOSITOR64_TEST_MODE right above.
-	gcc $(UFLAGS64) -DCOMPOSITOR_POLICY_TEST_ALT user64/compositor64.c -o build/user64/compositor64_policytest.elf64
+	gcc $(UFLAGS64) -DCOMPOSITOR_POLICY_TEST_ALT -c user64/compositor64.c -o build/user64/compositor64_policytest.o
+	gcc $(UFLAGS64) build/user64/compositor64_policytest.o build/user64/output64.o -o build/user64/compositor64_policytest.elf64
 	tools/elf2nex64 build/user64/compositor64_policytest.elf64 build/user64/compositor64_policytest.nex64
 	gcc $(UFLAGS64) user64/compositor_policy_test64.c -o build/user64/compositor_policy_test64.elf64
 	tools/elf2nex64 build/user64/compositor_policy_test64.elf64 build/user64/compositor_policy_test64.nex64
@@ -639,7 +669,8 @@ user64: tools/elf2nex64 toxui
 	# DBG_PRESENT_FAIL trace on any presentation failure) plus its in-guest
 	# driver program. Never part of a normal boot, same discipline as
 	# COMPOSITOR64_TEST_MODE/COMPOSITOR_POLICY_TEST_ALT above.
-	gcc $(UFLAGS64) -DCOMPOSITOR_PRESENT_FAIL_TRACE user64/compositor64.c -o build/user64/compositor64_presenttest.elf64
+	gcc $(UFLAGS64) -DCOMPOSITOR_PRESENT_FAIL_TRACE -c user64/compositor64.c -o build/user64/compositor64_presenttest.o
+	gcc $(UFLAGS64) build/user64/compositor64_presenttest.o build/user64/output64.o -o build/user64/compositor64_presenttest.elf64
 	tools/elf2nex64 build/user64/compositor64_presenttest.elf64 build/user64/compositor64_presenttest.nex64
 	gcc $(UFLAGS64) user64/compositor_present_test64.c -o build/user64/compositor_present_test64.elf64
 	tools/elf2nex64 build/user64/compositor_present_test64.elf64 build/user64/compositor_present_test64.nex64
@@ -652,10 +683,22 @@ user64: tools/elf2nex64 toxui
 	# acceptance and for the internal-only aspects the ring3 test
 	# programs below cannot observe for themselves (see each test's own
 	# header comment on what it can and cannot self-verify).
-	gcc $(UFLAGS64) -DCOMPOSITOR_LEGACY_POLL_MODE user64/compositor64.c -o build/user64/compositor64_legacypoll.elf64
+	gcc $(UFLAGS64) -DCOMPOSITOR_LEGACY_POLL_MODE -c user64/compositor64.c -o build/user64/compositor64_legacypoll.o
+	gcc $(UFLAGS64) build/user64/compositor64_legacypoll.o build/user64/output64.o -o build/user64/compositor64_legacypoll.elf64
 	tools/elf2nex64 build/user64/compositor64_legacypoll.elf64 build/user64/compositor64_legacypoll.nex64
-	gcc $(UFLAGS64) -DCOMPOSITOR_WAIT_ANY_TRACE user64/compositor64.c -o build/user64/compositor64_waitanytrace.elf64
+	gcc $(UFLAGS64) -DCOMPOSITOR_WAIT_ANY_TRACE -c user64/compositor64.c -o build/user64/compositor64_waitanytrace.o
+	gcc $(UFLAGS64) build/user64/compositor64_waitanytrace.o build/user64/output64.o -o build/user64/compositor64_waitanytrace.elf64
 	tools/elf2nex64 build/user64/compositor64_waitanytrace.elf64 build/user64/compositor64_waitanytrace.nex64
+	# M+12H: exercises Output's own init/close lifecycle directly, several
+	# cycles, against the real display backend -- plain C, but still links
+	# output64.o (the extern "C" boundary is fully C-callable). See
+	# user64/init64.c's own comment at this program's spawn site for why
+	# it MUST run to completion, and release HANDLE64_DISPLAY, before
+	# compositor64 (a singleton-resource, display, cannot be held by two
+	# processes at once).
+	gcc $(UFLAGS64) -c user64/output64_smoke_test64.c -o build/user64/output64_smoke_test64.o
+	gcc $(UFLAGS64) build/user64/output64_smoke_test64.o build/user64/output64.o -o build/user64/output64_smoke_test64.elf64
+	tools/elf2nex64 build/user64/output64_smoke_test64.elf64 build/user64/output64_smoke_test64.nex64
 	gcc $(UFLAGS64) user64/wait_any_test64.c -o build/user64/wait_any_test64.elf64
 	tools/elf2nex64 build/user64/wait_any_test64.elf64 build/user64/wait_any_test64.nex64
 	gcc $(UFLAGS64) user64/wait_any_evtpipe_test64.c -o build/user64/wait_any_evtpipe_test64.elf64
@@ -823,6 +866,7 @@ populate: tools/txfs_write tools/patch_diskboot user64 cmdtools64
 		tools/txfs_write build/fs.img build/user64/compositor64_presenttest.nex64 /compositor64_presenttest.nex64; \
 		tools/txfs_write build/fs.img build/user64/compositor64_legacypoll.nex64 /compositor64_legacypoll.nex64; \
 		tools/txfs_write build/fs.img build/user64/compositor64_waitanytrace.nex64 /compositor64_waitanytrace.nex64; \
+		tools/txfs_write build/fs.img build/user64/output64_smoke_test64.nex64 /output64_smoke_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/wait_any_test64.nex64 /wait_any_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/wait_any_evtpipe_test64.nex64 /wait_any_evtpipe_test64.nex64; \
 		tools/txfs_write build/fs.img build/user64/wait_any_framecb_test64.nex64 /wait_any_framecb_test64.nex64; \
